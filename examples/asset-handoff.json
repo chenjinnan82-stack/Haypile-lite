@@ -1,0 +1,40 @@
+{
+  "handoff_version": "haypile.asset-handoff.v1",
+  "source": "haypile",
+  "base_url": "http://127.0.0.1:8010",
+  "assets": [
+    {
+      "id": "generic_img_hero_image_abcd1234",
+      "theme_id": "generic",
+      "type": "image",
+      "role": "hero_image",
+      "status": "ready",
+      "sha256": "abcd...",
+      "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
+      "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
+      "access": "manifest_static",
+      "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png",
+      "ai_suggestions": {
+        "source": "model",
+        "tags": ["主视觉", "绿色"],
+        "usage": "hero_image",
+        "quality": "high",
+        "agent_summary": "适合作为自然风格主视觉。",
+        "confidence": {
+          "theme": 0.82,
+          "role": 0.88
+        },
+        "reason": "主体清晰"
+      },
+      "provenance": {
+        "source": "haypile",
+        "id": "generic_img_hero_image_abcd1234",
+        "sha256": "abcd...",
+        "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
+        "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
+        "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png",
+        "access": "manifest_static"
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+Haypile third-party notices
+
+Haypile is released under the MIT License. Runtime dependencies listed in
+requirements.txt keep their own licenses.
+
+UI leaf assets are adapted from a Uiverse.io component by Shell0110. Uiverse UI
+elements are published under the MIT License; attribution is appreciated.
