@@ -1153,6 +1153,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn(("运行中 · 可用 2 · 待确认 1", True), toasts)
 
             initial_ai = ball.ai_enabled
+            ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
             ball._ai_status_text = lambda: "AI 分拣已开启" if ball.ai_enabled else "AI 分拣已关闭"
             ball._handle_quick_menu_action("ai")
             self.assertEqual(ball.ai_enabled, not initial_ai)
@@ -1166,6 +1167,53 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
             app_gui_module.build_material_panel_summary = previous_builder
+            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_ai_action_opens_setup_when_model_missing(self) -> None:
+        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
+        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.DoraemonFloatingBall()
+        toasts: list[tuple[str, bool]] = []
+        ball.show_toast = lambda message, success=True: toasts.append((message, success))
+        ball._ai_model_state = lambda: ("missing", "模型未安装 qwen2.5vl:3b")
+        try:
+            ball.ai_enabled = False
+
+            ball._handle_quick_menu_action("ai")
+
+            self.assertFalse(ball.ai_enabled)
+            self.assertTrue(ball.ai_setup_panel.isVisible())
+            self.assertEqual(ball.ai_setup_panel.command.text(), f"ollama pull {ball.settings.VISION_CLASSIFIER_MODEL}")
+            self.assertIn("模型未安装", ball.ai_setup_panel.body.text())
+            self.assertIn(("先安装本地视觉模型", False), toasts)
+        finally:
+            ball.ai_setup_panel.close()
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_ai_setup_recheck_enables_when_model_ready(self) -> None:
+        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
+        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.DoraemonFloatingBall()
+        toasts: list[tuple[str, bool]] = []
+        ball.show_toast = lambda message, success=True: toasts.append((message, success))
+        ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
+        ball._ai_status_text = lambda: "AI 分拣已开启"
+        try:
+            ball.ai_enabled = False
+            ball.ai_setup_panel.show()
+
+            ball._recheck_ai_setup()
+
+            self.assertTrue(ball.ai_enabled)
+            self.assertFalse(ball.ai_setup_panel.isVisible())
+            self.assertEqual(ball.quick_menu._ai_enabled, True)
+            self.assertIn(("AI 分拣已开启", True), toasts)
+        finally:
+            ball.ai_setup_panel.close()
+            ball.close()
+            self.app.processEvents()
             app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_gui_state_keeps_ai_and_position_together(self) -> None:

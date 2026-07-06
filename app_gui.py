@@ -957,6 +957,106 @@ class UploadProgressWindow(QWidget):
         self._hide_timer.start()
 
 
+class AISetupWindow(QWidget):
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedSize(312, 196)
+        self._copy_callback = None
+        self._recheck_callback = None
+
+        self.container = QWidget(self)
+        self.container.setGeometry(0, 0, 312, 196)
+        self.container.setStyleSheet(
+            "QWidget { background-color: #FFFDF5; "
+            "border: 2px solid #6F7F5A; border-radius: 18px; }"
+        )
+        layout = QVBoxLayout(self.container)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        self.title = QLabel(ui_text("开启本地 AI 分拣", "Enable local AI sorting"), self.container)
+        self.title.setStyleSheet("QLabel { color: #4E5F3D; font-size: 15px; font-weight: bold; background: transparent; border: none; }")
+        layout.addWidget(self.title)
+
+        self.body = QLabel("", self.container)
+        self.body.setWordWrap(True)
+        self.body.setStyleSheet("QLabel { color: #4A463A; font-size: 11px; background: transparent; border: none; }")
+        layout.addWidget(self.body)
+
+        self.command = QLabel("", self.container)
+        self.command.setWordWrap(True)
+        self.command.setStyleSheet(
+            "QLabel { color: #2F3A26; font-size: 11px; padding: 6px 8px; "
+            "background: #F6F1E4; border: 1px solid #DDD3BB; border-radius: 7px; }"
+        )
+        layout.addWidget(self.command)
+
+        row = QWidget(self.container)
+        row.setStyleSheet("QWidget { background: transparent; border: none; }")
+        buttons = QHBoxLayout(row)
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(6)
+        self.copy_button = QPushButton(ui_text("复制命令", "Copy command"), row)
+        self.recheck_button = QPushButton(ui_text("重新检测", "Recheck"), row)
+        self.close_button = QPushButton(ui_text("关闭", "Close"), row)
+        for button in (self.copy_button, self.recheck_button, self.close_button):
+            button.setFixedHeight(26)
+            button.setStyleSheet(
+                "QPushButton { color: #4E5F3D; background: #F6F1E4; "
+                "border: 1px solid #DDD3BB; border-radius: 7px; font-size: 11px; }"
+                "QPushButton:hover { background: #EFE3C7; }"
+            )
+            buttons.addWidget(button)
+        layout.addWidget(row)
+        self.copy_button.clicked.connect(self._copy)
+        self.recheck_button.clicked.connect(self._recheck)
+        self.close_button.clicked.connect(self.hide)
+        self.hide()
+
+    def show_setup(self, *, model: str, status_text: str, anchor: QRect, available: QRect) -> None:
+        command = f"ollama pull {model}"
+        self.command.setText(command)
+        self.body.setText(
+            ui_text(
+                f"{status_text}\n安装 Ollama 后运行下面命令，再重新检测。",
+                f"{status_text}\nInstall Ollama, run the command below, then recheck.",
+            )
+        )
+        self._move_to_anchor(anchor, available)
+        self.show()
+        self.raise_()
+
+    def set_handlers(self, copy_callback, recheck_callback) -> None:
+        self._copy_callback = copy_callback
+        self._recheck_callback = recheck_callback
+
+    def _move_to_anchor(self, anchor: QRect, available: QRect) -> None:
+        margin = 12
+        x = anchor.center().x() - self.width() // 2
+        y = anchor.top() - self.height() - 12
+        if y < available.top() + margin:
+            y = anchor.bottom() + 12
+        x = max(available.left() + margin, min(x, available.right() - self.width() - margin))
+        y = max(available.top() + margin, min(y, available.bottom() - self.height() - margin))
+        self.move(x, y)
+
+    def _copy(self) -> None:
+        QApplication.clipboard().setText(self.command.text())
+        if self._copy_callback is not None:
+            self._copy_callback()
+
+    def _recheck(self) -> None:
+        if self._recheck_callback is not None:
+            self._recheck_callback()
+
+
 class ConfirmationPreviewWindow(QWidget):
     def __init__(self) -> None:
         super().__init__(None)
@@ -2416,6 +2516,11 @@ class HaypileFloatingBall(QWidget):
 
         self.toast = ToastLabel()
         self.progress_window = UploadProgressWindow()
+        self.ai_setup_panel = AISetupWindow()
+        self.ai_setup_panel.set_handlers(
+            lambda: self.show_toast(ui_text("已复制 Ollama 命令", "Ollama command copied"), success=True),
+            self._recheck_ai_setup,
+        )
         self.material_panel = MaterialPanelWindow()
         self.material_panel.set_toast_handler(self.show_toast)
         self.quick_menu = QuickMenuWindow()
@@ -3158,6 +3263,8 @@ class HaypileFloatingBall(QWidget):
         self.toast.close()
         self.progress_window.hide()
         self.progress_window.close()
+        self.ai_setup_panel.hide()
+        self.ai_setup_panel.close()
         self.quick_menu.hide()
         self.quick_menu.close()
         self.material_panel.hide()
@@ -3265,6 +3372,11 @@ class HaypileFloatingBall(QWidget):
             if not self.ai_enabled and self.settings.HAYPILE_LOW_POWER_MODE:
                 self.show_toast(self._ai_status_text(), success=False)
                 return
+            if not self.ai_enabled:
+                state, status_text = self._ai_model_state()
+                if state != "ready":
+                    self._show_ai_setup_panel(status_text)
+                    return
             self.ai_enabled = not self.ai_enabled
             self._save_ai_enabled()
             self._refresh_ai_menu_status()
@@ -3281,15 +3393,18 @@ class HaypileFloatingBall(QWidget):
         return ui_text("AI 分拣已开启", "AI sorting on") + " · " + self._ai_model_status_text()
 
     def _ai_model_status_text(self) -> str:
+        return self._ai_model_state()[1]
+
+    def _ai_model_state(self) -> tuple[str, str]:
         model = str(self.settings.VISION_CLASSIFIER_MODEL or "").strip() or "unknown"
         base_url = str(self.settings.VISION_CLASSIFIER_BASE_URL or "").rstrip("/")
         if not base_url:
-            return ui_text(f"模型未配置 {model}", f"Model not configured {model}")
+            return "missing", ui_text(f"模型未配置 {model}", f"Model not configured {model}")
         try:
             response = httpx.get(f"{base_url}/api/tags", timeout=0.25)
             payload = response.json()
         except (httpx.HTTPError, ValueError):
-            return ui_text(f"模型离线 {model}", f"Model offline {model}")
+            return "offline", ui_text(f"模型离线 {model}", f"Model offline {model}")
         names = {
             str(value).strip()
             for item in payload.get("models", [])
@@ -3297,7 +3412,30 @@ class HaypileFloatingBall(QWidget):
             for value in (item.get("name"), item.get("model"))
             if value
         }
-        return ui_text(f"模型可用 {model}", f"Model ready {model}") if model in names else ui_text(f"模型未安装 {model}", f"Model missing {model}")
+        if model in names:
+            return "ready", ui_text(f"模型可用 {model}", f"Model ready {model}")
+        return "missing", ui_text(f"模型未安装 {model}", f"Model missing {model}")
+
+    def _show_ai_setup_panel(self, status_text: str) -> None:
+        model = str(self.settings.VISION_CLASSIFIER_MODEL or "").strip() or "qwen2.5vl:3b"
+        self.ai_setup_panel.show_setup(
+            model=model,
+            status_text=status_text,
+            anchor=self._toast_anchor(),
+            available=self._available_geometry(),
+        )
+        self.show_toast(ui_text("先安装本地视觉模型", "Install the local vision model first"), success=False)
+
+    def _recheck_ai_setup(self) -> None:
+        state, status_text = self._ai_model_state()
+        if state == "ready":
+            self.ai_enabled = True
+            self._save_ai_enabled()
+            self._refresh_ai_menu_status()
+            self.ai_setup_panel.hide()
+            self.show_toast(self._ai_status_text(), success=True)
+            return
+        self._show_ai_setup_panel(status_text)
 
     def _status_text(self) -> str:
         summary = build_material_panel_summary()
