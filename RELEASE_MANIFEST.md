@@ -8,9 +8,11 @@ Package only source, tests, and empty runtime directories.
 README.md
 .gitignore
 CHANGELOG.md
+CONTRIBUTING.md
 LICENSE
 NOTICE
 RELEASE_MANIFEST.md
+SECURITY.md
 requirements.txt
 pytest.ini
 app/

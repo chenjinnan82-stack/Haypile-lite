@@ -1,5 +1,9 @@
 # Haypile Lite
 
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![MCP](https://img.shields.io/badge/MCP-ready-6F7F5A)
+
 A local asset haypile for agents.
 
 Haypile is a local asset bundle registry. Images, audio, and theme fragments are
@@ -31,6 +35,8 @@ are not part of this release.
 Python 3.12 or newer is recommended.
 
 ```bash
+git clone https://github.com/chenjinnan82-stack/Haypile-lite.git
+cd Haypile-lite
 python3 -m pip install -r requirements.txt
 ```
 
@@ -161,6 +167,9 @@ migration.
 MIT. See `LICENSE`.
 
 Third-party notices are listed in `NOTICE`.
+
+Contributions are welcome in small, focused changes. See `CONTRIBUTING.md`.
+For vulnerability reports, see `SECURITY.md`.
 
 ## Maintainer Checklist
 
