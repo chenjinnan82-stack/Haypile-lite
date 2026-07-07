@@ -1,4 +1,4 @@
-# Haypile
+# Haypile Lite
 
 A local asset haypile for agents.
 
@@ -10,6 +10,12 @@ Drop files onto the desktop pile; agents read the resulting `ready` assets
 through HTTP or MCP instead of scanning your disk directly.
 
 ![Haypile agent workflow demo](docs/haypile-demo.gif)
+
+## Status
+
+Haypile Lite is a v0.1 local-first release. The desktop experience is currently
+best on macOS. Windows and Linux can run from source, but packaged installers
+are not part of this release.
 
 ## What it does
 
@@ -34,12 +40,6 @@ python3 -m pip install -r requirements.txt
 python3 app_gui.py
 ```
 
-From PimOS/MeowBus:
-
-```powershell
-meowbus-control.ps1 -Action start -Target haypile
-```
-
 The desktop app starts the local FastAPI backend when needed. For a manual
 backend smoke test, run:
 
@@ -53,12 +53,13 @@ HAYPILE_BACKEND_HOST_ALLOW_START=1 python3 backend_host.py
 HAYPILE_BACKEND_HOST_ALLOW_START=1       allow manual backend_host.py startup
 HAYPILE_GUI_ALLOW_BACKEND_START=0        stop the desktop app from auto-starting the backend
 HAYPILE_BASE_URL=http://127.0.0.1:8010   MCP/examples backend URL
-HAYPILE_REAL_PROJECT_ROOT=/path/project  optional project binding for投放/撤回兼容流程
+HAYPILE_REAL_PROJECT_ROOT=/path/project  optional local project compatibility flow
 HAYPILE_IPC_AUTHKEY_FILE=/path/key       optional local IPC auth key file
 HAYPILE_LOW_POWER_MODE=1                 skip vision classification for battery use
 VISION_CLASSIFIER_KEEP_ALIVE=30s         Ollama model keep-alive after classification
-PIMOS_HAYPILE_DIR=/path/to/haypile       optional PimOS/MeowBus service directory override
 ```
+
+Local AI sorting is optional. See `docs/LOCAL_AI.md`.
 
 ## Agent API
 
@@ -161,18 +162,17 @@ MIT. See `LICENSE`.
 
 Third-party notices are listed in `NOTICE`.
 
-## Release Notes
+## Maintainer Checklist
 
-From the repository root:
+Before cutting a release:
 
 ```bash
-python3 sync_haypile_dist.py --sync --zip
-python3 verify_haypile_release.py
+python3 -m unittest tests/test_agent_examples.py tests/test_mcp_server.py
+python3 -m unittest discover -s tests
+git status --short
 ```
 
-Ship `dist/haypile.zip` after both commands pass.
-
-Do not package local state:
+Do not commit local state:
 
 ```text
 .pydeps_user/

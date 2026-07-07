@@ -7,6 +7,7 @@ Package only source, tests, and empty runtime directories.
 ```text
 README.md
 .gitignore
+CHANGELOG.md
 LICENSE
 NOTICE
 RELEASE_MANIFEST.md
@@ -19,6 +20,8 @@ mcp_server.py
 one-click-start-haypile.bat
 docs/AGENT_HTTP_CONTRACT.md
 docs/AGENT_RECIPES.md
+docs/LOCAL_AI.md
+docs/OPEN_SOURCE_RELEASE.md
 examples/
 ui_assets/
 tests/
