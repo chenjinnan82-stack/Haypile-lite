@@ -6,6 +6,7 @@ Package only source, tests, and empty runtime directories.
 
 ```text
 README.md
+README.zh-CN.md
 .gitignore
 CHANGELOG.md
 CONTRIBUTING.md

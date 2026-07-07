@@ -4,13 +4,16 @@
 
 # Haypile Lite
 
-**A local asset haypile for agent workflows.**
+**Feed your agents local assets without letting them rummage through your disk.**
 
-Files -> Haypile -> Ready bundles -> HTTP/MCP -> Agents
+Scattered files -> Haypile -> Ready bundles -> HTTP/MCP -> Agents
+
+[简体中文](README.zh-CN.md)
 
 ![Local first](https://img.shields.io/badge/local--first-yes-2f855a)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-ready-6F7F5A)
+![Agent writes](https://img.shields.io/badge/agent%20writes-off-1f2937)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Desktop](https://img.shields.io/badge/app-desktop-334155)
 
@@ -18,13 +21,13 @@ Files -> Haypile -> Ready bundles -> HTTP/MCP -> Agents
 
 ## 30-Second Demo
 
-Start the desktop pile:
+Start the little desktop pile:
 
 ```bash
 python3 app_gui.py
 ```
 
-Drop images or audio onto the floating pile, then ask Haypile for ready assets:
+Drop images or audio onto it, then ask Haypile what is ready:
 
 ```bash
 python3 examples/use_haypile_http.py
@@ -40,16 +43,17 @@ scan or mutate `storage/assets` directly.
 
 ## Why
 
-Local agents can build better work when they get real project assets, but raw
-folders are messy: files are scattered, names are unreliable, duplicates pile
-up, and agents should not rummage through a user's disk.
+Agents are much better when they can use the user's real images, audio, and
+theme fragments. Raw folders are the problem: assets are scattered, names are
+unreliable, duplicates pile up, and filesystem access is too much power for a
+simple generation task.
 
-Haypile turns dropped images and audio into a small local asset registry. Each
-asset is hashed, deduped, registered, and exposed through a manifest-gated
-local API. Agents get clean ready bundles instead of filesystem access.
+Haypile is a local asset pile with a gate. Drop files in; Haypile hashes,
+dedupes, registers, and serves only manifest-approved assets. Agents get clean
+ready bundles instead of a shovel and a disk path.
 
-The product idea comes from a pika haypile: gathered local material, stored in
-one place, ready to be used later.
+The metaphor is a pika haypile: gathered local material, stored safely, ready
+for later.
 
 ## What It Does Today
 

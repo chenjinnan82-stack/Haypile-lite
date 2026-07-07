@@ -4,8 +4,9 @@ Use this page as copy-paste material for GitHub and launch posts.
 
 ## GitHub About
 
-Local asset haypile for agents. Drop images/audio, expose ready assets through
-HTTP and MCP, and keep agents out of your filesystem.
+Feed agents local assets without letting them rummage through your disk.
+Drop images/audio, expose ready bundles through HTTP and MCP, and keep storage
+manifest-gated.
 
 ## Suggested Topics
 
@@ -19,6 +20,8 @@ asset-management
 ollama
 python
 desktop-app
+local-ai
+provenance
 ```
 
 ## Release Title
@@ -32,7 +35,7 @@ Haypile Lite is a local asset haypile for agent workflows.
 Drop images or audio onto the desktop pile. Haypile hashes, dedupes, registers,
 and serves ready assets through a small local HTTP API and MCP adapter. Agents
 use `resolved_url` and provenance from Haypile instead of scanning your local
-disk.
+disk. Tiny pile, strict boundary.
 
 ### Highlights
 
@@ -81,7 +84,7 @@ Repo: https://github.com/chenjinnan82-stack/Haypile-lite
 
 我把 Haypile Lite 开源了。
 
-它是一个给本地 agent 工作流用的素材草堆：把图片或音频拖进去，Haypile 会做 hash、去重、登记和本地访问边界。其他 agent 通过 HTTP/MCP 读取 ready assets，不需要直接翻你的硬盘目录。
+它是一个给本地 agent 工作流用的素材草堆：给 agent 喂素材，但不让它翻你的硬盘。把图片或音频拖进去，Haypile 会做 hash、去重、登记和本地访问边界。其他 agent 通过 HTTP/MCP 读取 ready assets。
 
 核心点：
 
