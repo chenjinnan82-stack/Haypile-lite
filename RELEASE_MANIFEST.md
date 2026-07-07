@@ -15,6 +15,7 @@ RELEASE_MANIFEST.md
 SECURITY.md
 requirements.txt
 pytest.ini
+assets/logo.png
 app/
 app_gui.py
 backend_host.py

@@ -1,38 +1,70 @@
+<div align="center">
+
+<img src="assets/logo.png" alt="Haypile Lite" width="260">
+
 # Haypile Lite
 
+**A local asset haypile for agent workflows.**
+
+Files -> Haypile -> Ready bundles -> HTTP/MCP -> Agents
+
+![Local first](https://img.shields.io/badge/local--first-yes-2f855a)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
 ![MCP](https://img.shields.io/badge/MCP-ready-6F7F5A)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Desktop](https://img.shields.io/badge/app-desktop-334155)
 
-A local asset haypile for agents.
+</div>
 
-Haypile is a local asset bundle registry. Images, audio, and theme fragments are
-stored under `storage/assets`, registered in a manifest, and exposed to local
-tools through a small FastAPI backend plus the PySide6 desktop drop target.
+## 30-Second Demo
 
-Drop files onto the desktop pile; agents read the resulting `ready` assets
-through HTTP or MCP instead of scanning your disk directly.
+Start the desktop pile:
+
+```bash
+python3 app_gui.py
+```
+
+Drop images or audio onto the floating pile, then ask Haypile for ready assets:
+
+```bash
+python3 examples/use_haypile_http.py
+```
+
+Expected output is an `asset-handoff` JSON payload with stable `id`, `sha256`,
+`source_key`, `url`, `resolved_url`, and provenance fields.
+
+**Boundary:** agents read registered assets through HTTP or MCP. They should not
+scan or mutate `storage/assets` directly.
 
 ![Haypile agent workflow demo](docs/haypile-demo.gif)
 
-## Status
+## Why
 
-Haypile Lite is a v0.1 local-first release. The desktop experience is currently
-best on macOS. Windows and Linux can run from source, but packaged installers
-are not part of this release.
+Local agents can build better work when they get real project assets, but raw
+folders are messy: files are scattered, names are unreliable, duplicates pile
+up, and agents should not rummage through a user's disk.
 
-## What it does
+Haypile turns dropped images and audio into a small local asset registry. Each
+asset is hashed, deduped, registered, and exposed through a manifest-gated
+local API. Agents get clean ready bundles instead of filesystem access.
 
-- Drag images and audio into a small desktop drop target.
-- Hash, dedupe, rename, and register assets locally.
-- Serve only manifest-registered files through `/static`.
-- Expose ready bundles through HTTP and MCP.
-- Optionally use a local Ollama vision model for image sorting.
-- Keep project reapply/rollback compatibility behind local GUI confirmation.
+The product idea comes from a pika haypile: gathered local material, stored in
+one place, ready to be used later.
 
-## Install
+## What It Does Today
 
-Python 3.12 or newer is recommended.
+- Provides a small desktop drop target for images and audio.
+- Hashes, dedupes, renames, and stores assets locally.
+- Builds a manifest and serves only registered files through `/static`.
+- Exposes ready bundles through a read-only HTTP API.
+- Provides a thin MCP adapter over the same HTTP API.
+- Emits agent handoff data with provenance.
+- Optionally uses a local Ollama vision model for image sorting.
+- Keeps low-power mode available when AI sorting is not wanted.
+
+## Quick Start
+
+Install from source:
 
 ```bash
 git clone https://github.com/chenjinnan82-stack/Haypile-lite.git
@@ -40,75 +72,58 @@ cd Haypile-lite
 python3 -m pip install -r requirements.txt
 ```
 
-## Start
+Run Haypile:
 
 ```bash
 python3 app_gui.py
 ```
 
-The desktop app starts the local FastAPI backend when needed. For a manual
-backend smoke test, run:
+Manual backend smoke test:
 
 ```bash
 HAYPILE_BACKEND_HOST_ALLOW_START=1 python3 backend_host.py
 ```
 
-## Configuration
-
-```text
-HAYPILE_BACKEND_HOST_ALLOW_START=1       allow manual backend_host.py startup
-HAYPILE_GUI_ALLOW_BACKEND_START=0        stop the desktop app from auto-starting the backend
-HAYPILE_BASE_URL=http://127.0.0.1:8010   MCP/examples backend URL
-HAYPILE_REAL_PROJECT_ROOT=/path/project  optional local project compatibility flow
-HAYPILE_IPC_AUTHKEY_FILE=/path/key       optional local IPC auth key file
-HAYPILE_LOW_POWER_MODE=1                 skip vision classification for battery use
-VISION_CLASSIFIER_KEEP_ALIVE=30s         Ollama model keep-alive after classification
-```
-
-Local AI sorting is optional. See `docs/LOCAL_AI.md`.
-
-## Agent API
-
-Agents should read registered bundles through HTTP instead of scanning local
-folders. The first supported integration contract is documented in
-`docs/AGENT_HTTP_CONTRACT.md`; practical usage recipes are in
-`docs/AGENT_RECIPES.md`.
-
-```text
-GET /healthz
-GET /readyz
-GET /api/v1/vault
-GET /api/v1/bundles
-GET /api/v1/bundles?status=ready&type=image&role=hero_image
-GET /api/v1/bundles/{bundle_id}
-```
-
-For MCP hosts, run `mcp_server.py` as a stdio adapter over the same HTTP API.
-Runnable agent examples live in `examples/`.
-
-## Smoke Test
-
-From the Haypile directory:
+Run public checks:
 
 ```bash
 python3 -m unittest tests/test_agent_examples.py tests/test_mcp_server.py
 ```
 
-The smoke test uses only the standard library. After installing requirements,
-run the full test suite with:
+Run the full suite:
 
 ```bash
 python3 -m unittest discover -s tests
 ```
 
-MCP config:
+## Agent Access
+
+Default backend:
+
+```text
+http://127.0.0.1:8010
+```
+
+Useful endpoints:
+
+```text
+GET /healthz
+GET /readyz
+GET /api/v1/bundles
+GET /api/v1/bundles?status=ready
+GET /api/v1/bundles?status=ready&type=image&role=hero_image
+GET /api/v1/bundles/{bundle_id}
+GET /api/v1/vault
+```
+
+MCP host config:
 
 ```json
 {
   "mcpServers": {
     "haypile": {
       "command": "python3",
-      "args": ["/absolute/path/to/haypile/mcp_server.py"],
+      "args": ["/absolute/path/to/Haypile-lite/mcp_server.py"],
       "env": {
         "HAYPILE_BASE_URL": "http://127.0.0.1:8010"
       }
@@ -117,78 +132,68 @@ MCP config:
 }
 ```
 
-Handoff shape:
+See [Agent HTTP Contract](docs/AGENT_HTTP_CONTRACT.md) and
+[Agent Recipes](docs/AGENT_RECIPES.md) for the full handoff shape.
 
-```json
-{
-  "source": "haypile",
-  "base_url": "http://127.0.0.1:8010",
-  "assets": [
-    {
-      "id": "generic_img_hero_image_abcd1234",
-      "theme_id": "generic",
-      "type": "image",
-      "role": "hero_image",
-      "status": "ready",
-      "sha256": "abcd...",
-      "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
-      "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
-      "access": "manifest_static",
-      "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png"
-    }
-  ]
-}
+## Local AI
+
+AI sorting is optional. Haypile still works as a local registry without it.
+
+To force no-AI mode:
+
+```bash
+HAYPILE_LOW_POWER_MODE=1 python3 app_gui.py
 ```
 
-Bundle status:
+For local model setup, see [Local AI Setup](docs/LOCAL_AI.md).
 
-- `ready`: registered and classified for use
-- `pending`: registered but still `unknown`
-- `missing`: referenced by a theme contract but absent from the manifest
+## Boundaries
 
-## Local Data Boundary
+Haypile Lite is not a cloud asset manager or a full DAM.
 
-Haypile is local-first. It stores imported assets and runtime indexes under
-`storage/`, serves only manifest-registered assets through `/static`, and does
-not require agents to read local asset paths directly.
+It does **not** currently promise packaged installers, multi-user sync, remote
+hosting, destructive asset mutation through agents, or production-grade asset
+approval workflows.
 
-## Safety Boundary
+The public v0.1 surface is intentionally small: local intake, local registry,
+manifest-gated static access, read-only HTTP, read-only MCP, and explicit
+handoff data for agents.
 
-HTTP and MCP access is read-only for agents. Desktop compatibility actions that
-can reapply or roll back a bound project are local GUI actions and require
-explicit human confirmation; they are not exposed through HTTP or MCP.
+## Project Shape
 
-Public commands, environment variables, docs, and agent contracts use Haypile
-as the product name. Internal compatibility identifiers may remain only for
-migration.
+```text
+Desktop drop target                 app_gui.py
+FastAPI backend                     app/main.py
+Backend launcher                    backend_host.py
+HTTP bundle API                     app/api/v1/bundles.py
+Theme vault API                     app/api/v1/theme.py
+Manifest scanner                    app/services/scanner.py
+Bundle service                      app/services/bundle_service.py
+Theme registry                      app/services/theme_registry.py
+Optional vision sorting             app/services/style_classifier.py
+MCP adapter                         mcp_server.py
+Agent examples                      examples/
+Public docs                         docs/
+Tests                               tests/
+Runtime storage                     storage/
+```
+
+## Roadmap
+
+- Better macOS packaging.
+- More public agent recipes.
+- Clearer desktop onboarding.
+- Cross-platform startup notes.
+- More stable optional AI sorting.
+
+## Contributing
+
+Small, focused changes are welcome. See [Contributing](CONTRIBUTING.md).
+
+For vulnerability reports, see [Security Policy](SECURITY.md).
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [LICENSE](LICENSE).
 
-Third-party notices are listed in `NOTICE`.
-
-Contributions are welcome in small, focused changes. See `CONTRIBUTING.md`.
-For vulnerability reports, see `SECURITY.md`.
-
-## Maintainer Checklist
-
-Before cutting a release:
-
-```bash
-python3 -m unittest tests/test_agent_examples.py tests/test_mcp_server.py
-python3 -m unittest discover -s tests
-git status --short
-```
-
-Do not commit local state:
-
-```text
-.pydeps_user/
-__pycache__/
-.pytest_cache/
-storage/assets/
-storage/index/assets_manifest.json
-storage/ipc_authkey
-*.log
-```
+Third-party notices are listed in [NOTICE](NOTICE).
