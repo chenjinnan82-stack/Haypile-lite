@@ -17,7 +17,7 @@ class IpcConfigTests(unittest.TestCase):
                 first = Settings(_env_file=None).IPC_AUTHKEY
                 second = Settings(_env_file=None, IPC_AUTHKEY="  ").IPC_AUTHKEY
 
-        self.assertNotEqual(first, "doraemon-ipc-v1")
+        self.assertNotEqual(first, "haypile-ipc-v1")
         self.assertEqual(first, second)
         self.assertEqual(len(first), 64)
 

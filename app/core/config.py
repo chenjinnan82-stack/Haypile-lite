@@ -132,7 +132,7 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_ipc_authkey(cls, value: Any) -> str:
         text = str(value or "").strip()
-        if text and text not in {"doraemon-ipc-v1", "haypile-ipc-v1"}:
+        if text and text != "haypile-ipc-v1":
             return text
         admin_key = os.environ.get("ADMIN_API_KEY", "").strip()
         if admin_key:
@@ -149,15 +149,12 @@ def _read_or_create_ipc_authkey() -> str:
     key_path = Path(
         os.environ.get(
             "HAYPILE_IPC_AUTHKEY_FILE",
-            os.environ.get(
-                "DORAEMON_IPC_AUTHKEY_FILE",
-                str(Path(__file__).resolve().parents[2] / "storage" / "ipc_authkey"),
-            ),
+            str(Path(__file__).resolve().parents[2] / "storage" / "ipc_authkey"),
         )
     )
     try:
         existing = key_path.read_text(encoding="utf-8").strip()
-        if existing and existing not in {"doraemon-ipc-v1", "haypile-ipc-v1"}:
+        if existing and existing != "haypile-ipc-v1":
             return existing
     except OSError:
         pass

@@ -40,33 +40,22 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmpdir = Path(tempfile.mkdtemp())
-        self.previous_root = os.environ.get("DORAEMON_REAL_PROJECT_ROOT")
+        self.previous_root = os.environ.get("HAYPILE_REAL_PROJECT_ROOT")
         self.previous_haypile_picker_preview_path = os.environ.get("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH")
-        self.previous_picker_preview_path = os.environ.get("DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH")
-        self.previous_gui_backend_start = os.environ.get("DORAEMON_GUI_ALLOW_BACKEND_START")
         self.previous_haypile_gui_backend_start = os.environ.get("HAYPILE_GUI_ALLOW_BACKEND_START")
         self.previous_haypile_ui_lang = os.environ.get("HAYPILE_UI_LANG")
         os.environ["HAYPILE_UI_LANG"] = "zh"
         os.environ.pop("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH", None)
-        os.environ.pop("DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH", None)
 
     def tearDown(self) -> None:
         if self.previous_root is None:
-            os.environ.pop("DORAEMON_REAL_PROJECT_ROOT", None)
+            os.environ.pop("HAYPILE_REAL_PROJECT_ROOT", None)
         else:
-            os.environ["DORAEMON_REAL_PROJECT_ROOT"] = self.previous_root
+            os.environ["HAYPILE_REAL_PROJECT_ROOT"] = self.previous_root
         if self.previous_haypile_picker_preview_path is None:
             os.environ.pop("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH", None)
         else:
             os.environ["HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH"] = self.previous_haypile_picker_preview_path
-        if self.previous_picker_preview_path is None:
-            os.environ.pop("DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH", None)
-        else:
-            os.environ["DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH"] = self.previous_picker_preview_path
-        if self.previous_gui_backend_start is None:
-            os.environ.pop("DORAEMON_GUI_ALLOW_BACKEND_START", None)
-        else:
-            os.environ["DORAEMON_GUI_ALLOW_BACKEND_START"] = self.previous_gui_backend_start
         if self.previous_haypile_gui_backend_start is None:
             os.environ.pop("HAYPILE_GUI_ALLOW_BACKEND_START", None)
         else:
@@ -79,7 +68,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_confirmation_buttons_reapply_then_rollback_temp_project(self) -> None:
         project_root, _source_root, written_files = self._write_project(state="rolled_back")
-        os.environ["DORAEMON_REAL_PROJECT_ROOT"] = project_root.as_posix()
+        os.environ["HAYPILE_REAL_PROJECT_ROOT"] = project_root.as_posix()
         panel = MaterialPanelWindow()
 
         panel.refresh()
@@ -892,7 +881,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         project_root = self.tmpdir / "signal-pool-demo"
         project_root.mkdir()
         preview_path = self.tmpdir / "picker-preview.json"
-        os.environ["DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
+        os.environ["HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
         self._write_json(
             preview_path,
             self._picker_preview(
@@ -1016,9 +1005,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             menu.close()
 
     def test_floating_windows_are_top_level_not_tool_windows(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         menu = QuickMenuWindow()
         try:
             for widget in (ball, menu):
@@ -1030,7 +1019,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             menu.close()
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_material_panel_accepts_focus_for_search_input(self) -> None:
         panel = MaterialPanelWindow()
@@ -1059,9 +1048,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             panel.close()
 
     def test_floating_ball_quick_menu_copies_http_url(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             ball._toggle_quick_menu()
             self.assertTrue(ball.quick_menu.isVisible())
@@ -1075,12 +1064,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_left_click_closes_visible_material_panel(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             ball.material_panel.show()
             self.assertTrue(ball.material_panel.isVisible())
@@ -1103,12 +1092,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_quick_menu_first_open_aligns_to_ball_center(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 900, 700)
         try:
             ball.move(300, 220)
@@ -1124,12 +1113,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_quick_menu_actions_are_wired(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         app_gui_module.build_material_panel_summary = lambda: MaterialPanelSummary(
             total_count=3,
             recognized_count=2,
@@ -1137,7 +1126,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             service_status="Haypile：等待入库",
             recognition_status="分类：有待确认 · 模型：未安装 qwen3-vl:8b",
         )
-        ball = app_gui_module.DoraemonFloatingBall()
+        ball = app_gui_module.HaypileFloatingBall()
         toasts: list[tuple[str, bool]] = []
         ball.show_toast = lambda message, success=True: toasts.append((message, success))
         try:
@@ -1167,12 +1156,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
             app_gui_module.build_material_panel_summary = previous_builder
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_ai_action_opens_setup_when_model_missing(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         toasts: list[tuple[str, bool]] = []
         ball.show_toast = lambda message, success=True: toasts.append((message, success))
         ball._ai_model_state = lambda: ("missing", "模型未安装 qwen2.5vl:3b")
@@ -1190,12 +1179,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.ai_setup_panel.close()
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_ai_setup_recheck_enables_when_model_ready(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         toasts: list[tuple[str, bool]] = []
         ball.show_toast = lambda message, success=True: toasts.append((message, success))
         ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
@@ -1214,12 +1203,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.ai_setup_panel.close()
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_gui_state_keeps_ai_and_position_together(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         ball._gui_state_path = self.tmpdir / "gui_state.json"
         try:
             app_gui_module.atomic_write_json(ball._gui_state_path, {"x": 101, "y": 102})
@@ -1240,12 +1229,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_toast_anchors_to_grass_pile_when_material_panel_visible(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         anchors = []
         ball.toast.show_message = lambda _message, success, anchor, available: anchors.append(anchor)
         try:
@@ -1260,7 +1249,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_toast_defaults_below_grass_pile(self) -> None:
         toast = app_gui_module.ToastLabel()
@@ -1289,9 +1278,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             toast.close()
 
     def test_floating_ball_toast_anchor_uses_visual_circle_when_expanded(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             ball.setGeometry(100, 120, ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
 
@@ -1303,12 +1292,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_repositions_visible_toast(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         anchors = []
         ball.toast.reposition = lambda anchor, available: anchors.append(anchor)
         try:
@@ -1332,12 +1321,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_progress_window_shows_at_target_position(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         positions: list[app_gui_module.QPoint] = []
         ball.progress_window.begin_at = lambda position: positions.append(position)
         ball._progress_window_position = lambda: app_gui_module.QPoint(222, 111)
@@ -1353,12 +1342,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 ball.worker.wait(1000)
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_pending_badge_highlights_status_on_quick_menu_open(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         app_gui_module.build_material_panel_summary = lambda: MaterialPanelSummary(
             total_count=1,
             recognized_count=0,
@@ -1366,7 +1355,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             service_status="Haypile：运行中",
             recognition_status="分类：有待确认",
         )
-        ball = app_gui_module.DoraemonFloatingBall()
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             ball._toggle_quick_menu()
 
@@ -1376,12 +1365,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
             app_gui_module.build_material_panel_summary = previous_builder
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_quick_menu_stays_anchored_when_ball_is_at_screen_edge(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
         positions = [
             (0, 0),
@@ -1416,12 +1405,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_resize_target_stays_on_screen_edge(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
         try:
             for x, y in ((0, 0), (288, 0), (0, 288), (288, 288)):
@@ -1439,12 +1428,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drop_lets_leaf_frame_close_before_collapsing(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         received: list[list[Path]] = []
         file_path = self.tmpdir / "hero.png"
         file_path.write_bytes(b"not-real-image")
@@ -1474,7 +1463,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_extracts_remote_media_urls_from_browser_drop(self) -> None:
         mime_data = QMimeData()
@@ -1486,7 +1475,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
         mime_data.setText("https://cdn.example.com/voice.wav")
 
-        urls = app_gui_module.DoraemonFloatingBall._extract_remote_media_urls(mime_data)
+        urls = app_gui_module.HaypileFloatingBall._extract_remote_media_urls(mime_data)
 
         self.assertEqual(
             urls,
@@ -1499,9 +1488,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
 
     def test_floating_ball_drop_remote_url_starts_download_worker(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         received: list[tuple[list[str], list[Path]]] = []
         ball._start_remote_download_worker = lambda urls, local_files=None: received.append((urls, local_files or []))
         try:
@@ -1521,7 +1510,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_remote_download_worker_accepts_media_content_type(self) -> None:
         previous_stream = app_gui_module.httpx.stream
@@ -1735,9 +1724,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         self.assertEqual(provenance["ai_suggestions"]["quality"], "high")
 
     def test_floating_ball_drag_enter_uses_short_prepare_state_before_leaf_frame(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         file_path = self.tmpdir / "hero.png"
         file_path.write_bytes(b"not-real-image")
         mime_data = QMimeData()
@@ -1765,12 +1754,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_success_ingest_triggers_single_bounce_feedback(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             rect = app_gui_module.QRectF(ball._get_collapsed_circle_rect())
             ball._on_ingest_finished("收纳完成", True)
@@ -1809,12 +1798,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_visual_timer_stops_when_idle(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             self.assertFalse(ball._visual_timer.isActive())
 
@@ -1836,12 +1825,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_release_has_set_down_feedback(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         previous_monotonic = app_gui_module.time.monotonic
         try:
             app_gui_module.time.monotonic = lambda: 1000.0
@@ -1881,12 +1870,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             app_gui_module.time.monotonic = previous_monotonic
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_bend_follows_pointer_direction(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             ball._drag_velocity = QPointF(760, 0)
             _vx, _vy, drag, rotation, shear_x, _scale_x, _scale_y = ball._drag_bend_values()
@@ -1906,12 +1895,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_duplicate_ingest_uses_nudge_not_bounce(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             ball._on_ingest_finished("收纳完成：新增 0，去重 1", True)
 
@@ -1933,12 +1922,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_failed_ingest_uses_reject_feedback(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             ball._on_ingest_finished("文件被拦截", False)
 
@@ -1962,12 +1951,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_worker_running_uses_subtle_breath_rect(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             rect = app_gui_module.QRectF(ball._get_collapsed_circle_rect())
             breathed = ball._busy_breath_icon_rect(rect, 1.0)
@@ -1978,12 +1967,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_pending_badge_renders_when_assets_need_review(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         app_gui_module.build_material_panel_summary = lambda: MaterialPanelSummary(
             total_count=1,
             recognized_count=0,
@@ -1991,7 +1980,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             service_status="Haypile：运行中",
             recognition_status="分类：有待确认",
         )
-        ball = app_gui_module.DoraemonFloatingBall()
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             self.assertTrue(ball._has_pending_assets)
             pixmap = QPixmap(ball.size())
@@ -2007,12 +1996,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
             app_gui_module.build_material_panel_summary = previous_builder
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_and_shake_stay_on_screen_edge(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
         try:
             ball.setGeometry(10, 10, ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE)
@@ -2043,12 +2032,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drop_leaf_state_is_drag_only(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         try:
             ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
             ball.is_expanded = True
@@ -2084,12 +2073,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_saves_and_restores_position(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
         ball._gui_state_path = self.tmpdir / "gui_state.json"
         try:
@@ -2106,16 +2095,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_starts_backend_by_default(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         previous_popen = app_gui_module.subprocess.Popen
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         os.environ.pop("HAYPILE_GUI_ALLOW_BACKEND_START", None)
-        os.environ.pop("DORAEMON_GUI_ALLOW_BACKEND_START", None)
         os.environ.pop("HAYPILE_BACKEND_HOST_ALLOW_START", None)
-        os.environ.pop("DORAEMON_BACKEND_HOST_ALLOW_START", None)
         calls: list[dict[str, object]] = []
 
         class FakeProcess:
@@ -2128,9 +2115,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             calls.append({"command": command, **kwargs})
             return FakeProcess()
 
-        ball = app_gui_module.DoraemonFloatingBall()
+        ball = app_gui_module.HaypileFloatingBall()
         try:
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
             app_gui_module.subprocess.Popen = fake_popen
             ball._probe_backend_via_ipc = lambda: False
             ball._is_port_open = lambda _host, _port: False
@@ -2142,26 +2129,25 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(calls[0]["command"][-1], "backend_host.py")
             env = calls[0]["env"]
             self.assertEqual(env["HAYPILE_BACKEND_HOST_ALLOW_START"], "1")
-            self.assertNotIn("DORAEMON_BACKEND_HOST_ALLOW_START", env)
         finally:
             ball.api_owned_by_gui = False
             ball.api_process = None
             ball.close()
             self.app.processEvents()
             app_gui_module.subprocess.Popen = previous_popen
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_can_disable_gui_backend_start(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         previous_popen = app_gui_module.subprocess.Popen
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         os.environ["HAYPILE_GUI_ALLOW_BACKEND_START"] = "0"
         calls: list[object] = []
         toasts: list[str] = []
 
-        ball = app_gui_module.DoraemonFloatingBall()
+        ball = app_gui_module.HaypileFloatingBall()
         try:
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
             app_gui_module.subprocess.Popen = lambda *args, **kwargs: calls.append((args, kwargs))
             ball._probe_backend_via_ipc = lambda: False
             ball._is_port_open = lambda _host, _port: False
@@ -2176,12 +2162,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
             app_gui_module.subprocess.Popen = previous_popen
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_ingest_finish_refreshes_visible_panel_and_triggers_feedback(self) -> None:
-        previous_start = app_gui_module.DoraemonFloatingBall.start_api_server
-        app_gui_module.DoraemonFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.DoraemonFloatingBall()
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
         refreshes: list[bool] = []
         previous_refresh = ball.material_panel.refresh
         ball.material_panel.refresh = lambda: refreshes.append(True)
@@ -2197,11 +2183,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.material_panel.refresh = previous_refresh
             ball.close()
             self.app.processEvents()
-            app_gui_module.DoraemonFloatingBall.start_api_server = previous_start
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def _write_project(self, *, state: str) -> tuple[Path, Path, list[str]]:
         project_root = self.tmpdir / "signal-pool-demo"
-        source_root = self.tmpdir / "signal-pool-demo-doraemon-rehearsal"
+        source_root = self.tmpdir / "signal-pool-demo-haypile-rehearsal"
         project_root.mkdir()
         source_root.mkdir()
         (project_root / "index.html").write_text("<!doctype html>", encoding="utf-8")
@@ -2223,16 +2209,16 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             for path_ref in written_files
         ]
         self._write_json(
-            project_root / ".doraemon" / "rollback" / "doraemon-real-project-minimal-apply.json",
+            project_root / ".haypile" / "rollback" / "haypile-real-project-minimal-apply.json",
             {
-                "manifest_type": "doraemon_real_project_minimal_apply_rollback_manifest",
-                "version": "doraemon_real_project_minimal_apply_rollback_manifest.v1",
+                "manifest_type": "haypile_real_project_minimal_apply_rollback_manifest",
+                "version": "haypile_real_project_minimal_apply_rollback_manifest.v1",
                 "source_rehearsal_root": source_root.as_posix(),
                 "entries": entries,
             },
         )
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-apply-report.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-apply-report.json",
             {
                 "status": "applied",
                 "passed": True,
@@ -2241,12 +2227,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             },
         )
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-post-apply-verification.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-post-apply-verification.json",
             {"status": "verified", "passed": True, "remote_urls": [], "unregistered_assets": []},
         )
         if state == "rolled_back":
             self._write_json(
-                project_root / "doraemon-rehearsal-reports" / "real-project-minimal-rollback-report.json",
+                project_root / "haypile-rehearsal-reports" / "real-project-minimal-rollback-report.json",
                 {
                     "status": "restored",
                     "passed": True,
@@ -2268,10 +2254,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
     ) -> dict:
         operation_count = 5
         return {
-            "preview_type": "doraemon_real_project_picker_ui_preview",
-            "version": "doraemon_real_project_picker_ui_preview.v1",
+            "preview_type": "haypile_real_project_picker_ui_preview",
+            "version": "haypile_real_project_picker_ui_preview.v1",
             "picker_intent": {
-                "intent_type": "doraemon_real_project_picker_intent",
+                "intent_type": "haypile_real_project_picker_intent",
                 "selected_project_name": project_root.name,
                 "selected_project_root": project_root.as_posix(),
                 "project_state": project_state,
@@ -2282,8 +2268,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 "auto_rollback_allowed": False,
             },
             "panel_summary": {
-                "summary_type": "doraemon_real_project_picker_panel_summary",
-                "version": "doraemon_real_project_picker_panel_summary.v1",
+                "summary_type": "haypile_real_project_picker_panel_summary",
+                "version": "haypile_real_project_picker_panel_summary.v1",
                 "project_name": project_root.name,
                 "selected_project_root": project_root.as_posix(),
                 "picker_status": picker_status,
@@ -2331,7 +2317,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
     @staticmethod
     def _file_contents() -> dict[str, bytes]:
         return {
-            "doraemon-hydration.html": b"<!doctype html><title>Doraemon</title>",
+            "haypile-hydration.html": b"<!doctype html><title>Haypile</title>",
             "assets/images/water-drop.svg": b"<svg></svg>",
             "assets/css/hydration-theme.css": b":root { --hydration-primary: #38bdf8; }",
             "public/assets/images/water-drop.svg": b"<svg></svg>",

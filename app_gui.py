@@ -2891,7 +2891,6 @@ class HaypileFloatingBall(QWidget):
 
         allow_gui_backend_start = (
             os.environ.get("HAYPILE_GUI_ALLOW_BACKEND_START", "").strip().lower()
-            or os.environ.get("DORAEMON_GUI_ALLOW_BACKEND_START", "").strip().lower()
         )
         if allow_gui_backend_start in {"0", "false", "no", "off"}:
             self.api_owned_by_gui = False
@@ -4119,9 +4118,6 @@ class HaypileFloatingBall(QWidget):
         except OSError as exc:
             logger.debug("Failed to kill process tree pid=%s error=%s", pid, exc, exc_info=True)
             return
-
-DoraemonFloatingBall = HaypileFloatingBall
-
 
 def main() -> int:
     app = QApplication(sys.argv)

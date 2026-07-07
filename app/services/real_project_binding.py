@@ -28,10 +28,7 @@ def resolve_haypile_real_project_root(
     *,
     binding_path: Path | None = None,
 ) -> HaypileRealProjectBinding | None:
-    env_value = (
-        os.environ.get("HAYPILE_REAL_PROJECT_ROOT", "").strip()
-        or os.environ.get("DORAEMON_REAL_PROJECT_ROOT", "").strip()
-    )
+    env_value = os.environ.get("HAYPILE_REAL_PROJECT_ROOT", "").strip()
     if env_value:
         return HaypileRealProjectBinding(
             project_root=Path(env_value).resolve(strict=False),
@@ -74,29 +71,6 @@ def clear_haypile_real_project_binding(*, binding_path: Path | None = None) -> N
         path.unlink()
     except FileNotFoundError:
         return
-
-
-DoraemonRealProjectBindingError = HaypileRealProjectBindingError
-DoraemonRealProjectBinding = HaypileRealProjectBinding
-
-
-def resolve_doraemon_real_project_root(*, binding_path: Path | None = None) -> HaypileRealProjectBinding | None:
-    return resolve_haypile_real_project_root(binding_path=binding_path)
-
-
-def write_doraemon_real_project_binding(
-    *, project_root: str | Path, binding_path: Path | None = None
-) -> dict[str, Any]:
-    payload = write_haypile_real_project_binding(project_root=project_root, binding_path=binding_path)
-    payload["binding_type"] = "doraemon_real_project_binding"
-    payload["version"] = "doraemon_real_project_binding.v1"
-    if binding_path is not None:
-        binding_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return payload
-
-
-def clear_doraemon_real_project_binding(*, binding_path: Path | None = None) -> None:
-    clear_haypile_real_project_binding(binding_path=binding_path)
 
 
 def _read_json(path: Path) -> dict[str, Any]:

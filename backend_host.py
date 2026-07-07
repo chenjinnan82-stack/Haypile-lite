@@ -13,7 +13,7 @@ from app.core.config import get_settings
 from app.core.ipc import cleanup_unix_socket, get_ipc_address, start_ipc_listener
 
 logger = logging.getLogger(__name__)
-ALLOW_START_ENVS = ("HAYPILE_BACKEND_HOST_ALLOW_START", "DORAEMON_BACKEND_HOST_ALLOW_START")
+ALLOW_START_ENVS = ("HAYPILE_BACKEND_HOST_ALLOW_START",)
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 

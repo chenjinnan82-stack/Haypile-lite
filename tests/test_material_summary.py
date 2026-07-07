@@ -26,22 +26,16 @@ class MaterialSummaryTests(unittest.TestCase):
         self.assets_dir.mkdir(parents=True)
         self.themes_dir.mkdir(parents=True)
         self.index_dir.mkdir(parents=True)
-        self.previous_real_project_env = os.environ.get("DORAEMON_REAL_PROJECT_ROOT")
+        self.previous_real_project_env = os.environ.get("HAYPILE_REAL_PROJECT_ROOT")
         self.previous_haypile_picker_preview_env = os.environ.get("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH")
-        self.previous_picker_preview_env = os.environ.get("DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH")
-        os.environ.pop("DORAEMON_REAL_PROJECT_ROOT", None)
+        os.environ.pop("HAYPILE_REAL_PROJECT_ROOT", None)
         os.environ.pop("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH", None)
-        os.environ.pop("DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH", None)
 
     def tearDown(self) -> None:
         if self.previous_real_project_env is None:
-            os.environ.pop("DORAEMON_REAL_PROJECT_ROOT", None)
+            os.environ.pop("HAYPILE_REAL_PROJECT_ROOT", None)
         else:
-            os.environ["DORAEMON_REAL_PROJECT_ROOT"] = self.previous_real_project_env
-        if self.previous_picker_preview_env is None:
-            os.environ.pop("DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH", None)
-        else:
-            os.environ["DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH"] = self.previous_picker_preview_env
+            os.environ["HAYPILE_REAL_PROJECT_ROOT"] = self.previous_real_project_env
         if self.previous_haypile_picker_preview_env is None:
             os.environ.pop("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH", None)
         else:
@@ -250,10 +244,10 @@ class MaterialSummaryTests(unittest.TestCase):
 
     def test_summary_shows_ready_rehearsal_as_one_plain_status(self) -> None:
         rehearsal_root = self.tmpdir / "rehearsal"
-        report_root = rehearsal_root / "doraemon-rehearsal-reports"
+        report_root = rehearsal_root / "haypile-rehearsal-reports"
         report_root.mkdir(parents=True)
-        (rehearsal_root / "doraemon-hydration.html").write_text(
-            "<!doctype html><title>Doraemon</title>",
+        (rehearsal_root / "haypile-hydration.html").write_text(
+            "<!doctype html><title>Haypile</title>",
             encoding="utf-8",
         )
         self._write_json(
@@ -286,7 +280,7 @@ class MaterialSummaryTests(unittest.TestCase):
 
     def test_summary_shows_blocked_rehearsal_as_one_plain_status(self) -> None:
         rehearsal_root = self.tmpdir / "rehearsal"
-        report_root = rehearsal_root / "doraemon-rehearsal-reports"
+        report_root = rehearsal_root / "haypile-rehearsal-reports"
         report_root.mkdir(parents=True)
         self._write_json(
             report_root / "static-compatible-verification-report.json",
@@ -317,11 +311,11 @@ class MaterialSummaryTests(unittest.TestCase):
         self._write_real_project_base(project_root)
         written_files = self._real_project_written_files()
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-apply-report.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-apply-report.json",
             {"status": "applied", "passed": True, "written_files": written_files},
         )
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-post-apply-verification.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-post-apply-verification.json",
             {
                 "status": "verified",
                 "passed": True,
@@ -332,7 +326,7 @@ class MaterialSummaryTests(unittest.TestCase):
         for path in written_files:
             target = project_root / path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("doraemon", encoding="utf-8")
+            target.write_text("haypile", encoding="utf-8")
 
         summary = build_material_panel_summary(
             assets_dir=self.assets_dir,
@@ -363,20 +357,20 @@ class MaterialSummaryTests(unittest.TestCase):
 
     def test_summary_shows_real_project_rollback_status_before_rehearsal_status(self) -> None:
         rehearsal_root = self.tmpdir / "rehearsal"
-        report_root = rehearsal_root / "doraemon-rehearsal-reports"
+        report_root = rehearsal_root / "haypile-rehearsal-reports"
         report_root.mkdir(parents=True)
-        (rehearsal_root / "doraemon-hydration.html").write_text("<!doctype html>", encoding="utf-8")
+        (rehearsal_root / "haypile-hydration.html").write_text("<!doctype html>", encoding="utf-8")
         self._write_json(report_root / "static-compatible-verification-report.json", {"status": "verified"})
         self._write_json(report_root / "static-compatible-dom-resource-check.json", {"status": "passed"})
         project_root = self.tmpdir / "real-project"
         self._write_real_project_base(project_root)
         written_files = self._real_project_written_files()
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-apply-report.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-apply-report.json",
             {"status": "applied", "passed": True, "written_files": written_files},
         )
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-rollback-report.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-rollback-report.json",
             {
                 "status": "restored",
                 "passed": True,
@@ -416,11 +410,11 @@ class MaterialSummaryTests(unittest.TestCase):
         self._write_real_project_base(project_root)
         written_files = self._real_project_written_files()
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-apply-report.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-apply-report.json",
             {"status": "applied", "passed": True, "written_files": written_files},
         )
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-rollback-report.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-rollback-report.json",
             {
                 "status": "restored",
                 "passed": True,
@@ -432,8 +426,8 @@ class MaterialSummaryTests(unittest.TestCase):
         self._write_json(
             binding_path,
             {
-                "binding_type": "doraemon_real_project_binding",
-                "version": "doraemon_real_project_binding.v1",
+                "binding_type": "haypile_real_project_binding",
+                "version": "haypile_real_project_binding.v1",
                 "project_root": project_root.as_posix(),
             },
         )
@@ -947,7 +941,7 @@ class MaterialSummaryTests(unittest.TestCase):
 
     def test_project_picker_preview_env_path_present_is_displayed(self) -> None:
         preview_path = self.tmpdir / "picker-preview.json"
-        os.environ["DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
+        os.environ["HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
         self._write_json(
             preview_path,
             self._picker_preview(
@@ -1005,7 +999,7 @@ class MaterialSummaryTests(unittest.TestCase):
 
     def test_project_picker_preview_env_path_missing_shows_handoff_state(self) -> None:
         preview_path = self.tmpdir / "missing-picker-preview.json"
-        os.environ["DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
+        os.environ["HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
 
         summary = build_material_panel_summary(
             assets_dir=self.assets_dir,
@@ -1030,7 +1024,7 @@ class MaterialSummaryTests(unittest.TestCase):
     def test_project_picker_preview_env_path_invalid_shows_handoff_state(self) -> None:
         preview_path = self.tmpdir / "invalid-picker-preview.json"
         preview_path.write_text("not json", encoding="utf-8")
-        os.environ["DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
+        os.environ["HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
 
         summary = build_material_panel_summary(
             assets_dir=self.assets_dir,
@@ -1052,7 +1046,7 @@ class MaterialSummaryTests(unittest.TestCase):
 
     def test_project_picker_preview_env_path_applied_shows_withdrawal_readback(self) -> None:
         preview_path = self.tmpdir / "picker-preview.json"
-        os.environ["DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
+        os.environ["HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
         self._write_json(
             preview_path,
             self._picker_preview(
@@ -1088,7 +1082,7 @@ class MaterialSummaryTests(unittest.TestCase):
             for path in (project_root / "index.html", project_root / "styles.css", project_root / "app.js")
         }
         preview_path = self.tmpdir / "picker-preview.json"
-        os.environ["DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
+        os.environ["HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH"] = preview_path.as_posix()
         self._write_json(
             preview_path,
             self._picker_preview(
@@ -1134,7 +1128,7 @@ class MaterialSummaryTests(unittest.TestCase):
     @staticmethod
     def _real_project_written_files() -> list[str]:
         return [
-            "doraemon-hydration.html",
+            "haypile-hydration.html",
             "assets/images/water-drop.svg",
             "assets/css/hydration-theme.css",
             "public/assets/images/water-drop.svg",
@@ -1190,7 +1184,7 @@ class MaterialSummaryTests(unittest.TestCase):
         confirmation_intent = {}
         if include_confirmation:
             confirmation_intent = {
-                "intent_type": "doraemon_real_project_confirmation_intent",
+                "intent_type": "haypile_real_project_confirmation_intent",
                 "intent_status": "confirmation_ready",
                 "ui_prompt": {
                     "display_mode": "compact_confirmation",
@@ -1215,8 +1209,8 @@ class MaterialSummaryTests(unittest.TestCase):
         execution_readiness = {}
         if include_execution_readiness:
             execution_readiness = {
-                "readiness_type": "doraemon_real_project_picker_execution_readiness",
-                "version": "doraemon_real_project_picker_execution_readiness.v1",
+                "readiness_type": "haypile_real_project_picker_execution_readiness",
+                "version": "haypile_real_project_picker_execution_readiness.v1",
                 "readiness_status": readiness_status,
                 "requested_action": "rollback" if primary_action == "withdrawal" else primary_action,
                 "selected_project_root": project_root.as_posix(),
@@ -1246,10 +1240,10 @@ class MaterialSummaryTests(unittest.TestCase):
                 "next_step": next_step,
             }
         return {
-            "preview_type": "doraemon_real_project_picker_ui_preview",
-            "version": "doraemon_real_project_picker_ui_preview.v1",
+            "preview_type": "haypile_real_project_picker_ui_preview",
+            "version": "haypile_real_project_picker_ui_preview.v1",
             "picker_intent": {
-                "intent_type": "doraemon_real_project_picker_intent",
+                "intent_type": "haypile_real_project_picker_intent",
                 "selected_project_name": project_root.name,
                 "selected_project_root": project_root.as_posix(),
                 "project_state": project_state,
@@ -1260,8 +1254,8 @@ class MaterialSummaryTests(unittest.TestCase):
                 "auto_rollback_allowed": False,
             },
             "panel_summary": {
-                "summary_type": "doraemon_real_project_picker_panel_summary",
-                "version": "doraemon_real_project_picker_panel_summary.v1",
+                "summary_type": "haypile_real_project_picker_panel_summary",
+                "version": "haypile_real_project_picker_panel_summary.v1",
                 "project_name": project_root.name,
                 "selected_project_root": project_root.as_posix(),
                 "picker_status": picker_status,
@@ -1307,15 +1301,15 @@ class MaterialSummaryTests(unittest.TestCase):
         gui_error_message: str = "",
     ) -> dict:
         return {
-            "result_type": "doraemon_real_project_picker_real_execution_adapter_result",
-            "version": "doraemon_real_project_picker_real_execution_adapter_result.v1",
+            "result_type": "haypile_real_project_picker_real_execution_adapter_result",
+            "version": "haypile_real_project_picker_real_execution_adapter_result.v1",
             "adapter_status": status,
             "status": status,
             "executed": executed,
             "action": action,
             "requested_action": action,
             "selected_project_root": project_root.as_posix(),
-            "operation_paths": ["doraemon-hydration.html"],
+            "operation_paths": ["haypile-hydration.html"],
             "operation_count": 1,
             "operation_paths_hash": "hash",
             "current_operation_paths_hash": "hash",
@@ -1324,8 +1318,8 @@ class MaterialSummaryTests(unittest.TestCase):
             "gui_error_message": gui_error_message,
             "pre_operation_summary": {},
             "post_operation_summary": {},
-            "written_files": ["doraemon-hydration.html"] if status == "applied" else [],
-            "removed_files": ["doraemon-hydration.html"] if status == "rolled_back" else [],
+            "written_files": ["haypile-hydration.html"] if status == "applied" else [],
+            "removed_files": ["haypile-hydration.html"] if status == "rolled_back" else [],
             "write_allowed": write_allowed,
             "real_project_write_allowed": write_allowed,
             "accepted_for_real_project_execution": False,

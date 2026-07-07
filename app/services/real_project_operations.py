@@ -10,8 +10,8 @@ from typing import Any
 APPLY_REPORT_NAME = "real-project-minimal-apply-report.json"
 VERIFICATION_REPORT_NAME = "real-project-minimal-post-apply-verification.json"
 ROLLBACK_REPORT_NAME = "real-project-minimal-rollback-report.json"
-ROLLBACK_MANIFEST_PATH = ".doraemon/rollback/doraemon-real-project-minimal-apply.json"
-REPORT_DIR = "doraemon-rehearsal-reports"
+ROLLBACK_MANIFEST_PATH = ".haypile/rollback/haypile-real-project-minimal-apply.json"
+REPORT_DIR = "haypile-rehearsal-reports"
 
 
 class HaypileRealProjectOperationError(ValueError):
@@ -61,8 +61,8 @@ def execute_haypile_minimal_real_project_reapply(
         }
     )
     verification_report = {
-        "report_type": "doraemon_real_project_minimal_post_apply_verification",
-        "version": "doraemon_real_project_minimal_post_apply_verification.v1",
+        "report_type": "haypile_real_project_minimal_post_apply_verification",
+        "version": "haypile_real_project_minimal_post_apply_verification.v1",
         "status": "verified",
         "passed": True,
         "verified_at": timestamp,
@@ -84,8 +84,8 @@ def execute_haypile_minimal_real_project_reapply(
     _write_json(context["report_root"] / VERIFICATION_REPORT_NAME, verification_report)
     _write_json(context["report_root"] / ROLLBACK_REPORT_NAME, rollback_report)
     return {
-        "operation_type": "doraemon_minimal_real_project_reapply",
-        "version": "doraemon_minimal_real_project_reapply.v1",
+        "operation_type": "haypile_minimal_real_project_reapply",
+        "version": "haypile_minimal_real_project_reapply.v1",
         "status": "applied",
         "passed": True,
         "project_root": context["project_root"].as_posix(),
@@ -132,8 +132,8 @@ def execute_haypile_minimal_real_project_rollback(
         if _resolve_under(context["project_root"], _safe_relative_path(entry.get("path_ref"))).exists()
     ]
     rollback_report = {
-        "report_type": "doraemon_real_project_minimal_rollback_report",
-        "version": "doraemon_real_project_minimal_rollback_report.v1",
+        "report_type": "haypile_real_project_minimal_rollback_report",
+        "version": "haypile_real_project_minimal_rollback_report.v1",
         "status": "restored",
         "passed": True,
         "restored_at": _timestamp(),
@@ -145,8 +145,8 @@ def execute_haypile_minimal_real_project_rollback(
     }
     _write_json(context["report_root"] / ROLLBACK_REPORT_NAME, rollback_report)
     return {
-        "operation_type": "doraemon_minimal_real_project_rollback",
-        "version": "doraemon_minimal_real_project_rollback.v1",
+        "operation_type": "haypile_minimal_real_project_rollback",
+        "version": "haypile_minimal_real_project_rollback.v1",
         "status": "restored",
         "passed": True,
         "project_root": context["project_root"].as_posix(),
@@ -233,31 +233,6 @@ def _resolve_under(root: Path, relative_path: str | Path) -> Path:
     except ValueError as exc:
         raise HaypileRealProjectOperationError("operation path escaped project root") from exc
     return target
-
-
-DoraemonRealProjectOperationError = HaypileRealProjectOperationError
-
-
-def execute_doraemon_minimal_real_project_reapply(
-    *,
-    project_root: str | Path,
-    human_confirmed: bool,
-) -> dict[str, Any]:
-    return execute_haypile_minimal_real_project_reapply(
-        project_root=project_root,
-        human_confirmed=human_confirmed,
-    )
-
-
-def execute_doraemon_minimal_real_project_rollback(
-    *,
-    project_root: str | Path,
-    human_confirmed: bool,
-) -> dict[str, Any]:
-    return execute_haypile_minimal_real_project_rollback(
-        project_root=project_root,
-        human_confirmed=human_confirmed,
-    )
 
 
 def _read_json(path: Path) -> dict[str, Any]:

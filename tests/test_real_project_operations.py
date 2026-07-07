@@ -34,11 +34,11 @@ class RealProjectOperationsTests(unittest.TestCase):
         self.assertEqual(result["written_files"], written_files)
         for path_ref in written_files:
             self.assertEqual((project_root / path_ref).read_bytes(), (source_root / path_ref).read_bytes())
-        apply_report = self._read_json(project_root / "doraemon-rehearsal-reports" / "real-project-minimal-apply-report.json")
+        apply_report = self._read_json(project_root / "haypile-rehearsal-reports" / "real-project-minimal-apply-report.json")
         verification = self._read_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-post-apply-verification.json"
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-post-apply-verification.json"
         )
-        rollback = self._read_json(project_root / "doraemon-rehearsal-reports" / "real-project-minimal-rollback-report.json")
+        rollback = self._read_json(project_root / "haypile-rehearsal-reports" / "real-project-minimal-rollback-report.json")
         self.assertEqual(apply_report["status"], "applied")
         self.assertEqual(verification["status"], "verified")
         self.assertEqual(verification["remote_urls"], [])
@@ -56,7 +56,7 @@ class RealProjectOperationsTests(unittest.TestCase):
 
     def test_reapply_rejects_source_hash_mismatch(self) -> None:
         project_root, source_root, _written_files = self._write_project(state="rolled_back")
-        (source_root / "doraemon-hydration.html").write_text("changed", encoding="utf-8")
+        (source_root / "haypile-hydration.html").write_text("changed", encoding="utf-8")
 
         with self.assertRaisesRegex(HaypileRealProjectOperationError, "hash mismatch"):
             execute_haypile_minimal_real_project_reapply(
@@ -82,7 +82,7 @@ class RealProjectOperationsTests(unittest.TestCase):
         self.assertEqual(result["remaining_written_files"], [])
         for path_ref in written_files:
             self.assertFalse((project_root / path_ref).exists())
-        rollback = self._read_json(project_root / "doraemon-rehearsal-reports" / "real-project-minimal-rollback-report.json")
+        rollback = self._read_json(project_root / "haypile-rehearsal-reports" / "real-project-minimal-rollback-report.json")
         self.assertEqual(rollback["status"], "restored")
         self.assertEqual(rollback["remaining_written_files"], [])
 
@@ -97,7 +97,7 @@ class RealProjectOperationsTests(unittest.TestCase):
 
     def _write_project(self, *, state: str) -> tuple[Path, Path, list[str]]:
         project_root = self.tmpdir / "signal-pool-demo"
-        source_root = self.tmpdir / "signal-pool-demo-doraemon-rehearsal"
+        source_root = self.tmpdir / "signal-pool-demo-haypile-rehearsal"
         project_root.mkdir()
         source_root.mkdir()
         for path_ref, content in self._file_contents().items():
@@ -115,16 +115,16 @@ class RealProjectOperationsTests(unittest.TestCase):
             for path_ref in written_files
         ]
         self._write_json(
-            project_root / ".doraemon" / "rollback" / "doraemon-real-project-minimal-apply.json",
+            project_root / ".haypile" / "rollback" / "haypile-real-project-minimal-apply.json",
             {
-                "manifest_type": "doraemon_real_project_minimal_apply_rollback_manifest",
-                "version": "doraemon_real_project_minimal_apply_rollback_manifest.v1",
+                "manifest_type": "haypile_real_project_minimal_apply_rollback_manifest",
+                "version": "haypile_real_project_minimal_apply_rollback_manifest.v1",
                 "source_rehearsal_root": source_root.as_posix(),
                 "entries": entries,
             },
         )
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-apply-report.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-apply-report.json",
             {
                 "status": "applied",
                 "passed": True,
@@ -133,12 +133,12 @@ class RealProjectOperationsTests(unittest.TestCase):
             },
         )
         self._write_json(
-            project_root / "doraemon-rehearsal-reports" / "real-project-minimal-post-apply-verification.json",
+            project_root / "haypile-rehearsal-reports" / "real-project-minimal-post-apply-verification.json",
             {"status": "verified", "passed": True, "remote_urls": [], "unregistered_assets": []},
         )
         if state == "rolled_back":
             self._write_json(
-                project_root / "doraemon-rehearsal-reports" / "real-project-minimal-rollback-report.json",
+                project_root / "haypile-rehearsal-reports" / "real-project-minimal-rollback-report.json",
                 {
                     "status": "restored",
                     "passed": True,
@@ -156,7 +156,7 @@ class RealProjectOperationsTests(unittest.TestCase):
     @staticmethod
     def _file_contents() -> dict[str, bytes]:
         return {
-            "doraemon-hydration.html": b"<!doctype html><title>Doraemon</title>",
+            "haypile-hydration.html": b"<!doctype html><title>Haypile</title>",
             "assets/images/water-drop.svg": b"<svg></svg>",
             "assets/css/hydration-theme.css": b":root { --hydration-primary: #38bdf8; }",
             "public/assets/images/water-drop.svg": b"<svg></svg>",

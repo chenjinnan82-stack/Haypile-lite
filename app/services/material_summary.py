@@ -395,7 +395,7 @@ def _rehearsal_status(rehearsal_root: Path | None) -> tuple[str, str]:
     root = rehearsal_root or _env_rehearsal_root()
     if root is None:
         return "", ""
-    report_root = root / "doraemon-rehearsal-reports"
+    report_root = root / "haypile-rehearsal-reports"
     verification = _first_report(
         report_root,
         "static-compatible-verification-report.json",
@@ -408,7 +408,7 @@ def _rehearsal_status(rehearsal_root: Path | None) -> tuple[str, str]:
         "live-dom-resource-check.json",
         "dom-resource-check.json",
     )
-    preview_path = root / "doraemon-hydration.html"
+    preview_path = root / "haypile-hydration.html"
     remote_urls = _list_value(verification.get("remote_urls"))
     unregistered_assets = _list_value(verification.get("unregistered_assets"))
     if (
@@ -438,7 +438,7 @@ def _project_picker_preview(path: Path | None) -> dict[str, Any]:
             preview_file_status="missing",
         )
     payload = _read_json_object(preview_path)
-    if payload.get("preview_type") != "doraemon_real_project_picker_ui_preview":
+    if payload.get("preview_type") != "haypile_real_project_picker_ui_preview":
         return _project_picker_preview_unavailable(
             preview_path=preview_path,
             reason="preview_file_unreadable_or_invalid",
@@ -741,10 +741,7 @@ def _project_picker_preview_unavailable(
 def _env_project_picker_preview_path() -> Path | None:
     import os
 
-    value = (
-        os.environ.get("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH", "").strip()
-        or os.environ.get("DORAEMON_PROJECT_PICKER_UI_PREVIEW_PATH", "").strip()
-    )
+    value = os.environ.get("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH", "").strip()
     return Path(value) if value else None
 
 
@@ -812,7 +809,7 @@ def _display_safe_execution_result(value: dict[str, Any]) -> bool:
         "task_qa_publish_allowed",
         "full_argus_inspect_allowed",
     )
-    result_type_ok = value.get("result_type") == "doraemon_real_project_picker_real_execution_adapter_result"
+    result_type_ok = value.get("result_type") == "haypile_real_project_picker_real_execution_adapter_result"
     status = str(value.get("adapter_status") or value.get("status") or "").strip()
     executed = bool(value.get("executed", False))
     write_allowed = bool(value.get("write_allowed", False) or value.get("real_project_write_allowed", False))
@@ -1011,10 +1008,7 @@ def _utc_now_iso() -> str:
 def _env_rehearsal_root() -> Path | None:
     import os
 
-    value = (
-        os.environ.get("HAYPILE_REHEARSAL_ROOT", "").strip()
-        or os.environ.get("DORAEMON_REHEARSAL_ROOT", "").strip()
-    )
+    value = os.environ.get("HAYPILE_REHEARSAL_ROOT", "").strip()
     return Path(value) if value else None
 
 
@@ -1022,7 +1016,7 @@ def _real_project_status(real_project_root: Path | None) -> tuple[str, str, int]
     root = real_project_root
     if root is None:
         return "", "", 0
-    report_root = root / "doraemon-rehearsal-reports"
+    report_root = root / "haypile-rehearsal-reports"
     apply_report = _read_json_object(report_root / "real-project-minimal-apply-report.json")
     verification = _read_json_object(report_root / "real-project-minimal-post-apply-verification.json")
     rollback = _read_json_object(report_root / "real-project-minimal-rollback-report.json")
