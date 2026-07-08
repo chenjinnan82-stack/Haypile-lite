@@ -321,7 +321,8 @@ class RemoteDownloadWorker(QThread):
             addresses = [ipaddress.ip_address(host)]
         except ValueError:
             try:
-                infos = socket.getaddrinfo(host, parsed.port or 443 if parsed.scheme == "https" else 80, type=socket.SOCK_STREAM)
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
             except socket.gaierror:
                 return False
             addresses = []
