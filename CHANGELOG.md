@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.3
+
+Public smoke demo fix.
+
+- Let `examples/public_smoke_demo.py` run directly from the repository root without setting `PYTHONPATH`.
+
 ## v0.1.2
 
 Public alpha polish.
