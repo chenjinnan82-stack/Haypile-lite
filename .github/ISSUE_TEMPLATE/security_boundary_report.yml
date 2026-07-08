@@ -1,0 +1,32 @@
+name: Security Boundary Report / 安全边界反馈
+description: Report a suspected local-file, static-serving, remote-import, or agent-boundary problem.
+title: "[Boundary]: "
+body:
+  - type: markdown
+    attributes:
+      value: For private vulnerabilities, follow SECURITY.md instead of opening a public issue. / 私密漏洞请按 SECURITY.md 处理，不要公开提交。
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 区域
+      options:
+        - Static asset serving / 静态资源访问
+        - Remote media import / 远程素材导入
+        - HTTP API
+        - MCP
+        - Real-project helper boundary / 真实项目辅助边界
+        - Other / 其他
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Report / 反馈
+      description: Describe the boundary concern without posting secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction / 复现方式
+      render: text

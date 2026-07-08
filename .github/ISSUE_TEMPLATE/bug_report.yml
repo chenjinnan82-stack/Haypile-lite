@@ -1,0 +1,28 @@
+name: Bug Report / 问题反馈
+description: Report a reproducible Haypile bug. / 反馈可复现的问题。
+title: "[Bug]: "
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened? / 发生了什么？
+      description: Tell us the visible behavior and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      placeholder: "1. Start Haypile\n2. Drag ...\n3. See ..."
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System / 系统
+      placeholder: "macOS 15, Python 3.12"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots / 日志或截图
+      render: text
