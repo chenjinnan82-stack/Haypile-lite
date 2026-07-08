@@ -153,6 +153,8 @@ Haypile Lite 不是云端素材管理系统，也不是完整 DAM。
 
 v0.1 的公开边界很小：本地入库、本地登记、manifest-gated 静态访问、只读 HTTP、只读 MCP，以及可追溯的 agent handoff。
 
+实验性的真实项目投放/撤回 helper 默认关闭，不属于公开 agent 接入面。
+
 ## 项目结构
 
 ```text

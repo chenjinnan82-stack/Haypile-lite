@@ -60,16 +60,14 @@ class StorageRuntimeDBTests(unittest.TestCase):
 
 
 class VFSStorageTests(unittest.TestCase):
-    def test_fallback_to_copy_when_hardlink_fails(self) -> None:
+    def test_materialize_uses_copy(self) -> None:
         storage = VFSStorage(copy_max_retries=3, copy_base_delay=0.01)
         tmpdir = Path(tempfile.mkdtemp())
         source = tmpdir / "source.png"
         destination = tmpdir / "out" / "source.png"
 
         try:
-            with patch("app.services.vfs_storage.os.link", side_effect=OSError), patch(
-                "app.services.vfs_storage.shutil.copy2"
-            ) as copy_mock:
+            with patch("app.services.vfs_storage.shutil.copy2") as copy_mock:
                 strategy = storage.materialize(source, destination)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -84,9 +82,7 @@ class VFSStorageTests(unittest.TestCase):
         destination = tmpdir / "out" / "source.png"
 
         try:
-            with patch("app.services.vfs_storage.os.link", side_effect=OSError), patch(
-                "app.services.vfs_storage.os.symlink", side_effect=OSError
-            ), patch(
+            with patch(
                 "app.services.vfs_storage.shutil.copy2",
                 side_effect=[PermissionError("locked"), PermissionError("locked"), None],
             ) as copy_mock, patch("app.services.vfs_storage.time.sleep") as sleep_mock:

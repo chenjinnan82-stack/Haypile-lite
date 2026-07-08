@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     IPC_AUTHKEY: str = ""
     HAYPILE_LOW_POWER_MODE: bool = False
     VISION_CLASSIFIER_ENABLED: bool = True
-    VISION_CLASSIFIER_MODEL: str = "qwen3-vl:8b"
+    VISION_CLASSIFIER_MODEL: str = "qwen2.5vl:3b"
     VISION_CLASSIFIER_BASE_URL: str = "http://127.0.0.1:11434"
     VISION_CLASSIFIER_TIMEOUT_SECONDS: float = 8.0
     VISION_CLASSIFIER_MAX_IMAGE_BYTES: int = 8 * 1024 * 1024

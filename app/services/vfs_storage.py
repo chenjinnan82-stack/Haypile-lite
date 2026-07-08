@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import random
 import shutil
 import time
@@ -8,10 +7,7 @@ from pathlib import Path
 
 
 class VFSStorage:
-    """
-    Tiered ingest storage with graceful degradation:
-    1) hard link -> 2) physical copy.
-    """
+    """Copy assets into Haypile-owned storage."""
 
     def __init__(self, copy_max_retries: int = 3, copy_base_delay: float = 1.0) -> None:
         self.copy_max_retries = max(1, copy_max_retries)
@@ -19,13 +15,6 @@ class VFSStorage:
 
     def materialize(self, source: Path, destination: Path) -> str:
         destination.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            os.link(source, destination)
-            return "hardlink"
-        except OSError:
-            pass
-
         self._copy_with_retry(source, destination)
         return "copy"
 

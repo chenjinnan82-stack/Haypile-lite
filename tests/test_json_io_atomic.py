@@ -43,6 +43,23 @@ class AtomicJsonIoTests(unittest.TestCase):
             self.assertEqual(manifest, {})
             self.assertEqual(calls[0][0], root / "index" / "manifest.json")
 
+    def test_scanner_skips_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            assets = root / "assets"
+            outside = root / "outside.svg"
+            outside.write_text('<svg width="10" height="10"></svg>', encoding="utf-8")
+            assets.mkdir()
+            try:
+                (assets / "escape.svg").symlink_to(outside)
+            except OSError:
+                self.skipTest("symlink unavailable")
+
+            scanner = AssetScanner(assets_dir=assets, manifest_path=root / "index" / "manifest.json")
+            manifest = scanner._scan_assets_directory_sync()
+
+            self.assertEqual(manifest, {})
+
     def test_static_files_only_serves_manifest_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -62,6 +79,27 @@ class AtomicJsonIoTests(unittest.TestCase):
             self.assertIsNotNone(allowed_stat)
             self.assertEqual(secret_path, "")
             self.assertIsNone(secret_stat)
+
+    def test_static_files_rejects_symlink_manifest_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            assets = root / "assets"
+            manifest = root / "index" / "manifest.json"
+            outside = root / "outside.png"
+            assets.mkdir()
+            manifest.parent.mkdir()
+            outside.write_bytes(b"secret")
+            try:
+                (assets / "linked.png").symlink_to(outside)
+            except OSError:
+                self.skipTest("symlink unavailable")
+            manifest.write_text(json.dumps({"linked.png": {"url_path": "/static/linked.png"}}), encoding="utf-8")
+            static = ManifestStaticFiles(directory=str(assets), manifest_path=manifest)
+
+            linked_path, linked_stat = static.lookup_path("linked.png")
+
+            self.assertEqual(linked_path, "")
+            self.assertIsNone(linked_stat)
 
     def test_theme_registry_uses_atomic_replace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

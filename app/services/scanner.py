@@ -30,8 +30,13 @@ class AssetScanner:
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
         manifest: dict[str, dict[str, Any]] = {}
+        assets_root = self.assets_dir.resolve(strict=False)
         for path in sorted(self.assets_dir.rglob("*")):
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                path.resolve(strict=False).relative_to(assets_root)
+            except ValueError:
                 continue
 
             suffix: str = path.suffix.lower()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ VERIFICATION_REPORT_NAME = "real-project-minimal-post-apply-verification.json"
 ROLLBACK_REPORT_NAME = "real-project-minimal-rollback-report.json"
 ROLLBACK_MANIFEST_PATH = ".haypile/rollback/haypile-real-project-minimal-apply.json"
 REPORT_DIR = "haypile-rehearsal-reports"
+ENABLE_EXPERIMENTAL_ENV = "HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY"
 
 
 class HaypileRealProjectOperationError(ValueError):
@@ -23,6 +25,7 @@ def execute_haypile_minimal_real_project_reapply(
     project_root: str | Path,
     human_confirmed: bool,
 ) -> dict[str, Any]:
+    _ensure_experimental_enabled()
     if human_confirmed is not True:
         raise HaypileRealProjectOperationError("human confirmation is required")
     context = _load_context(project_root)
@@ -103,6 +106,7 @@ def execute_haypile_minimal_real_project_rollback(
     project_root: str | Path,
     human_confirmed: bool,
 ) -> dict[str, Any]:
+    _ensure_experimental_enabled()
     if human_confirmed is not True:
         raise HaypileRealProjectOperationError("human confirmation is required")
     context = _load_context(project_root)
@@ -233,6 +237,13 @@ def _resolve_under(root: Path, relative_path: str | Path) -> Path:
     except ValueError as exc:
         raise HaypileRealProjectOperationError("operation path escaped project root") from exc
     return target
+
+
+def _ensure_experimental_enabled() -> None:
+    if os.environ.get(ENABLE_EXPERIMENTAL_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
+        raise HaypileRealProjectOperationError(
+            f"experimental project apply is disabled; set {ENABLE_EXPERIMENTAL_ENV}=1"
+        )
 
 
 def _read_json(path: Path) -> dict[str, Any]:

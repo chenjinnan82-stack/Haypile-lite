@@ -31,13 +31,24 @@ class ManifestStaticFiles(StaticFiles):
     def __init__(self, *, directory: str, manifest_path: Path, name: str | None = None) -> None:
         super().__init__(directory=directory)
         self.manifest_path = manifest_path
+        self.assets_root = Path(directory).resolve(strict=False)
         self.name = name
 
     def lookup_path(self, path: str):
         normalized = path.replace("\\", "/").lstrip("/")
         if normalized not in self._manifest_keys():
             return "", None
-        return super().lookup_path(path)
+        full_path, stat_result = super().lookup_path(path)
+        if not full_path:
+            return "", None
+        candidate = Path(full_path)
+        if candidate.is_symlink():
+            return "", None
+        try:
+            candidate.resolve(strict=False).relative_to(self.assets_root)
+        except ValueError:
+            return "", None
+        return full_path, stat_result
 
     def _manifest_keys(self) -> set[str]:
         try:

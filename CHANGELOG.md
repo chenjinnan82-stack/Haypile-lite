@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.1
+
+Hardening release.
+
+- Add GitHub Actions CI.
+- Copy assets into Haypile storage instead of hardlinking.
+- Skip symlink escapes in scanner/static serving.
+- Block loopback/private/link-local remote media imports.
+- Disable experimental real-project apply/rollback helpers by default.
+- Align the default local vision model with the setup docs.
+
 ## v0.1.0
 
 Initial Haypile Lite public release.

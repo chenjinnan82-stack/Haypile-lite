@@ -44,7 +44,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         self.previous_haypile_picker_preview_path = os.environ.get("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH")
         self.previous_haypile_gui_backend_start = os.environ.get("HAYPILE_GUI_ALLOW_BACKEND_START")
         self.previous_haypile_ui_lang = os.environ.get("HAYPILE_UI_LANG")
+        self.previous_experimental_project_apply = os.environ.get("HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY")
         os.environ["HAYPILE_UI_LANG"] = "zh"
+        os.environ["HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY"] = "1"
         os.environ.pop("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH", None)
 
     def tearDown(self) -> None:
@@ -64,6 +66,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             os.environ.pop("HAYPILE_UI_LANG", None)
         else:
             os.environ["HAYPILE_UI_LANG"] = self.previous_haypile_ui_lang
+        if self.previous_experimental_project_apply is None:
+            os.environ.pop("HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY", None)
+        else:
+            os.environ["HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY"] = self.previous_experimental_project_apply
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_confirmation_buttons_reapply_then_rollback_temp_project(self) -> None:
@@ -1577,6 +1583,31 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         try:
             worker.run()
 
+            self.assertFalse(finished[-1][2])
+            self.assertEqual(finished[-1][1], "没有找到可收纳的图片或音频")
+        finally:
+            app_gui_module.httpx.stream = previous_stream
+
+    def test_remote_download_worker_blocks_private_network_url(self) -> None:
+        previous_stream = app_gui_module.httpx.stream
+        called = False
+
+        def fake_stream(*_args, **_kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("private URL should be blocked before HTTP")
+
+        app_gui_module.httpx.stream = fake_stream
+        worker = app_gui_module.RemoteDownloadWorker(
+            ["http://127.0.0.1/private.png"],
+            self.tmpdir / "incoming",
+        )
+        finished: list[tuple[list[Path], str, bool]] = []
+        worker.finished_signal.connect(lambda files, message, success: finished.append((files, message, success)))
+        try:
+            worker.run()
+
+            self.assertFalse(called)
             self.assertFalse(finished[-1][2])
             self.assertEqual(finished[-1][1], "没有找到可收纳的图片或音频")
         finally:

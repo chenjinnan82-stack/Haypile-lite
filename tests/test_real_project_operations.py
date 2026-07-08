@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -17,9 +18,25 @@ from app.services.real_project_operations import (
 class RealProjectOperationsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = Path(tempfile.mkdtemp())
+        self.previous_enable = os.environ.get("HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY")
+        os.environ["HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY"] = "1"
 
     def tearDown(self) -> None:
+        if self.previous_enable is None:
+            os.environ.pop("HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY", None)
+        else:
+            os.environ["HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY"] = self.previous_enable
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_real_project_operations_are_disabled_by_default(self) -> None:
+        os.environ.pop("HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY", None)
+        project_root, _source_root, _written_files = self._write_project(state="rolled_back")
+
+        with self.assertRaisesRegex(HaypileRealProjectOperationError, "experimental project apply is disabled"):
+            execute_haypile_minimal_real_project_reapply(
+                project_root=project_root,
+                human_confirmed=True,
+            )
 
     def test_reapply_copies_hashed_rehearsal_files_and_updates_reports(self) -> None:
         project_root, source_root, written_files = self._write_project(state="rolled_back")

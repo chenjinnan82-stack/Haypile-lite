@@ -163,6 +163,9 @@ The public v0.1 surface is intentionally small: local intake, local registry,
 manifest-gated static access, read-only HTTP, read-only MCP, and explicit
 handoff data for agents.
 
+Experimental real-project apply/rollback helpers are disabled by default and
+are not part of the public agent-access surface.
+
 ## Project Shape
 
 ```text

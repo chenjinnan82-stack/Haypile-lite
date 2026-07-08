@@ -4,6 +4,7 @@ import asyncio
 import ctypes
 import hashlib
 from html.parser import HTMLParser
+import ipaddress
 import json
 import locale
 import logging
@@ -232,7 +233,9 @@ class RemoteDownloadWorker(QThread):
         parsed = urlparse(url)
         if parsed.scheme.lower() not in {"http", "https"}:
             return None, "unsupported"
-        with httpx.stream("GET", url, follow_redirects=True, timeout=self.TIMEOUT_SECONDS) as response:
+        if self._uses_private_network(parsed):
+            return None, "unsupported"
+        with httpx.stream("GET", url, follow_redirects=False, timeout=self.TIMEOUT_SECONDS) as response:
             response.raise_for_status()
             content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
             if content_type not in self.CONTENT_TYPE_EXTENSIONS:
@@ -306,6 +309,36 @@ class RemoteDownloadWorker(QThread):
             seen.add(key)
             result.append(key)
         return result
+
+    @staticmethod
+    def _uses_private_network(parsed) -> bool:
+        host = parsed.hostname
+        if not host:
+            return True
+        if host.lower() == "localhost":
+            return True
+        try:
+            addresses = [ipaddress.ip_address(host)]
+        except ValueError:
+            try:
+                infos = socket.getaddrinfo(host, parsed.port or 443 if parsed.scheme == "https" else 80, type=socket.SOCK_STREAM)
+            except socket.gaierror:
+                return False
+            addresses = []
+            for info in infos:
+                try:
+                    addresses.append(ipaddress.ip_address(info[4][0]))
+                except ValueError:
+                    continue
+        return any(
+            address.is_loopback
+            or address.is_private
+            or address.is_link_local
+            or address.is_unspecified
+            or address.is_reserved
+            or address.is_multicast
+            for address in addresses
+        )
 
 
 class IngestWorker(QThread):
