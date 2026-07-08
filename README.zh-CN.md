@@ -21,20 +21,28 @@
 
 ## 30 秒演示
 
-启动桌面草堆：
+运行无界面 demo：
 
 ```bash
+python3 -m pip install -r requirements-core.txt
+python3 examples/public_smoke_demo.py --out /tmp/haypile-demo
+```
+
+它会创建一个样本素材仓库，并输出包含稳定 `id`、`sha256`、`source_key`、
+`url`、`resolved_url` 和 provenance 的 `asset-handoff` JSON。
+
+然后体验桌面草堆：
+
+```bash
+python3 -m pip install -r requirements-desktop.txt
 python3 app_gui.py
 ```
 
-把图片或音频拖到草堆上，然后读取 ready assets：
+把图片或音频拖到草堆上，再读取运行中的后端：
 
 ```bash
 python3 examples/use_haypile_http.py
 ```
-
-预期输出是一份 `asset-handoff` JSON，包含稳定的 `id`、`sha256`、
-`source_key`、`url`、`resolved_url` 和 provenance。
 
 **边界：** agent 通过 HTTP 或 MCP 读取已登记素材，不应该直接扫描或修改
 `storage/assets`。
@@ -67,7 +75,7 @@ Haypile 是一个带边界的本地素材草堆。你把文件拖进去，它负
 ```bash
 git clone https://github.com/chenjinnan82-stack/Haypile-lite.git
 cd Haypile-lite
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r requirements-desktop.txt
 ```
 
 运行 Haypile：
@@ -86,6 +94,12 @@ HAYPILE_BACKEND_HOST_ALLOW_START=1 python3 backend_host.py
 
 ```bash
 python3 -m unittest tests/test_agent_examples.py tests/test_mcp_server.py
+```
+
+运行无界面公开 demo：
+
+```bash
+python3 examples/public_smoke_demo.py --out /tmp/haypile-demo
 ```
 
 运行完整测试：

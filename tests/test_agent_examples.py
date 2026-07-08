@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import shutil
+import sys
+import tempfile
 import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -147,10 +150,36 @@ class AgentExampleTests(unittest.TestCase):
         self.assertIn("provenance", text)
         self.assertIn("Never inspect Haypile's local storage directory.", text)
 
+    def test_public_smoke_demo_creates_headless_handoff(self) -> None:
+        module = _load_example("public_smoke_demo.py", "public_smoke_demo")
+        tmpdir = Path(tempfile.mkdtemp())
+        old_argv = sys.argv
+        try:
+            sys.argv = ["public_smoke_demo.py", "--out", str(tmpdir)]
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = module.main()
+        finally:
+            sys.argv = old_argv
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+        payload = json.loads(stdout.getvalue())
+        asset = payload["assets"][0]
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["handoff_version"], "haypile.asset-handoff.v1")
+        self.assertEqual(asset["role"], "hero_image")
+        self.assertEqual(asset["status"], "ready")
+        self.assertTrue(asset["url"].startswith("/static/"))
+        self.assertNotIn("storage/assets", json.dumps(payload))
+
 
 def _load_http_example():
-    path = EXAMPLES_DIR / "use_haypile_http.py"
-    spec = importlib.util.spec_from_file_location("use_haypile_http_example", path)
+    return _load_example("use_haypile_http.py", "use_haypile_http_example")
+
+
+def _load_example(filename: str, module_name: str):
+    path = EXAMPLES_DIR / filename
+    spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)

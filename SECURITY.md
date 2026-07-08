@@ -26,3 +26,11 @@ The current public release line is `v0.1.x`.
 
 HTTP and MCP APIs are intended for local use. Do not expose the Haypile backend
 directly to an untrusted network.
+
+Please report privately if:
+
+- an unregistered asset can be served through `/static`;
+- a symlink can escape `storage/assets`;
+- remote import can reach private, loopback, link-local, reserved, or multicast addresses;
+- an agent-facing API can mutate assets;
+- local absolute paths leak into exported handoff data unexpectedly.

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.2
+
+Public alpha polish.
+
+- Add a fully headless public smoke demo.
+- Split install requirements into core, desktop, and dev files.
+- Add minimal Python project metadata.
+- Expand security boundary reporting guidance.
+
 ## v0.1.1
 
 Hardening release.

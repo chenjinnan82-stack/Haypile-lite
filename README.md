@@ -21,20 +21,28 @@ Scattered files -> Haypile -> Ready bundles -> HTTP/MCP -> Agents
 
 ## 30-Second Demo
 
-Start the little desktop pile:
+Run the headless demo:
 
 ```bash
+python3 -m pip install -r requirements-core.txt
+python3 examples/public_smoke_demo.py --out /tmp/haypile-demo
+```
+
+It creates a sample asset registry and prints `asset-handoff` JSON with stable
+`id`, `sha256`, `source_key`, `url`, `resolved_url`, and provenance fields.
+
+Then try the desktop pile:
+
+```bash
+python3 -m pip install -r requirements-desktop.txt
 python3 app_gui.py
 ```
 
-Drop images or audio onto it, then ask Haypile what is ready:
+Drop images or audio onto it, then ask the running backend what is ready:
 
 ```bash
 python3 examples/use_haypile_http.py
 ```
-
-Expected output is an `asset-handoff` JSON payload with stable `id`, `sha256`,
-`source_key`, `url`, `resolved_url`, and provenance fields.
 
 **Boundary:** agents read registered assets through HTTP or MCP. They should not
 scan or mutate `storage/assets` directly.
@@ -73,7 +81,7 @@ Install from source:
 ```bash
 git clone https://github.com/chenjinnan82-stack/Haypile-lite.git
 cd Haypile-lite
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r requirements-desktop.txt
 ```
 
 Run Haypile:
@@ -92,6 +100,12 @@ Run public checks:
 
 ```bash
 python3 -m unittest tests/test_agent_examples.py tests/test_mcp_server.py
+```
+
+Run the headless public demo:
+
+```bash
+python3 examples/public_smoke_demo.py --out /tmp/haypile-demo
 ```
 
 Run the full suite:
