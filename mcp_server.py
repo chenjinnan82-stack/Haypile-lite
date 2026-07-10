@@ -10,6 +10,7 @@ from typing import Any
 
 BASE_URL = os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010").rstrip("/")
 PROTOCOL_VERSION = "2024-11-05"
+SERVER_VERSION = "0.2.0"
 
 
 def get_json(path: str) -> Any:
@@ -176,7 +177,7 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
             result = {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "haypile", "version": "0.1.0"},
+                "serverInfo": {"name": "haypile", "version": SERVER_VERSION},
             }
         elif method == "tools/list":
             result = {"tools": TOOLS}

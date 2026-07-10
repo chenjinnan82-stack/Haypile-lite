@@ -19,6 +19,17 @@ Scattered files -> Haypile -> Ready bundles -> HTTP/MCP -> Agents
 
 </div>
 
+## macOS Test Build
+
+**Apple Silicon only. No Python required.**
+
+[Download Haypile v0.2.0 test build](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip)
+· [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip.sha256)
+
+This limited test build is ad-hoc signed and not notarized. After unzipping,
+right-click `Haypile.app` and choose **Open**. If macOS still blocks it, use
+**System Settings -> Privacy & Security -> Open Anyway**.
+
 ## 30-Second Demo
 
 Run the headless demo:
@@ -114,6 +125,25 @@ Run the full suite:
 python3 -m unittest discover -s tests
 ```
 
+### Building the macOS app
+
+Haypile can now be frozen into a standalone Apple Silicon app that does not
+require Python at runtime:
+
+```bash
+./scripts/build_macos_app.sh
+open dist/Haypile.app
+```
+
+The packaged app keeps its assets under
+`~/Library/Application Support/Haypile/storage` and logs under
+`~/Library/Logs/Haypile`. It does not migrate or modify the source checkout's
+`storage/` directory.
+
+The GitHub test build is ad-hoc signed for limited testing and is not
+notarized. Broad public distribution still requires Developer ID signing and
+Apple notarization. See [macOS Test Build](docs/MACOS_INTERNAL_BUILD.md).
+
 ## Agent Access
 
 Default backend:
@@ -150,6 +180,19 @@ MCP host config:
 }
 ```
 
+For a packaged app, use its bundled executable instead of Python:
+
+```json
+{
+  "mcpServers": {
+    "haypile": {
+      "command": "/absolute/path/to/Haypile.app/Contents/MacOS/Haypile",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
 See [Agent HTTP Contract](docs/AGENT_HTTP_CONTRACT.md) and
 [Agent Recipes](docs/AGENT_RECIPES.md) for the full handoff shape.
 
@@ -169,9 +212,9 @@ For local model setup, see [Local AI Setup](docs/LOCAL_AI.md).
 
 Haypile Lite is not a cloud asset manager or a full DAM.
 
-It does **not** currently promise packaged installers, multi-user sync, remote
-hosting, destructive asset mutation through agents, or production-grade asset
-approval workflows.
+It does **not** currently publish a signed/notarized installer or promise
+multi-user sync, remote hosting, destructive asset mutation through agents, or
+production-grade asset approval workflows.
 
 The public v0.1 surface is intentionally small: local intake, local registry,
 manifest-gated static access, read-only HTTP, read-only MCP, and explicit
@@ -201,7 +244,7 @@ Runtime storage                     storage/
 
 ## Roadmap
 
-- Better macOS packaging.
+- Developer ID signing, notarization, and a public macOS DMG.
 - More public agent recipes.
 - Clearer desktop onboarding.
 - Cross-platform startup notes.

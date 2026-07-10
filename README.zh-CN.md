@@ -19,6 +19,17 @@
 
 </div>
 
+## macOS 测试版
+
+**仅支持 Apple Silicon，无需安装 Python。**
+
+[下载 Haypile v0.2.0 测试版](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip)
+· [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip.sha256)
+
+这是供少量用户测试的 ad-hoc 签名版本，尚未经过 Apple 公证。解压后右键点击
+`Haypile.app`，选择“打开”；如果仍被拦截，请到“系统设置 -> 隐私与安全性”点击
+“仍要打开”。
+
 ## 30 秒演示
 
 运行无界面 demo：
@@ -108,6 +119,22 @@ python3 examples/public_smoke_demo.py --out /tmp/haypile-demo
 python3 -m unittest discover -s tests
 ```
 
+### 构建 macOS 应用
+
+Haypile 现在可以构建为独立的 Apple Silicon 应用，运行时不需要安装 Python：
+
+```bash
+./scripts/build_macos_app.sh
+open dist/Haypile.app
+```
+
+打包应用的数据写入 `~/Library/Application Support/Haypile/storage`，日志写入
+`~/Library/Logs/Haypile`。它不会迁移或修改源码目录中的 `storage/`。
+
+GitHub 测试版只使用 ad-hoc 签名，供少量用户测试，尚未经过 Apple 公证。大规模
+公开分发仍需 Developer ID 签名和 Apple 公证。详见
+[macOS 测试版说明](docs/MACOS_INTERNAL_BUILD.md)。
+
 ## Agent 接入
 
 默认后端地址：
@@ -144,6 +171,19 @@ MCP host 配置：
 }
 ```
 
+打包应用不需要 Python，MCP 配置直接调用包内可执行文件：
+
+```json
+{
+  "mcpServers": {
+    "haypile": {
+      "command": "/absolute/path/to/Haypile.app/Contents/MacOS/Haypile",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
 完整 handoff 结构见 [Agent HTTP Contract](docs/AGENT_HTTP_CONTRACT.md) 和
 [Agent Recipes](docs/AGENT_RECIPES.md)。
 
@@ -163,7 +203,8 @@ HAYPILE_LOW_POWER_MODE=1 python3 app_gui.py
 
 Haypile Lite 不是云端素材管理系统，也不是完整 DAM。
 
-它目前**不承诺**打包安装器、多用户同步、远程托管、agent 破坏性修改素材、生产级素材审批流。
+它目前**不提供**已签名和公证的公开安装器，也不承诺多用户同步、远程托管、
+agent 破坏性修改素材或生产级素材审批流。
 
 v0.1 的公开边界很小：本地入库、本地登记、manifest-gated 静态访问、只读 HTTP、只读 MCP，以及可追溯的 agent handoff。
 
@@ -190,7 +231,7 @@ Agent 示例                       examples/
 
 ## Roadmap
 
-- 更好的 macOS 打包。
+- Developer ID 签名、公证和公开 macOS DMG。
 - 更多公开 agent 配方。
 - 更清楚的桌面新手引导。
 - 跨平台启动说明。

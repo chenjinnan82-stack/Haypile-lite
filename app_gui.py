@@ -19,9 +19,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+
+def _run_early_mode() -> None:
+    if __name__ != "__main__":
+        return
+    args = sys.argv[1:]
+    if "--mcp" in args:
+        from mcp_server import main as mcp_main
+
+        mcp_main()
+        raise SystemExit(0)
+    if "--backend" in args:
+        from app.core.config import configure_packaged_logging, get_settings
+
+        settings = get_settings()
+        configure_packaged_logging("backend", settings.LOG_DIR)
+        os.environ["HAYPILE_BACKEND_HOST_ALLOW_START"] = "1"
+        from backend_host import main as backend_main
+
+        raise SystemExit(backend_main())
+
+
+_run_early_mode()
+
 import filetype
 import httpx
-from app.core.config import get_settings
+from app.core.config import configure_packaged_logging, get_settings, runtime_mode_command
 from app.core.exceptions import ResourceExhaustedError
 from app.core.ipc import send_ipc_request
 from app.services.asset_provenance import read_asset_provenance, write_asset_provenance
@@ -2635,8 +2658,8 @@ class HaypileFloatingBall(QWidget):
             )
             if self._drag_hover:
                 drop_glow = QRadialGradient(panel_rect.center(), panel_size * 0.55)
-                drop_glow.setColorAt(0.0, QColor(255, 252, 232, 24))
-                drop_glow.setColorAt(0.72, QColor(255, 252, 232, 34))
+                drop_glow.setColorAt(0.0, QColor(255, 252, 232, 42))
+                drop_glow.setColorAt(0.72, QColor(255, 252, 232, 64))
                 drop_glow.setColorAt(1.0, QColor(255, 252, 232, 0))
                 painter.setBrush(drop_glow)
                 painter.setPen(Qt.PenStyle.NoPen)
@@ -2931,10 +2954,7 @@ class HaypileFloatingBall(QWidget):
             self.show_toast(ui_text("Haypile 后台未启动，当前配置禁止界面自动启动", "Haypile backend is not running; auto-start is disabled"), success=False)
             return
 
-        command = [
-            sys.executable,
-            "backend_host.py",
-        ]
+        command = runtime_mode_command("backend", source_root=self.project_root)
         env = os.environ.copy()
         env["HAYPILE_BACKEND_HOST_ALLOW_START"] = "1"
         creationflags = 0
@@ -3482,11 +3502,12 @@ class HaypileFloatingBall(QWidget):
         return f"http://{host}:{self.settings.PORT}"
 
     def _mcp_config_text(self) -> str:
+        command = runtime_mode_command("mcp", source_root=self.project_root)
         payload = {
             "mcpServers": {
                 "haypile": {
-                    "command": sys.executable,
-                    "args": [str(self.project_root / "mcp_server.py")],
+                    "command": command[0],
+                    "args": command[1:],
                     "env": {"HAYPILE_BASE_URL": self._base_url()},
                 }
             }
@@ -3628,22 +3649,22 @@ class HaypileFloatingBall(QWidget):
     def _draw_vector_leaf_frame(self, painter: QPainter, panel_rect: QRectF, progress: float) -> None:
         center = panel_rect.center()
         placements = [
-            (0, -171, 0.91, 0.39, -10, 0.34),
-            (1, -132, 0.93, 0.43, 8, 0.36),
-            (0, -91, 0.90, 0.38, -7, 0.32),
-            (1, -49, 0.94, 0.42, 10, 0.35),
-            (0, -8, 0.91, 0.39, -8, 0.32),
-            (1, 34, 0.93, 0.41, 9, 0.34),
-            (0, 76, 0.89, 0.37, -9, 0.32),
-            (1, 118, 0.94, 0.42, 7, 0.35),
-            (0, 158, 0.90, 0.38, -10, 0.32),
-            (2, -150, 0.78, 0.31, 7, 0.46),
-            (2, -102, 0.75, 0.29, -6, 0.44),
-            (2, -57, 0.77, 0.31, 8, 0.48),
-            (2, -15, 0.74, 0.28, -7, 0.44),
-            (2, 31, 0.76, 0.30, 6, 0.46),
-            (2, 78, 0.74, 0.28, -9, 0.44),
-            (2, 126, 0.77, 0.30, 8, 0.48),
+            (0, -171, 0.91, 0.39, -10, 0.44),
+            (1, -132, 0.93, 0.43, 8, 0.46),
+            (0, -91, 0.90, 0.38, -7, 0.42),
+            (1, -49, 0.94, 0.42, 10, 0.45),
+            (0, -8, 0.91, 0.39, -8, 0.42),
+            (1, 34, 0.93, 0.41, 9, 0.44),
+            (0, 76, 0.89, 0.37, -9, 0.42),
+            (1, 118, 0.94, 0.42, 7, 0.45),
+            (0, 158, 0.90, 0.38, -10, 0.42),
+            (2, -150, 0.78, 0.31, 7, 0.54),
+            (2, -102, 0.75, 0.29, -6, 0.52),
+            (2, -57, 0.77, 0.31, 8, 0.56),
+            (2, -15, 0.74, 0.28, -7, 0.52),
+            (2, 31, 0.76, 0.30, 6, 0.54),
+            (2, 78, 0.74, 0.28, -9, 0.52),
+            (2, 126, 0.77, 0.30, 8, 0.56),
             (4, -178, 0.68, 0.34, 6, 0.90),
             (3, -126, 0.67, 0.29, -8, 0.92),
             (4, -73, 0.69, 0.33, 9, 0.92),
@@ -4153,8 +4174,24 @@ class HaypileFloatingBall(QWidget):
             logger.debug("Failed to kill process tree pid=%s error=%s", pid, exc, exc_info=True)
             return
 
-def main() -> int:
-    app = QApplication(sys.argv)
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--backend" in args:
+        settings = get_settings()
+        configure_packaged_logging("backend", settings.LOG_DIR)
+        os.environ["HAYPILE_BACKEND_HOST_ALLOW_START"] = "1"
+        from backend_host import main as backend_main
+
+        return backend_main()
+    if "--mcp" in args:
+        from mcp_server import main as mcp_main
+
+        mcp_main()
+        return 0
+
+    settings = get_settings()
+    configure_packaged_logging("gui", settings.LOG_DIR)
+    app = QApplication([sys.argv[0], *args])
     app.setQuitOnLastWindowClosed(True)
     widget = HaypileFloatingBall()
     app.aboutToQuit.connect(widget.shutdown)

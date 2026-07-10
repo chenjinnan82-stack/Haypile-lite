@@ -21,7 +21,9 @@ class HaypileRealProjectBinding:
 
 
 def default_real_project_binding_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "storage" / BINDING_FILE_NAME
+    from app.core.config import get_settings
+
+    return get_settings().STORAGE_DIR / BINDING_FILE_NAME
 
 
 def resolve_haypile_real_project_root(

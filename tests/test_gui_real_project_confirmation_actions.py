@@ -2157,7 +2157,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.start_api_server()
 
             self.assertTrue(ball.api_owned_by_gui)
-            self.assertEqual(calls[0]["command"][-1], "backend_host.py")
+            self.assertEqual(Path(calls[0]["command"][-1]).name, "backend_host.py")
+            self.assertEqual(Path(calls[0]["cwd"]), ball.project_root)
             env = calls[0]["env"]
             self.assertEqual(env["HAYPILE_BACKEND_HOST_ALLOW_START"], "1")
         finally:

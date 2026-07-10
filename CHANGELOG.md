@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.0-test.1
+
+Apple Silicon test app.
+
+- Run the desktop GUI, FastAPI backend, and stdio MCP server from one frozen executable.
+- Store packaged runtime data under `~/Library/Application Support/Haypile/storage`.
+- Store packaged GUI and backend logs under `~/Library/Logs/Haypile`.
+- Launch packaged backend and MCP modes without a Python installation.
+- Avoid loading the Qt GUI stack in packaged backend and MCP processes.
+- Build a standalone `arm64` `Haypile.app` with the bundled UI assets and macOS icon.
+- Improve leaf-drop visibility on dark desktop backgrounds.
+- Add repeatable ad-hoc signing, package smoke tests, zip creation, and SHA-256 output.
+- Update MCP `serverInfo.version` to `0.2.0`.
+
+Public distribution remains gated on Developer ID signing and Apple notarization.
+
 ## v0.1.3
 
 Public smoke demo fix.

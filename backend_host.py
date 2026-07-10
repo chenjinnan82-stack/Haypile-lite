@@ -123,8 +123,10 @@ def main() -> int:
         )
         return 2
     settings = get_settings()
+    from app.main import app as fastapi_app
+
     config = uvicorn.Config(
-        "app.main:app",
+        fastapi_app,
         host=settings.HOST,
         port=settings.PORT,
         log_level="warning",

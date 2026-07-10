@@ -2,18 +2,104 @@ from __future__ import annotations
 
 from functools import lru_cache
 import getpass
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import secrets
+import sys
 from typing import Any
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+APP_VERSION = "0.2.0"
+SOURCE_BASE_DIR = Path(__file__).resolve().parents[2]
+_MODE_FILES = {"backend": "backend_host.py", "mcp": "mcp_server.py"}
+
+
+def macos_app_bundle(executable: str | Path | None = None) -> Path | None:
+    if sys.platform != "darwin":
+        return None
+    path = Path(executable or sys.executable).resolve(strict=False)
+    if path.parent.name != "MacOS" or path.parent.parent.name != "Contents":
+        return None
+    bundle = path.parent.parent.parent
+    return bundle if bundle.suffix == ".app" else None
+
+
+def is_packaged_app(executable: str | Path | None = None) -> bool:
+    return macos_app_bundle(executable) is not None
+
+
+def default_env_file(executable: str | Path | None = None) -> str | None:
+    return None if is_packaged_app(executable) else ".env"
+
+
+def default_resource_dir(executable: str | Path | None = None) -> Path:
+    bundle = macos_app_bundle(executable)
+    # Nuitka places explicitly included runtime data beside the executable.
+    return bundle / "Contents" / "MacOS" if bundle is not None else SOURCE_BASE_DIR
+
+
+def default_storage_dir(
+    executable: str | Path | None = None,
+    *,
+    home: Path | None = None,
+) -> Path:
+    if macos_app_bundle(executable) is not None:
+        return (home or Path.home()) / "Library" / "Application Support" / "Haypile" / "storage"
+    return SOURCE_BASE_DIR / "storage"
+
+
+def default_log_dir(
+    executable: str | Path | None = None,
+    *,
+    home: Path | None = None,
+) -> Path:
+    if macos_app_bundle(executable) is not None:
+        return (home or Path.home()) / "Library" / "Logs" / "Haypile"
+    return SOURCE_BASE_DIR / "storage" / "logs"
+
+
+def runtime_mode_command(
+    mode: str,
+    *,
+    executable: str | Path | None = None,
+    source_root: Path | None = None,
+) -> list[str]:
+    if mode not in _MODE_FILES:
+        raise ValueError(f"Unsupported Haypile runtime mode: {mode}")
+    executable_path = str(executable or sys.executable)
+    if is_packaged_app(executable_path):
+        return [executable_path, f"--{mode}"]
+    return [executable_path, str((source_root or SOURCE_BASE_DIR) / _MODE_FILES[mode])]
+
+
+def configure_packaged_logging(role: str, log_dir: Path) -> None:
+    if not is_packaged_app():
+        return
+    root = logging.getLogger()
+    marker = f"haypile-{role}"
+    if any(getattr(handler, "name", "") == marker for handler in root.handlers):
+        return
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        log_dir / f"{role}.log",
+        maxBytes=1024 * 1024,
+        backupCount=2,
+        encoding="utf-8",
+    )
+    handler.name = marker
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=default_env_file(),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -36,12 +122,27 @@ class Settings(BaseSettings):
     VISION_CONFIDENCE_THRESHOLD: float = 0.45
     VISION_FALLBACK_THEME: str = "generic"
 
-    BASE_DIR: Path = Path(__file__).resolve().parents[2]
-    STORAGE_DIR: Path = BASE_DIR / "storage"
+    BASE_DIR: Path = default_resource_dir()
+    STORAGE_DIR: Path = default_storage_dir()
     ASSETS_DIR: Path = STORAGE_DIR / "assets"
     THEMES_DIR: Path = STORAGE_DIR / "themes"
     INDEX_DIR: Path = STORAGE_DIR / "index"
     MANIFEST_PATH: Path = INDEX_DIR / "assets_manifest.json"
+    LOG_DIR: Path = default_log_dir()
+
+    @model_validator(mode="after")
+    def derive_storage_paths(self) -> "Settings":
+        fields_set = self.model_fields_set
+        if "STORAGE_DIR" in fields_set:
+            if "ASSETS_DIR" not in fields_set:
+                self.ASSETS_DIR = self.STORAGE_DIR / "assets"
+            if "THEMES_DIR" not in fields_set:
+                self.THEMES_DIR = self.STORAGE_DIR / "themes"
+            if "INDEX_DIR" not in fields_set:
+                self.INDEX_DIR = self.STORAGE_DIR / "index"
+            if "MANIFEST_PATH" not in fields_set:
+                self.MANIFEST_PATH = self.INDEX_DIR / "assets_manifest.json"
+        return self
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
@@ -146,10 +247,11 @@ def get_settings() -> Settings:
 
 
 def _read_or_create_ipc_authkey() -> str:
+    storage_dir = Path(os.environ.get("STORAGE_DIR", str(default_storage_dir())))
     key_path = Path(
         os.environ.get(
             "HAYPILE_IPC_AUTHKEY_FILE",
-            str(Path(__file__).resolve().parents[2] / "storage" / "ipc_authkey"),
+            str(storage_dir / "ipc_authkey"),
         )
     )
     try:

@@ -9,8 +9,25 @@ from unittest.mock import patch
 
 import mcp_server
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 class McpServerTests(unittest.TestCase):
+    def test_app_entry_mcp_mode_does_not_load_qt(self) -> None:
+        request = {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
+        process = subprocess.run(
+            [sys.executable, "-X", "importtime", str(ROOT / "app_gui.py"), "--mcp"],
+            input=json.dumps(request) + "\n",
+            text=True,
+            capture_output=True,
+            check=True,
+            cwd=ROOT,
+        )
+
+        response = json.loads(process.stdout)
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.2.0")
+        self.assertNotIn("PySide6", process.stderr)
+
     def test_lists_haypile_tools(self) -> None:
         response = mcp_server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
 
@@ -110,6 +127,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "haypile")
+        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.2.0")
         names = [tool["name"] for tool in responses[1]["result"]["tools"]]
         self.assertIn("haypile_copy_handoff", names)
 

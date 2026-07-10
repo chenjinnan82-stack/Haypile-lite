@@ -7,6 +7,12 @@ __pycache__/
 .env
 *.log
 .DS_Store
+.build-venv/
+build/
+dist/
+*.build/
+*.dist/
+*.onefile-build/
 
 storage/*
 !storage/.gitkeep
