@@ -19,6 +19,11 @@
 
 </div>
 
+## 唯一公开源头
+
+本仓库及其 Git tag / Release 是 Haypile 唯一的公开源头。大型集成工作区中嵌入的
+Haypile 副本仅用于兼容，不得作为公开发行包，也不得反向覆盖本仓库。
+
 ## macOS 测试版
 
 **仅支持 Apple Silicon，无需安装 Python。**

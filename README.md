@@ -19,6 +19,12 @@ Scattered files -> Haypile -> Ready bundles -> HTTP/MCP -> Agents
 
 </div>
 
+## Source of Truth
+
+This repository and its tagged releases are the only public Haypile source.
+Copies embedded in larger integration workspaces are compatibility snapshots;
+do not publish them or copy them back into this repository.
+
 ## macOS Test Build
 
 **Apple Silicon only. No Python required.**
