@@ -38,11 +38,11 @@ class PackagedRuntimeConfigTests(unittest.TestCase):
         with patch("app.core.config.sys.platform", "darwin"):
             self.assertEqual(
                 macos_app_bundle(self.MAC_EXECUTABLE),
-                Path("/Applications/Haypile.app"),
+                Path(self.MAC_EXECUTABLE).parents[2],
             )
             self.assertEqual(
                 default_resource_dir(self.MAC_EXECUTABLE),
-                Path("/Applications/Haypile.app/Contents/MacOS"),
+                Path(self.MAC_EXECUTABLE).parent,
             )
             self.assertEqual(
                 default_storage_dir(self.MAC_EXECUTABLE, home=Path("/Users/tester")),
@@ -98,7 +98,7 @@ class PackagedRuntimeConfigTests(unittest.TestCase):
                     executable="/usr/bin/python3",
                     source_root=Path("/tmp/haypile"),
                 ),
-                ["/usr/bin/python3", "/tmp/haypile/mcp_server.py"],
+                ["/usr/bin/python3", str(Path("/tmp/haypile") / "mcp_server.py")],
             )
 
     def test_windows_runtime_commands_use_the_packaged_executable(self) -> None:
@@ -113,7 +113,10 @@ class PackagedRuntimeConfigTests(unittest.TestCase):
                     executable="C:/Python312/python.exe",
                     source_root=Path("C:/src/haypile"),
                 ),
-                ["C:/Python312/python.exe", "C:/src/haypile/mcp_server.py"],
+                [
+                    "C:/Python312/python.exe",
+                    str(Path("C:/src/haypile") / "mcp_server.py"),
+                ],
             )
 
     def test_storage_override_rebases_derived_paths(self) -> None:
