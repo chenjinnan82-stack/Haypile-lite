@@ -2,6 +2,14 @@ name: Windows portable build
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional draft release tag to receive the ZIP
+        required: false
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -36,3 +44,13 @@ jobs:
             dist/Haypile-v0.2.0-windows-x64.zip
             dist/Haypile-v0.2.0-windows-x64.zip.sha256
           if-no-files-found: error
+      - name: Upload draft release assets
+        if: inputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.release_tag }}" `
+            dist/Haypile-v0.2.0-windows-x64.zip `
+            dist/Haypile-v0.2.0-windows-x64.zip.sha256 `
+            --clobber
