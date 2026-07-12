@@ -29,7 +29,7 @@ jobs:
       - name: Build portable package
         shell: pwsh
         run: .\scripts\build_windows_app.ps1 -SkipInstall
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Haypile-v0.2.0-windows-x64
           path: |
