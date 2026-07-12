@@ -1,6 +1,9 @@
 name: Windows portable build
 
 on:
+  push:
+    tags:
+      - "v0.2.0-test.*"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -45,12 +48,13 @@ jobs:
             dist/Haypile-v0.2.0-windows-x64.zip.sha256
           if-no-files-found: error
       - name: Upload draft release assets
-        if: inputs.release_tag != ''
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          gh release upload "${{ inputs.release_tag }}" `
+          gh release upload "$env:RELEASE_TAG" `
             dist/Haypile-v0.2.0-windows-x64.zip `
             dist/Haypile-v0.2.0-windows-x64.zip.sha256 `
             --clobber
