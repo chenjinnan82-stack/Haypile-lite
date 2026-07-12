@@ -29,8 +29,17 @@ def macos_app_bundle(executable: str | Path | None = None) -> Path | None:
     return bundle if bundle.suffix == ".app" else None
 
 
+def windows_app_dir(executable: str | Path | None = None) -> Path | None:
+    if not sys.platform.startswith("win"):
+        return None
+    path = Path(executable or sys.executable)
+    if path.name.lower() != "haypile.exe":
+        return None
+    return path.parent
+
+
 def is_packaged_app(executable: str | Path | None = None) -> bool:
-    return macos_app_bundle(executable) is not None
+    return macos_app_bundle(executable) is not None or windows_app_dir(executable) is not None
 
 
 def default_env_file(executable: str | Path | None = None) -> str | None:
@@ -40,7 +49,9 @@ def default_env_file(executable: str | Path | None = None) -> str | None:
 def default_resource_dir(executable: str | Path | None = None) -> Path:
     bundle = macos_app_bundle(executable)
     # Nuitka places explicitly included runtime data beside the executable.
-    return bundle / "Contents" / "MacOS" if bundle is not None else SOURCE_BASE_DIR
+    if bundle is not None:
+        return bundle / "Contents" / "MacOS"
+    return windows_app_dir(executable) or SOURCE_BASE_DIR
 
 
 def default_storage_dir(
@@ -50,6 +61,10 @@ def default_storage_dir(
 ) -> Path:
     if macos_app_bundle(executable) is not None:
         return (home or Path.home()) / "Library" / "Application Support" / "Haypile" / "storage"
+    if windows_app_dir(executable) is not None:
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        root = Path(local_app_data) if local_app_data else (home or Path.home()) / "AppData" / "Local"
+        return root / "Haypile" / "storage"
     return SOURCE_BASE_DIR / "storage"
 
 
@@ -60,6 +75,10 @@ def default_log_dir(
 ) -> Path:
     if macos_app_bundle(executable) is not None:
         return (home or Path.home()) / "Library" / "Logs" / "Haypile"
+    if windows_app_dir(executable) is not None:
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        root = Path(local_app_data) if local_app_data else (home or Path.home()) / "AppData" / "Local"
+        return root / "Haypile" / "logs"
     return SOURCE_BASE_DIR / "storage" / "logs"
 
 
