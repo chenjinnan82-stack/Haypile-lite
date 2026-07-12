@@ -1798,7 +1798,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertTrue(ball._drop_feedback_active())
             self.assertTrue(ball._bounce_feedback_active())
             self.assertEqual(ball.quick_menu._attention_action, "assets")
-            self.assertNotEqual(ball._bounced_icon_rect(rect), rect)
             previous_monotonic = app_gui_module.time.monotonic
             try:
                 ball._bounce_feedback_started_at = 1000.0

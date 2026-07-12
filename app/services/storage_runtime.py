@@ -103,8 +103,8 @@ class StorageRuntimeDB:
                 """,
                 (
                     sha256_hex,
-                    str(src_path),
-                    str(dst_path),
+                    src_path.as_posix(),
+                    dst_path.as_posix(),
                     strategy,
                 ),
             )

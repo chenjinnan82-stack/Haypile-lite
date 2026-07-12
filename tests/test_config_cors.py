@@ -38,11 +38,11 @@ class PackagedRuntimeConfigTests(unittest.TestCase):
         with patch("app.core.config.sys.platform", "darwin"):
             self.assertEqual(
                 macos_app_bundle(self.MAC_EXECUTABLE),
-                Path(self.MAC_EXECUTABLE).parents[2],
+                Path(self.MAC_EXECUTABLE).resolve(strict=False).parents[2],
             )
             self.assertEqual(
                 default_resource_dir(self.MAC_EXECUTABLE),
-                Path(self.MAC_EXECUTABLE).parent,
+                Path(self.MAC_EXECUTABLE).resolve(strict=False).parent,
             )
             self.assertEqual(
                 default_storage_dir(self.MAC_EXECUTABLE, home=Path("/Users/tester")),

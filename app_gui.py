@@ -724,7 +724,7 @@ class IngestWorker(QThread):
         if not provenance and not ai_suggestions:
             return
         try:
-            source_key = str(destination.relative_to(self.assets_dir))
+            source_key = destination.relative_to(self.assets_dir).as_posix()
         except ValueError:
             source_key = destination.name
         provenance.update({"source_key": source_key, "sha256": sha256_hex})
