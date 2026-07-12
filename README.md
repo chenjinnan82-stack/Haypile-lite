@@ -16,6 +16,7 @@ Scattered files -> Haypile -> Ready bundles -> HTTP/MCP -> Agents
 ![Agent writes](https://img.shields.io/badge/agent%20writes-off-1f2937)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Desktop](https://img.shields.io/badge/app-desktop-334155)
+[![CI](https://github.com/chenjinnan82-stack/Haypile-lite/actions/workflows/ci.yml/badge.svg)](https://github.com/chenjinnan82-stack/Haypile-lite/actions/workflows/ci.yml)
 
 </div>
 
@@ -25,16 +26,28 @@ This repository and its tagged releases are the only public Haypile source.
 Copies embedded in larger integration workspaces are compatibility snapshots;
 do not publish them or copy them back into this repository.
 
-## macOS Test Build
+## Desktop Test Builds
 
-**Apple Silicon only. No Python required.**
+No Python required.
 
-[Download Haypile v0.2.0 test build](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip)
-· [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip.sha256)
+| Platform | Download | Status |
+| --- | --- | --- |
+| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed, not notarized |
+| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.2/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.2/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned test build |
+
+### macOS
 
 This limited test build is ad-hoc signed and not notarized. After unzipping,
 right-click `Haypile.app` and choose **Open**. If macOS still blocks it, use
 **System Settings -> Privacy & Security -> Open Anyway**.
+
+### Windows
+
+Unzip the portable build and run `Haypile\Haypile.exe`. This first x64 build is
+unsigned, so Windows may show a Microsoft Defender SmartScreen warning. Verify
+the SHA-256 before running it. Automated Windows tests, packaged MCP/backend
+smoke checks, and artifact validation pass; real-machine desktop testing is
+still in progress.
 
 ## 30-Second Demo
 

@@ -16,6 +16,7 @@
 ![Agent writes](https://img.shields.io/badge/agent%20writes-off-1f2937)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Desktop](https://img.shields.io/badge/app-desktop-334155)
+[![CI](https://github.com/chenjinnan82-stack/Haypile-lite/actions/workflows/ci.yml/badge.svg)](https://github.com/chenjinnan82-stack/Haypile-lite/actions/workflows/ci.yml)
 
 </div>
 
@@ -24,16 +25,27 @@
 本仓库及其 Git tag / Release 是 Haypile 唯一的公开源头。大型集成工作区中嵌入的
 Haypile 副本仅用于兼容，不得作为公开发行包，也不得反向覆盖本仓库。
 
-## macOS 测试版
+## 桌面测试版
 
-**仅支持 Apple Silicon，无需安装 Python。**
+无需安装 Python。
 
-[下载 Haypile v0.2.0 测试版](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip)
-· [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip.sha256)
+| 平台 | 下载 | 状态 |
+| --- | --- | --- |
+| macOS Apple Silicon | [应用 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc 签名，未公证 |
+| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.2/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.2/Haypile-v0.2.0-windows-x64.zip.sha256) | 未签名测试版 |
+
+### macOS
 
 这是供少量用户测试的 ad-hoc 签名版本，尚未经过 Apple 公证。解压后右键点击
 `Haypile.app`，选择“打开”；如果仍被拦截，请到“系统设置 -> 隐私与安全性”点击
 “仍要打开”。
+
+### Windows
+
+解压便携包后运行 `Haypile\Haypile.exe`。首个 x64 测试包尚未签名，Windows 可能
+显示 Microsoft Defender SmartScreen 提示；运行前请先核对 SHA-256。Windows
+自动测试、打包后 MCP/后端冒烟检查及产物校验均已通过，真实 Windows 桌面交互
+仍待外部测试。
 
 ## 30 秒演示
 
