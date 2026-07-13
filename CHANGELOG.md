@@ -1,8 +1,8 @@
 # Changelog
 
-## v0.2.0-test.4
+## v0.2.0-test.5
 
-Local data security hardening.
+Local data and dependency security hardening.
 
 - Force the HTTP backend to bind to loopback and reject untrusted Host headers.
 - Disable browser CORS access by default and allow only explicit loopback origins.
@@ -11,6 +11,8 @@ Local data security hardening.
 - Sandbox static responses, disable caching, and prevent MIME sniffing.
 - Strip credentials, query parameters, and fragments from browser-import provenance.
 - Bound remote imports to 20 URLs and 1 GiB per drop.
+- Require Pillow 12.3.x, the current security release line.
+- Rebuild both desktop packages after dependency auditing.
 
 ## v0.2.0-test.1
 
