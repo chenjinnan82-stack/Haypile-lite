@@ -347,8 +347,7 @@ def _classifier_status_cached(enabled: bool, model: str, base_url: str) -> str:
     if not base_url:
         return f"模型：未配置 {model}"
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(base_url + "/api/tags", timeout=0.25) as response:
+        with urllib.request.urlopen(base_url + "/api/tags", timeout=0.25) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
         return f"模型：离线 {model}"
