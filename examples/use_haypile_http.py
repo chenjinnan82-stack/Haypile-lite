@@ -9,10 +9,11 @@ from urllib.error import HTTPError, URLError
 from typing import Any
 
 BASE_URL = os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010").rstrip("/")
+LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def get_json(path: str) -> Any:
-    with urllib.request.urlopen(BASE_URL + path, timeout=5) as response:
+    with LOCAL_OPENER.open(BASE_URL + path, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -46,6 +47,10 @@ def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
         "access": bundle["access"],
         "resolved_url": resolved_url,
         "ai_suggestions": bundle.get("ai_suggestions", {}),
+        "duration_seconds": bundle.get("duration_seconds"),
+        "audio_metadata": bundle.get("audio_metadata", {}),
+        "audio_tags": bundle.get("audio_tags", {}),
+        "audio_usage": bundle.get("audio_usage", "unknown"),
         "provenance": {
             "source": "haypile",
             "id": bundle["id"],

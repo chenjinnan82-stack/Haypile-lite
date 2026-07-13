@@ -88,13 +88,14 @@ Haypile 是一个带边界的本地素材草堆。你把文件拖进去，它负
 
 ## 现在能做什么
 
-- 提供一个小型桌面拖拽入口，接收图片和音频。
+- 提供一个小型桌面拖拽入口，接收图片和音频（`mp3`、`wav`、`ogg`、`m4a`、`flac`、`aac`）。
 - 对素材做 hash、去重、重命名，并存入本地仓库。
 - 生成 manifest，只通过 `/static` 服务已登记文件。
 - 通过只读 HTTP API 暴露 ready bundles。
 - 提供一层很薄的 MCP 适配器。
 - 输出带 provenance 的 agent handoff。
-- 可选使用本地 Ollama 视觉模型进行图片分拣。
+- 保留音频时长、基础技术信息和已有标题/作者/专辑标签；可手动确认音乐、人声、环境、音效或循环用途。
+- 可选直接使用本地 Ollama，或通过本地 Sophon 网关进行图片分拣。
 - 不需要 AI 时可以使用低功耗模式。
 
 ## 快速开始
@@ -110,6 +111,15 @@ python3 -m pip install -r requirements-desktop.txt
 运行 Haypile：
 
 ```bash
+python3 app_gui.py
+```
+
+默认仍直接使用 Ollama。若要通过已经运行的本地 Sophon 网关进行视觉分类：
+
+```bash
+VISION_CLASSIFIER_TRANSPORT=sophon \
+SOPHON_BASE_URL=http://127.0.0.1:8030 \
+PIMOS_ADMIN_API_KEY_FILE=/path/to/admin_api_key \
 python3 app_gui.py
 ```
 

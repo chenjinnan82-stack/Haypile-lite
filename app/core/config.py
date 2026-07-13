@@ -134,8 +134,10 @@ class Settings(BaseSettings):
     IPC_AUTHKEY: str = ""
     HAYPILE_LOW_POWER_MODE: bool = False
     VISION_CLASSIFIER_ENABLED: bool = True
+    VISION_CLASSIFIER_TRANSPORT: str = "ollama"
     VISION_CLASSIFIER_MODEL: str = "qwen2.5vl:3b"
     VISION_CLASSIFIER_BASE_URL: str = "http://127.0.0.1:11434"
+    SOPHON_BASE_URL: str = "http://127.0.0.1:8030"
     VISION_CLASSIFIER_TIMEOUT_SECONDS: float = 8.0
     VISION_CLASSIFIER_MAX_IMAGE_BYTES: int = 8 * 1024 * 1024
     VISION_CLASSIFIER_KEEP_ALIVE: str = "30s"
@@ -209,6 +211,21 @@ class Settings(BaseSettings):
         parsed = urlparse(text)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
             return "http://127.0.0.1:11434"
+        return text
+
+    @field_validator("VISION_CLASSIFIER_TRANSPORT", mode="before")
+    @classmethod
+    def normalize_vision_transport(cls, value: Any) -> str:
+        transport = str(value or "ollama").strip().lower()
+        return transport if transport in {"ollama", "sophon"} else "ollama"
+
+    @field_validator("SOPHON_BASE_URL", mode="before")
+    @classmethod
+    def normalize_sophon_base_url(cls, value: Any) -> str:
+        text = str(value or "http://127.0.0.1:8030").strip().rstrip("/")
+        parsed = urlparse(text)
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            return "http://127.0.0.1:8030"
         return text
 
     @field_validator("VISION_CLASSIFIER_TIMEOUT_SECONDS", mode="before")

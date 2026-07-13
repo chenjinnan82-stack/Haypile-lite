@@ -54,6 +54,25 @@ class McpServerTests(unittest.TestCase):
         payload = json.loads(response["result"]["content"][0]["text"])
         self.assertEqual(payload, [{"id": "hero"}])
 
+    def test_list_bundles_passes_limit_and_cursor(self) -> None:
+        with patch.object(mcp_server, "get_json", return_value=[{"id": "next"}]) as get_json:
+            response = mcp_server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 20,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "haypile_list_bundles",
+                        "arguments": {"limit": 2, "cursor": "generic/images/hero.png"},
+                    },
+                }
+            )
+
+        get_json.assert_called_once_with(
+            "/api/v1/bundles?status=ready&limit=2&cursor=generic%2Fimages%2Fhero.png"
+        )
+        self.assertEqual(json.loads(response["result"]["content"][0]["text"]), [{"id": "next"}])
+
     def test_health_keeps_ready_status(self) -> None:
         with patch.object(
             mcp_server,
@@ -100,7 +119,9 @@ class McpServerTests(unittest.TestCase):
                 }
             )
 
-        list_bundles.assert_called_once_with(status="ready", asset_type="image", role=None, theme_id=None)
+        list_bundles.assert_called_once_with(
+            status="ready", asset_type="image", role=None, theme_id=None, audio_usage=None, limit=None, cursor=None
+        )
         payload = json.loads(response["result"]["content"][0]["text"])
         self.assertEqual(payload["source"], "haypile")
         self.assertEqual(payload["handoff_version"], "haypile.asset-handoff.v1")
@@ -110,6 +131,30 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(payload["assets"][0]["provenance"]["source_key"], "generic/images/hero.png")
         self.assertEqual(payload["assets"][0]["provenance"]["sha256"], "sha")
         self.assertNotIn("storage/assets", json.dumps(payload))
+
+    def test_handoff_preserves_audio_metadata(self) -> None:
+        asset = mcp_server._handoff_asset(
+            {
+                "id": "voice",
+                "theme_id": "generic",
+                "type": "audio",
+                "role": "audio",
+                "status": "ready",
+                "sha256": "sha",
+                "source_key": "generic/audio/voice.m4a",
+                "url": "/static/generic/audio/voice.m4a",
+                "access": "manifest_static",
+                "duration_seconds": 12.5,
+                "audio_metadata": {"sample_rate_hz": 48000, "channels": 2},
+                "audio_tags": {"title": "Pika Call", "artist": "Winter Ridge"},
+                "audio_usage": "voice",
+            }
+        )
+
+        self.assertEqual(asset["duration_seconds"], 12.5)
+        self.assertEqual(asset["audio_metadata"]["channels"], 2)
+        self.assertEqual(asset["audio_tags"]["title"], "Pika Call")
+        self.assertEqual(asset["audio_usage"], "voice")
 
     def test_mcp_server_starts_and_lists_tools_over_stdio(self) -> None:
         server_path = Path(mcp_server.__file__)

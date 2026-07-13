@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
-from app.services.asset_provenance import public_origin_url, read_asset_provenance
+from app.services.asset_provenance import public_origin_url, read_asset_provenance, write_asset_provenance
 from app.services.json_io import atomic_write_json
+from app.services.storage_runtime import StorageRuntimeDB
 
 
 ALLOWED_BUNDLE_ROLES = {"main_background", "hero_image", "icon", "texture", "audio", "unknown"}
+ALLOWED_AUDIO_USAGES = {"music", "voice", "ambience", "sound_effect", "loop", "unknown"}
+MAX_BUNDLE_PAGE_SIZE = 100
 
 
 class BundleService:
@@ -37,6 +38,9 @@ class BundleService:
         asset_type: str | None = None,
         role: str | None = None,
         theme_id: str | None = None,
+        audio_usage: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> list[dict[str, str]]:
         manifest = self._read_json(self.manifest_path)
         theme_assets = self._theme_assets_by_url()
@@ -53,10 +57,13 @@ class BundleService:
 
             theme_asset = theme_assets.get(url, {})
             item_role = self._role_from(source_key=source_key, theme_asset=theme_asset)
-            source_path = self.assets_dir / source_key
+            source_path = self._asset_path(source_key)
+            if source_path is None:
+                continue
             sha256 = sha_by_path.get(str(source_path.resolve(strict=False))) or self._sha256(source_path)
             provenance = read_asset_provenance(source_path)
             ai_suggestions = provenance.get("ai_suggestions")
+            bundle_audio_usage = self._audio_usage_from(provenance) if item_type == "audio" else "unknown"
             bundle_id = Path(source_key).stem
             bundles.append(
                 {
@@ -64,7 +71,7 @@ class BundleService:
                     "theme_id": self._theme_from_key(source_key),
                     "type": item_type,
                     "role": item_role,
-                    "status": "pending" if item_role == "unknown" else "ready",
+                    "status": "pending" if item_role == "unknown" or (item_type == "audio" and bundle_audio_usage == "unknown") else "ready",
                     "sha256": sha256,
                     "url": url,
                     "access": "manifest_static",
@@ -73,6 +80,10 @@ class BundleService:
                     "content_type": str(provenance.get("content_type") or ""),
                     "downloaded_at": str(provenance.get("downloaded_at") or ""),
                     "ai_suggestions": ai_suggestions if isinstance(ai_suggestions, dict) else {},
+                    "duration_seconds": self._duration_from(item),
+                    "audio_metadata": self._audio_metadata_from(item),
+                    "audio_tags": self._audio_tags_from(item),
+                    "audio_usage": bundle_audio_usage,
                 }
             )
 
@@ -82,13 +93,15 @@ class BundleService:
                 continue
             source_key = url.removeprefix("/static/").lstrip("/")
             item_role = self._role_from(source_key=source_key, theme_asset=asset)
-            provenance = read_asset_provenance(self.assets_dir / source_key)
+            asset_path = self._asset_path(source_key)
+            provenance = read_asset_provenance(asset_path) if asset_path is not None else {}
             ai_suggestions = provenance.get("ai_suggestions")
+            item_type = str(asset.get("type") or "asset")
             bundles.append(
                 {
                     "id": Path(source_key).stem or self._safe_id(url),
                     "theme_id": str(asset.get("theme_id") or self._theme_from_key(source_key)),
-                    "type": str(asset.get("type") or "asset"),
+                    "type": item_type,
                     "role": item_role,
                     "status": "missing",
                     "sha256": "",
@@ -99,6 +112,10 @@ class BundleService:
                     "content_type": str(provenance.get("content_type") or ""),
                     "downloaded_at": str(provenance.get("downloaded_at") or ""),
                     "ai_suggestions": ai_suggestions if isinstance(ai_suggestions, dict) else {},
+                    "duration_seconds": None,
+                    "audio_metadata": {},
+                    "audio_tags": {},
+                    "audio_usage": self._audio_usage_from(provenance) if item_type == "audio" else "unknown",
                 }
             )
 
@@ -107,12 +124,20 @@ class BundleService:
             "type": asset_type,
             "role": role,
             "theme_id": theme_id,
+            "audio_usage": audio_usage,
         }
-        return [
+        filtered = [
             bundle
             for bundle in bundles
             if all(value is None or bundle[key] == value for key, value in filters.items())
         ]
+        # ponytail: source_key is already public and stable; use opaque cursors only if ordering changes.
+        ordered = sorted(filtered, key=lambda bundle: (bundle["source_key"], bundle["id"]))
+        if cursor:
+            ordered = [bundle for bundle in ordered if bundle["source_key"] > cursor]
+        if limit is None:
+            return ordered
+        return ordered[: max(1, min(int(limit), MAX_BUNDLE_PAGE_SIZE))]
 
     def get_bundle(self, bundle_id: str) -> dict[str, str] | None:
         wanted = str(bundle_id or "").strip()
@@ -171,6 +196,27 @@ class BundleService:
         atomic_write_json(theme_file, payload)
         return self.get_bundle(bundle_id)
 
+    def set_bundle_audio_usage(self, bundle_id: str, audio_usage: str) -> dict[str, Any] | None:
+        normalized_usage = str(audio_usage or "").strip().lower()
+        if normalized_usage not in ALLOWED_AUDIO_USAGES:
+            raise ValueError("unsupported audio usage")
+        bundle = self.get_bundle(bundle_id)
+        if bundle is None or bundle["status"] == "missing" or bundle["type"] != "audio":
+            return None
+
+        if self.set_bundle_role(bundle_id, "audio") is None:
+            return None
+        asset_path = self._asset_path(bundle["source_key"])
+        if asset_path is None:
+            return None
+        provenance = read_asset_provenance(asset_path)
+        provenance["audio_usage"] = normalized_usage
+        try:
+            write_asset_provenance(asset_path, provenance)
+        except OSError:
+            return None
+        return self.get_bundle(bundle_id)
+
     def _theme_assets_by_url(self) -> dict[str, dict[str, Any]]:
         assets: dict[str, dict[str, Any]] = {}
         for theme_file in sorted(self.themes_dir.glob("*.json")):
@@ -188,15 +234,62 @@ class BundleService:
                 assets[url] = {**value, "source_key": str(source_key), "theme_id": theme_id}
         return assets
 
-    def _sha_by_dst_path(self) -> dict[str, str]:
-        if not self.runtime_db_path.is_file():
-            return {}
+    @staticmethod
+    def _duration_from(item: dict[str, Any]) -> float | None:
+        value = item.get("duration_seconds")
         try:
-            with closing(sqlite3.connect(str(self.runtime_db_path))) as conn:
-                rows = conn.execute("SELECT sha256, dst_path FROM vfs_asset_links").fetchall()
-        except sqlite3.Error:
+            duration = float(value)
+        except (TypeError, ValueError):
+            return None
+        return duration if duration >= 0 else None
+
+    @staticmethod
+    def _audio_metadata_from(item: dict[str, Any]) -> dict[str, int]:
+        value = item.get("audio_metadata")
+        if not isinstance(value, dict):
             return {}
-        return {str(Path(dst).resolve(strict=False)): str(sha) for sha, dst in rows if sha and dst}
+        return {
+            str(key): int(metadata_value)
+            for key, metadata_value in value.items()
+            if isinstance(metadata_value, (int, float)) and metadata_value > 0
+        }
+
+    @staticmethod
+    def _audio_tags_from(item: dict[str, Any]) -> dict[str, str]:
+        value = item.get("audio_tags")
+        if not isinstance(value, dict):
+            return {}
+        return {
+            key: text[:160]
+            for key in ("title", "artist", "album")
+            if (text := str(value.get(key) or "").strip())
+        }
+
+    @staticmethod
+    def _audio_usage_from(provenance: dict[str, Any]) -> str:
+        value = str(provenance.get("audio_usage") or "").strip().lower()
+        return value if value in ALLOWED_AUDIO_USAGES else "unknown"
+
+    def _sha_by_dst_path(self) -> dict[str, str]:
+        return {
+            str(path): sha256_hex
+            for sha256_hex, path in StorageRuntimeDB.read_asset_hash_index(
+                self.runtime_db_path,
+                self.assets_dir,
+            ).items()
+        }
+
+    def _asset_path(self, source_key: str) -> Path | None:
+        root = self.assets_dir.resolve(strict=False)
+        candidate = self.assets_dir / Path(str(source_key).replace("\\", "/"))
+        if candidate.is_symlink():
+            return None
+        try:
+            resolved = candidate.resolve(strict=False)
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            return None
+        return resolved
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:

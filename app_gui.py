@@ -54,6 +54,7 @@ from app.services.scanner import AssetScanner
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.style_classifier import StyleClassifier
 from app.services.material_summary import build_material_panel_summary
+from app.services.media_types import AUDIO_CONTENT_TYPE_EXTENSIONS, SUPPORTED_AUDIO_EXTENSIONS
 from app.services.real_project_operations import (
     HaypileRealProjectOperationError,
     execute_haypile_minimal_real_project_reapply,
@@ -61,7 +62,7 @@ from app.services.real_project_operations import (
 )
 from app.services.theme_registry import ThemeRegistry
 from app.services.vfs_storage import VFSStorage
-from mutagen import File as MutagenFile
+from mutagen import File as MutagenFile, MutagenError
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
@@ -200,10 +201,7 @@ class RemoteDownloadWorker(QThread):
         "image/jpeg": ("image", ".jpg"),
         "image/webp": ("image", ".webp"),
         "image/svg+xml": ("image", ".svg"),
-        "audio/mpeg": ("audio", ".mp3"),
-        "audio/ogg": ("audio", ".ogg"),
-        "audio/wav": ("audio", ".wav"),
-        "audio/x-wav": ("audio", ".wav"),
+        **{content_type: ("audio", extension) for content_type, extension in AUDIO_CONTENT_TYPE_EXTENSIONS.items()},
     }
 
     def __init__(self, urls: list[str], incoming_dir: Path) -> None:
@@ -385,19 +383,14 @@ class IngestWorker(QThread):
     degraded_signal = Signal(str, str, int)
 
     SUPPORTED_IMAGE_EXTENSIONS: set[str] = {".png", ".webp", ".svg", ".jpg", ".jpeg"}
-    SUPPORTED_AUDIO_EXTENSIONS: set[str] = {".mp3", ".ogg", ".wav"}
+    SUPPORTED_AUDIO_EXTENSIONS: set[str] = set(SUPPORTED_AUDIO_EXTENSIONS)
     ALLOWED_IMAGE_MIME: set[str] = {
         "image/png",
         "image/webp",
         "image/jpeg",
         "image/svg+xml",
     }
-    ALLOWED_AUDIO_MIME: set[str] = {
-        "audio/mpeg",
-        "audio/ogg",
-        "audio/wav",
-        "audio/x-wav",
-    }
+    ALLOWED_AUDIO_MIME: set[str] = set(AUDIO_CONTENT_TYPE_EXTENSIONS)
     MAX_FILE_SIZE_BYTES: int = 500 * 1024 * 1024
     HASH_CHUNK_SIZE: int = 1024 * 1024
 
@@ -598,13 +591,16 @@ class IngestWorker(QThread):
         self._close_loop()
 
     def _build_hash_index(self) -> dict[str, Path]:
-        index: dict[str, Path] = {}
+        index = self.storage_runtime.asset_hash_index(self.assets_dir)
+        indexed_paths = {path.resolve(strict=False) for path in index.values()}
         for existing in self.assets_dir.rglob("*"):
             if self.isInterruptionRequested():
                 return index
             if not existing.is_file():
                 continue
             if not self._is_supported_extension(existing):
+                continue
+            if existing.resolve(strict=False) in indexed_paths:
                 continue
             try:
                 digest = self._compute_sha256(existing)
@@ -647,7 +643,12 @@ class IngestWorker(QThread):
         if suffix == ".svg" and self._looks_like_svg(file_path):
             return "image", "image/svg+xml"
 
-        audio = MutagenFile(file_path)
+        if suffix not in self.SUPPORTED_AUDIO_EXTENSIONS:
+            return None, None
+        try:
+            audio = MutagenFile(file_path)
+        except (MutagenError, OSError, ValueError):
+            return None, None
         if audio is not None and audio.info is not None:
             return "audio", "audio/unknown"
 
@@ -1449,7 +1450,6 @@ class MaterialPanelWindow(QWidget):
             ("hero_image", ui_text("主视觉", "Hero")),
             ("icon", ui_text("图标", "Icon")),
             ("texture", ui_text("纹理", "Texture")),
-            ("audio", ui_text("音频", "Audio")),
         ):
             button = QPushButton(label, self.role_row)
             button.setFixedHeight(24)
@@ -1459,6 +1459,28 @@ class MaterialPanelWindow(QWidget):
             role_layout.addWidget(button)
         self.role_row.hide()
         layout.addWidget(self.role_row)
+
+        self.audio_usage_row = QWidget(self.container)
+        self.audio_usage_row.setStyleSheet("QWidget { background: transparent; border: none; }")
+        audio_usage_layout = QHBoxLayout(self.audio_usage_row)
+        audio_usage_layout.setContentsMargins(0, 0, 0, 0)
+        audio_usage_layout.setSpacing(4)
+        self.audio_usage_buttons: dict[str, QPushButton] = {}
+        for usage, label in (
+            ("music", ui_text("音乐", "Music")),
+            ("voice", ui_text("人声", "Voice")),
+            ("ambience", ui_text("环境", "Ambient")),
+            ("sound_effect", ui_text("音效", "SFX")),
+            ("loop", ui_text("循环", "Loop")),
+        ):
+            button = QPushButton(label, self.audio_usage_row)
+            button.setFixedHeight(24)
+            button.setStyleSheet(self._role_button_style(False))
+            button.clicked.connect(lambda _checked=False, selected_usage=usage: self._set_selected_audio_usage(selected_usage))
+            self.audio_usage_buttons[usage] = button
+            audio_usage_layout.addWidget(button)
+        self.audio_usage_row.hide()
+        layout.addWidget(self.audio_usage_row)
 
         self.retry_ai_button = QPushButton(ui_text("重新 AI 分拣", "Retry AI sorting"), self.container)
         self.retry_ai_button.setFixedHeight(24)
@@ -1567,6 +1589,7 @@ class MaterialPanelWindow(QWidget):
         selected_id = self._selected_bundle_id
         self.detail_label.hide()
         self.role_row.hide()
+        self.audio_usage_row.hide()
         self.retry_ai_button.hide()
         self.preview_label.hide()
         self.copy_ready_button.setVisible(bool(summary.recent_items))
@@ -1695,6 +1718,8 @@ class MaterialPanelWindow(QWidget):
                 self._role_label(bundle["role"]),
                 bundle["status"],
                 bundle["type"],
+                bundle.get("audio_usage", ""),
+                bundle.get("audio_tags", {}),
                 item.preview_url,
                 item.theme_id,
                 item.asset_type,
@@ -1721,7 +1746,7 @@ class MaterialPanelWindow(QWidget):
         QApplication.clipboard().setText(json.dumps(self._handoff_for_bundles([bundle]), ensure_ascii=False, indent=2))
         event.accept()
 
-    def _show_detail_for_bundle(self, bundle: dict[str, str], *, copied: bool = False, confirmed: bool = False) -> None:
+    def _show_detail_for_bundle(self, bundle: dict[str, object], *, copied: bool = False, confirmed: bool = False) -> None:
         handoff_line = (
             ui_text("已复制 handoff · provenance 已包含", "handoff copied · provenance included")
             if copied
@@ -1738,16 +1763,22 @@ class MaterialPanelWindow(QWidget):
         origin_url = str(bundle.get("origin_url") or "").strip()
         origin_line = f"\norigin {self._compact_text(origin_url, 48)}" if origin_url else ""
         ai_line = self._ai_suggestion_line(bundle.get("ai_suggestions"))
+        is_audio = str(bundle.get("type") or "").lower() == "audio"
+        audio_line = self._audio_detail_line(bundle) if is_audio else ""
         self.detail_label.setText(
             f"{status_line}\n"
             f"{ui_text('用途', 'Role')} {self._role_label(bundle['role'])} · {ui_text('类型', 'Type')} {self._asset_type_label(bundle['type'])}\n"
-            f"sha256 {bundle['sha256'][:12] or '-'} · key {self._compact_text(bundle['source_key'] or '-', 24)}\n"
+            f"sha256 {str(bundle['sha256'])[:12] or '-'} · key {self._compact_text(str(bundle['source_key']) or '-', 24)}{audio_line}\n"
             f"url {self._compact_text(bundle['url'])}{origin_line}{ai_line}\n"
             f"{handoff_line}"
         )
         self.detail_label.show()
-        self.role_row.setVisible(bundle["status"] != "missing")
-        self._refresh_role_buttons(bundle["role"])
+        self.role_row.setVisible(not is_audio and bundle["status"] != "missing")
+        self.audio_usage_row.setVisible(is_audio and bundle["status"] != "missing")
+        if is_audio:
+            self._refresh_audio_usage_buttons(str(bundle.get("audio_usage") or "unknown"))
+        else:
+            self._refresh_role_buttons(bundle["role"])
         self._refresh_retry_ai_button(bundle)
 
     def _refresh_retry_ai_button(self, bundle: dict[str, object]) -> None:
@@ -1840,6 +1871,22 @@ class MaterialPanelWindow(QWidget):
         self._show_detail_for_bundle(updated, copied=True, confirmed=True)
         QApplication.clipboard().setText(json.dumps(self._handoff_for_bundles([updated]), ensure_ascii=False, indent=2))
 
+    def _set_selected_audio_usage(self, usage: str) -> None:
+        if not self._selected_bundle_id:
+            return
+        try:
+            updated = BundleService().set_bundle_audio_usage(self._selected_bundle_id, usage)
+        except ValueError:
+            updated = None
+        if updated is None:
+            self.detail_label.setText(ui_text("音频用途更新失败", "Audio usage update failed"))
+            self.detail_label.show()
+            return
+        self._selected_bundle_id = updated["id"]
+        self.refresh()
+        self._show_detail_for_bundle(updated, copied=True, confirmed=True)
+        QApplication.clipboard().setText(json.dumps(self._handoff_for_bundles([updated]), ensure_ascii=False, indent=2))
+
     def _show_preview_for_item(self, item) -> None:
         self.preview_label.clear()
         asset_type = str(item.asset_type or "").lower()
@@ -1872,6 +1919,45 @@ class MaterialPanelWindow(QWidget):
         if value == "audio":
             return ui_text("音频", "Audio")
         return value or ui_text("资源", "Asset")
+
+    @staticmethod
+    def _audio_usage_label(audio_usage: str) -> str:
+        return {
+            "music": ui_text("音乐", "Music"),
+            "voice": ui_text("人声", "Voice"),
+            "ambience": ui_text("环境", "Ambient"),
+            "sound_effect": ui_text("音效", "SFX"),
+            "loop": ui_text("循环", "Loop"),
+            "unknown": ui_text("未确定", "Unconfirmed"),
+        }.get(str(audio_usage or "").lower(), ui_text("未确定", "Unconfirmed"))
+
+    @classmethod
+    def _audio_detail_line(cls, bundle: dict[str, object]) -> str:
+        details = [
+            f"{ui_text('音频用途', 'Audio usage')} {cls._audio_usage_label(str(bundle.get('audio_usage') or 'unknown'))}"
+        ]
+        tags = bundle.get("audio_tags")
+        if isinstance(tags, dict):
+            details.extend(
+                str(tags.get(key) or "").strip()[:48]
+                for key in ("title", "artist", "album")
+                if str(tags.get(key) or "").strip()
+            )
+        try:
+            duration = float(bundle.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        if duration > 0:
+            details.append(f"{duration:.1f}s")
+        metadata = bundle.get("audio_metadata")
+        if isinstance(metadata, dict):
+            sample_rate = metadata.get("sample_rate_hz")
+            channels = metadata.get("channels")
+            if isinstance(sample_rate, (int, float)) and sample_rate > 0:
+                details.append(f"{round(sample_rate / 1000):.0f} kHz")
+            if isinstance(channels, (int, float)) and channels > 0:
+                details.append(ui_text(f"{int(channels)} 声道", f"{int(channels)} ch"))
+        return "\n" + " · ".join(details)
 
     @staticmethod
     def _agent_usability_label(status: str) -> str:
@@ -1929,6 +2015,10 @@ class MaterialPanelWindow(QWidget):
     def _refresh_role_buttons(self, active_role: str = "") -> None:
         for role, button in self.role_buttons.items():
             button.setStyleSheet(self._role_button_style(role == active_role))
+
+    def _refresh_audio_usage_buttons(self, active_usage: str = "") -> None:
+        for usage, button in self.audio_usage_buttons.items():
+            button.setStyleSheet(self._role_button_style(usage == active_usage))
 
     def _refresh_item_selection_styles(self) -> None:
         for idx, label in enumerate(self.item_labels):
@@ -2019,9 +2109,13 @@ class MaterialPanelWindow(QWidget):
             "content_type": "",
             "downloaded_at": "",
             "ai_suggestions": {},
+            "duration_seconds": None,
+            "audio_metadata": {},
+            "audio_tags": {},
+            "audio_usage": "unknown",
         }
 
-    def _handoff_for_bundles(self, bundles: list[dict[str, str]]) -> dict[str, object]:
+    def _handoff_for_bundles(self, bundles: list[dict[str, object]]) -> dict[str, object]:
         base_url = self._base_url()
         return {
             "handoff_version": "haypile.asset-handoff.v1",
@@ -2031,8 +2125,8 @@ class MaterialPanelWindow(QWidget):
         }
 
     @staticmethod
-    def _handoff_asset(item: dict[str, str], base_url: str) -> dict[str, object]:
-        resolved_url = base_url + item["url"]
+    def _handoff_asset(item: dict[str, object], base_url: str) -> dict[str, object]:
+        resolved_url = base_url + str(item["url"])
         return {
             "id": item["id"],
             "theme_id": item["theme_id"],
@@ -2045,6 +2139,10 @@ class MaterialPanelWindow(QWidget):
             "access": item["access"],
             "resolved_url": resolved_url,
             "ai_suggestions": item.get("ai_suggestions", {}),
+            "duration_seconds": item.get("duration_seconds"),
+            "audio_metadata": item.get("audio_metadata", {}),
+            "audio_tags": item.get("audio_tags", {}),
+            "audio_usage": item.get("audio_usage", "unknown"),
             "provenance": {
                 "source": "haypile",
                 "id": item["id"],
@@ -3468,7 +3566,7 @@ class HaypileFloatingBall(QWidget):
         if not base_url:
             return "missing", ui_text(f"模型未配置 {model}", f"Model not configured {model}")
         try:
-            response = httpx.get(f"{base_url}/api/tags", timeout=0.25)
+            response = httpx.get(f"{base_url}/api/tags", timeout=0.25, trust_env=False)
             payload = response.json()
         except (httpx.HTTPError, ValueError):
             return "offline", ui_text(f"模型离线 {model}", f"Model offline {model}")

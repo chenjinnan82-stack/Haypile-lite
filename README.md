@@ -96,13 +96,14 @@ for later.
 
 ## What It Does Today
 
-- Provides a small desktop drop target for images and audio.
+- Provides a small desktop drop target for images and audio (`mp3`, `wav`, `ogg`, `m4a`, `flac`, `aac`).
 - Hashes, dedupes, renames, and stores assets locally.
 - Builds a manifest and serves only registered files through `/static`.
 - Exposes ready bundles through a read-only HTTP API.
 - Provides a thin MCP adapter over the same HTTP API.
 - Emits agent handoff data with provenance.
-- Optionally uses a local Ollama vision model for image sorting.
+- Preserves audio duration, basic technical metadata, and existing title/artist/album tags; users can confirm music, voice, ambience, sound effect, or loop usage.
+- Optionally uses a local Ollama vision model directly or through a local Sophon gateway.
 - Keeps low-power mode available when AI sorting is not wanted.
 
 ## Quick Start
@@ -118,6 +119,16 @@ python3 -m pip install -r requirements-desktop.txt
 Run Haypile:
 
 ```bash
+python3 app_gui.py
+```
+
+Direct Ollama remains the default. To route vision classification through an
+already-running local Sophon gateway:
+
+```bash
+VISION_CLASSIFIER_TRANSPORT=sophon \
+SOPHON_BASE_URL=http://127.0.0.1:8030 \
+PIMOS_ADMIN_API_KEY_FILE=/path/to/admin_api_key \
 python3 app_gui.py
 ```
 

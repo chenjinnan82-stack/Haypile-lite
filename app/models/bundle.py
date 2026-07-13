@@ -19,3 +19,7 @@ class BundlePayload(BaseModel):
     content_type: str = ""
     downloaded_at: str = ""
     ai_suggestions: dict[str, Any] = Field(default_factory=dict)
+    duration_seconds: float | None = None
+    audio_metadata: dict[str, int] = Field(default_factory=dict)
+    audio_tags: dict[str, str] = Field(default_factory=dict)
+    audio_usage: str = "unknown"

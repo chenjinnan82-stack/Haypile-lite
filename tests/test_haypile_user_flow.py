@@ -7,9 +7,12 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 from app.core.config import get_settings
 from app.services.bundle_service import BundleService
+from app.services.scanner import AssetScanner
+from app.services.storage_runtime import StorageRuntimeDB
 from app.services.style_classifier import StyleClassificationResult
 from app_gui import IngestWorker
 from examples.use_haypile_http import build_handoff
@@ -83,6 +86,10 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(len(manifest), 2)
         self.assertTrue(all("/static/" in item["url_path"] for item in manifest.values()))
+        audio_manifest = next(item for item in manifest.values() if item["type"] == "audio")
+        self.assertIn("duration_seconds", audio_manifest)
+        self.assertEqual(audio_manifest["audio_metadata"]["sample_rate_hz"], 8000)
+        self.assertEqual(audio_manifest["audio_metadata"]["channels"], 1)
 
         service = BundleService(
             assets_dir=self.assets_dir,
@@ -90,13 +97,17 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             themes_dir=self.themes_dir,
             runtime_db_path=self.runtime_db_path,
         )
+        bundles = service.list_bundles()
         ready = service.list_bundles(status="ready")
         handoff = build_handoff(ready)
         payload_text = json.dumps(handoff)
 
-        self.assertEqual(len(ready), 2)
+        self.assertEqual(len(bundles), 2)
+        self.assertEqual(len(ready), 1)
         self.assertTrue(any(item["role"] == "hero_image" for item in ready))
-        self.assertTrue(any(item["type"] == "audio" for item in ready))
+        pending_audio = next(item for item in bundles if item["type"] == "audio")
+        self.assertEqual(pending_audio["status"], "pending")
+        self.assertEqual(pending_audio["audio_usage"], "unknown")
         self.assertEqual(handoff["source"], "haypile")
         self.assertEqual(handoff["handoff_version"], "haypile.asset-handoff.v1")
         self.assertNotIn("storage/assets", payload_text)
@@ -114,6 +125,56 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             [item["id"] for item in restarted_service.list_bundles(status="ready")],
             [item["id"] for item in ready],
         )
+
+    def test_scanner_registers_m4a_and_skips_corrupt_audio(self) -> None:
+        valid = self.assets_dir / "generic/audio/clip.m4a"
+        corrupt = self.assets_dir / "generic/audio/broken.flac"
+        valid.parent.mkdir(parents=True)
+        valid.write_bytes(b"m4a")
+        corrupt.write_bytes(b"broken")
+
+        class FakeAudio:
+            class info:
+                length = 2.5
+                sample_rate = 48_000
+                channels = 2
+                bitrate = 128_000
+
+            def __init__(self) -> None:
+                self.tags = {
+                    "TIT2": type("Tag", (), {"text": ["Pika Call"]})(),
+                    "TPE1": type("Tag", (), {"text": ["Winter Ridge"]})(),
+                    "TALB": type("Tag", (), {"text": ["Haypile"]})(),
+                }
+
+        with patch(
+            "app.services.scanner.MutagenFile",
+            side_effect=lambda path: FakeAudio() if Path(path).suffix == ".m4a" else None,
+        ):
+            manifest = AssetScanner(self.assets_dir, self.manifest_path)._scan_assets_directory_sync()
+
+        item = manifest["generic/audio/clip.m4a"]
+        self.assertEqual(item["duration_seconds"], 2.5)
+        self.assertEqual(item["audio_metadata"], {"bitrate_bps": 128000, "sample_rate_hz": 48000, "channels": 2})
+        self.assertEqual(item["audio_tags"], {"title": "Pika Call", "artist": "Winter Ridge", "album": "Haypile"})
+        self.assertNotIn("generic/audio/broken.flac", manifest)
+
+    def test_ingest_reuses_verified_runtime_hash_index(self) -> None:
+        existing = self.assets_dir / "generic/images/known.svg"
+        existing.parent.mkdir(parents=True)
+        existing.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>', encoding="utf-8")
+        StorageRuntimeDB(self.runtime_db_path).record_link(
+            sha256_hex="known-sha",
+            src_path=existing,
+            dst_path=existing,
+            strategy="copy",
+        )
+        worker = IngestWorker([], self.assets_dir, ai_enabled=False)
+
+        with patch.object(worker, "_compute_sha256", side_effect=AssertionError("verified assets should not be rehashed")):
+            index = worker._build_hash_index()
+
+        self.assertEqual(index, {"known-sha": existing.resolve()})
 
     def test_ai_toggle_disabled_skips_visual_classifier(self) -> None:
         image = self.tmpdir / "plain.svg"

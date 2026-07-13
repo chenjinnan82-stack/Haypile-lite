@@ -11,6 +11,9 @@ Local data and dependency security hardening.
 - Sandbox static responses, disable caching, and prevent MIME sniffing.
 - Strip credentials, query parameters, and fragments from browser-import provenance.
 - Bound remote imports to 20 URLs and 1 GiB per drop.
+- Bypass ambient proxies for local model, MCP, and example HTTP calls.
+- Reject decompression-bomb images and manifest paths outside the asset root.
+- Redact local filesystem paths from internal HTTP errors.
 - Require Pillow 12.3.x, the current security release line.
 - Rebuild both desktop packages after dependency auditing.
 

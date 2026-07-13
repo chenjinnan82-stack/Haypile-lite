@@ -14,6 +14,10 @@
       "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
       "access": "manifest_static",
       "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png",
+      "duration_seconds": null,
+      "audio_metadata": {},
+      "audio_tags": {},
+      "audio_usage": "unknown",
       "ai_suggestions": {
         "source": "model",
         "tags": ["主视觉", "绿色"],

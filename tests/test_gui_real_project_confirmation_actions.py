@@ -580,6 +580,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 "url": "/static/generic/audio/voice.mp3",
                 "access": "manifest_static",
                 "source_key": "generic/audio/voice.mp3",
+                "audio_tags": {"title": "Pika Call", "artist": "Winter Ridge"},
             },
             "missing": {
                 "id": "missing",
@@ -618,6 +619,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("url /static/generic/audio/voice.mp3", panel.detail_label.text())
             self.assertIn("需确认后给 agent", panel.detail_label.text())
             self.assertIn("已复制 handoff", panel.detail_label.text())
+            self.assertIn("音频用途 未确定", panel.detail_label.text())
+            self.assertIn("Pika Call", panel.detail_label.text())
+            self.assertIn("Winter Ridge", panel.detail_label.text())
+            self.assertFalse(panel.audio_usage_row.isHidden())
+            self.assertTrue(panel.role_row.isHidden())
             self.assertIn("border: 2px solid #C8A24A", panel.item_labels[0].styleSheet())
             self.assertNotIn("border: 2px solid #C8A24A", panel.item_labels[1].styleSheet())
             self.assertEqual(toasts, [])
@@ -1647,6 +1653,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             app_gui_module.httpx.stream = previous_stream
 
     def test_remote_download_worker_accepts_audio_url(self) -> None:
+        self.assertEqual(
+            app_gui_module.RemoteDownloadWorker.CONTENT_TYPE_EXTENSIONS["audio/mp4"],
+            ("audio", ".m4a"),
+        )
         previous_stream = app_gui_module.httpx.stream
         body = b"mp3-bytes"
 

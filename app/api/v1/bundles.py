@@ -18,6 +18,9 @@ async def list_bundles(
     asset_type: str | None = Query(default=None, alias="type"),
     role: str | None = None,
     theme_id: str | None = None,
+    audio_usage: str | None = None,
+    limit: int | None = Query(default=None, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=512),
     bundle_service: BundleService = Depends(get_bundle_service),
 ) -> list[BundlePayload]:
     bundles = bundle_service.list_bundles(
@@ -25,6 +28,9 @@ async def list_bundles(
         asset_type=asset_type,
         role=role,
         theme_id=theme_id,
+        audio_usage=audio_usage,
+        limit=limit,
+        cursor=cursor,
     )
     return [BundlePayload.model_validate(bundle) for bundle in bundles]
 

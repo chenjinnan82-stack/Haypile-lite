@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import sqlite3
 import tempfile
 import unittest
-from contextlib import closing
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -13,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.services.asset_provenance import write_asset_provenance
 from app.api.v1.bundles import get_bundle_service, router
 from app.services.bundle_service import BundleService
+from app.services.storage_runtime import StorageRuntimeDB
 
 
 class BundleServiceTests(unittest.TestCase):
@@ -61,6 +61,47 @@ class BundleServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 service.set_bundle_role("generic_img_unknown_eeee", "sidebar")
 
+    def test_bundle_service_confirms_audio_usage_and_projects_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            service = _bundle_service(Path(raw))
+
+            before = service.get_bundle("generic_aud_unknown_ffff")
+            updated = service.set_bundle_audio_usage("generic_aud_unknown_ffff", "voice")
+
+            self.assertEqual(before["status"], "pending")
+            self.assertEqual(before["audio_tags"]["title"], "Pika Call")
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated["role"], "audio")
+            self.assertEqual(updated["audio_usage"], "voice")
+            self.assertEqual(updated["status"], "ready")
+            self.assertEqual(updated["duration_seconds"], 12.5)
+            self.assertEqual(updated["audio_metadata"]["channels"], 2)
+            saved = json.loads((Path(raw) / "assets/generic/audio/generic_aud_unknown_ffff.wav.provenance.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["audio_usage"], "voice")
+
+    def test_bundle_service_pages_by_stable_source_key(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            service = _bundle_service(Path(raw))
+
+            all_bundles = service.list_bundles()
+            first_page = service.list_bundles(limit=1)
+            second_page = service.list_bundles(limit=1, cursor=first_page[-1]["source_key"])
+
+            self.assertEqual(first_page, [all_bundles[0]])
+            self.assertEqual(second_page, [all_bundles[1]])
+            self.assertLess(first_page[-1]["source_key"], second_page[-1]["source_key"])
+
+    def test_bundle_service_rehashes_stale_runtime_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            service = _bundle_service(Path(raw))
+            hero = Path(raw) / "assets/generic/images/generic_img_hero_image_abcd.png"
+            hero.write_bytes(b"changed hero")
+
+            bundle = service.get_bundle("generic_img_hero_image_abcd")
+
+            self.assertIsNotNone(bundle)
+            self.assertEqual(bundle["sha256"], hashlib.sha256(b"changed hero").hexdigest())
+
     def test_bundles_api_lists_and_gets_bundles(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             service = _bundle_service(Path(raw))
@@ -74,6 +115,15 @@ class BundleServiceTests(unittest.TestCase):
                 "/api/v1/bundles",
                 params={"status": "ready", "role": "hero_image"},
             )
+            audio_pending = client.get(
+                "/api/v1/bundles",
+                params={"type": "audio", "audio_usage": "unknown"},
+            )
+            first_page = client.get("/api/v1/bundles", params={"limit": 1})
+            second_page = client.get(
+                "/api/v1/bundles",
+                params={"limit": 1, "cursor": first_page.json()[-1]["source_key"]},
+            )
             one = client.get("/api/v1/bundles/generic_img_hero_image_abcd")
             missing = client.get("/api/v1/bundles/nope")
 
@@ -81,6 +131,11 @@ class BundleServiceTests(unittest.TestCase):
             self.assertTrue(any(item["id"] == "generic_img_hero_image_abcd" for item in listed.json()))
             self.assertEqual(ready.status_code, 200)
             self.assertEqual([item["id"] for item in ready.json()], ["generic_img_hero_image_abcd"])
+            self.assertEqual([item["id"] for item in audio_pending.json()], ["generic_aud_unknown_ffff"])
+            self.assertEqual(audio_pending.json()[0]["audio_tags"]["artist"], "Winter Ridge")
+            self.assertEqual(len(first_page.json()), 1)
+            self.assertEqual(len(second_page.json()), 1)
+            self.assertLess(first_page.json()[0]["source_key"], second_page.json()[0]["source_key"])
             self.assertEqual(one.status_code, 200)
             self.assertEqual(one.json()["access"], "manifest_static")
             self.assertEqual(one.json()["origin_url"], "https://cdn.example.com/hero.png")
@@ -94,11 +149,14 @@ def _bundle_service(tmp_path: Path) -> BundleService:
     runtime_db_path = tmp_path / "index" / "storage_runtime.db"
     hero = assets_dir / "generic/images/generic_img_hero_image_abcd.png"
     unknown = assets_dir / "generic/images/generic_img_unknown_eeee.png"
+    audio = assets_dir / "generic/audio/generic_aud_unknown_ffff.wav"
     hero.parent.mkdir(parents=True)
     themes_dir.mkdir(parents=True)
     manifest_path.parent.mkdir(parents=True)
     hero.write_bytes(b"hero")
     unknown.write_bytes(b"unknown")
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"audio")
     write_asset_provenance(
         hero,
         {
@@ -127,6 +185,13 @@ def _bundle_service(tmp_path: Path) -> BundleService:
                     "type": "image",
                     "url_path": "/static/generic/images/generic_img_unknown_eeee.png",
                 },
+                "generic/audio/generic_aud_unknown_ffff.wav": {
+                    "type": "audio",
+                    "duration_seconds": 12.5,
+                    "audio_metadata": {"sample_rate_hz": 48000, "channels": 2, "bitrate_bps": 192000},
+                    "audio_tags": {"title": "Pika Call", "artist": "Winter Ridge", "album": "Haypile"},
+                    "url_path": "/static/generic/audio/generic_aud_unknown_ffff.wav",
+                },
             }
         ),
         encoding="utf-8",
@@ -153,10 +218,12 @@ def _bundle_service(tmp_path: Path) -> BundleService:
         ),
         encoding="utf-8",
     )
-    with closing(sqlite3.connect(runtime_db_path)) as conn:
-        conn.execute("CREATE TABLE vfs_asset_links (sha256 TEXT, dst_path TEXT)")
-        conn.execute("INSERT INTO vfs_asset_links VALUES (?, ?)", ("db-sha", str(hero.resolve(strict=False))))
-        conn.commit()
+    StorageRuntimeDB(db_path=runtime_db_path).record_link(
+        sha256_hex="db-sha",
+        src_path=hero,
+        dst_path=hero,
+        strategy="copy",
+    )
     return BundleService(
         assets_dir=assets_dir,
         manifest_path=manifest_path,

@@ -67,8 +67,20 @@ GET /api/v1/bundles?status=ready
 GET /api/v1/bundles?status=ready&type=image
 GET /api/v1/bundles?status=ready&type=image&role=hero_image
 GET /api/v1/bundles?status=pending&type=audio
+GET /api/v1/bundles?status=ready&type=audio&audio_usage=voice
 GET /api/v1/bundles?theme_id=generic
 ```
+
+Page a large result without changing the response shape:
+
+```text
+GET /api/v1/bundles?status=ready&limit=50
+GET /api/v1/bundles?status=ready&limit=50&cursor=generic/images/last-item.png
+```
+
+Results are sorted by `source_key`. Use the final returned item's `source_key`
+as the next `cursor`; omit `cursor` for the first page. `limit` is optional and
+is capped at 100. Existing requests without `limit` still return every match.
 
 Get one bundle:
 
@@ -94,7 +106,11 @@ Bundle payload:
   "sha256": "abcd...",
   "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
   "access": "manifest_static",
-  "source_key": "generic/images/generic_img_hero_image_abcd1234.png"
+  "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
+  "duration_seconds": null,
+  "audio_metadata": {},
+  "audio_tags": {},
+  "audio_usage": "unknown"
 }
 ```
 
@@ -109,11 +125,15 @@ Fields:
 - `url`: static URL path. Resolve it against the same backend base URL.
 - `access`: currently `manifest_static`.
 - `source_key`: manifest-relative key, not an absolute local path.
+- `duration_seconds`: audio length when the bundle is audio; otherwise `null`.
+- `audio_metadata`: available audio facts such as `sample_rate_hz`, `channels`, and `bitrate_bps`.
+- `audio_tags`: available file tags: `title`, `artist`, and `album`.
+- `audio_usage`: `music`, `voice`, `ambience`, `sound_effect`, `loop`, or `unknown`.
 
 Status meanings:
 
 - `ready`: registered and classified for use.
-- `pending`: registered but still `unknown`.
+- `pending`: registered but still `unknown`; audio also stays pending until its `audio_usage` is confirmed.
 - `missing`: referenced by a theme contract but absent from the manifest.
 
 ## Theme Vault API

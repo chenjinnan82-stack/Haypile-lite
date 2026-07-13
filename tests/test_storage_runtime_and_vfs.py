@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import shutil
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -8,7 +10,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from app.services.storage_runtime import StorageRuntimeDB
+from app.services.storage_runtime import STORAGE_FORMAT_VERSION, StorageRuntimeDB
 from app.services.vfs_storage import VFSStorage
 
 
@@ -36,24 +38,109 @@ class StorageRuntimeDBTests(unittest.TestCase):
     def test_record_link_upserts_by_sha256(self) -> None:
         tmpdir = tempfile.mkdtemp()
         try:
+            root = Path(tmpdir)
+            one = root / "out/one.png"
+            two = root / "out/two.png"
+            one.parent.mkdir(parents=True)
+            one.write_bytes(b"one")
+            two.write_bytes(b"two")
             db = StorageRuntimeDB(db_path=Path(tmpdir) / "runtime.db")
             db.record_link(
                 sha256_hex="abc",
                 src_path=Path("one.png"),
-                dst_path=Path("out/one.png"),
+                dst_path=one,
                 strategy="copy",
             )
             db.record_link(
                 sha256_hex="abc",
                 src_path=Path("two.png"),
-                dst_path=Path("out/two.png"),
+                dst_path=two,
                 strategy="hardlink",
             )
 
             with closing(db.get_connection()) as conn:
                 rows = conn.execute("SELECT sha256, src_path, dst_path, strategy FROM vfs_asset_links").fetchall()
 
-            self.assertEqual(rows, [("abc", "two.png", "out/two.png", "hardlink")])
+            self.assertEqual(rows, [("abc", "two.png", str(two), "hardlink")])
+        finally:
+            time.sleep(0.05)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_asset_hash_index_only_reuses_unchanged_haypile_asset(self) -> None:
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            assets = tmpdir / "assets"
+            asset = assets / "generic/images/hero.png"
+            asset.parent.mkdir(parents=True)
+            asset.write_bytes(b"image")
+            db = StorageRuntimeDB(db_path=tmpdir / "index/runtime.db")
+            db.record_link(sha256_hex="known-sha", src_path=asset, dst_path=asset, strategy="copy")
+
+            self.assertEqual(db.asset_hash_index(assets), {"known-sha": asset.resolve()})
+            self.assertEqual(
+                StorageRuntimeDB.read_asset_hash_index(db.db_path, assets),
+                {"known-sha": asset.resolve()},
+            )
+            asset.write_bytes(b"changed-image")
+            self.assertEqual(db.asset_hash_index(assets), {})
+            self.assertEqual(StorageRuntimeDB.read_asset_hash_index(db.db_path, assets), {})
+        finally:
+            time.sleep(0.05)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_storage_format_marker_rejects_newer_data(self) -> None:
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            db_path = tmpdir / "index/runtime.db"
+            StorageRuntimeDB(db_path=db_path).ensure_ready()
+            marker = db_path.parent / "storage_format.json"
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), {"format_version": STORAGE_FORMAT_VERSION})
+
+            marker.write_text(json.dumps({"format_version": STORAGE_FORMAT_VERSION + 1}), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "newer version"):
+                StorageRuntimeDB(db_path=db_path).ensure_ready()
+        finally:
+            time.sleep(0.05)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_read_asset_hash_index_does_not_create_a_database(self) -> None:
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            db_path = tmpdir / "index/runtime.db"
+
+            self.assertEqual(StorageRuntimeDB.read_asset_hash_index(db_path, tmpdir / "assets"), {})
+            self.assertFalse(db_path.exists())
+        finally:
+            time.sleep(0.05)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_storage_runtime_adds_cache_columns_to_legacy_database(self) -> None:
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            db_path = tmpdir / "index/runtime.db"
+            db_path.parent.mkdir(parents=True)
+            asset = tmpdir / "assets/generic/images/legacy.png"
+            asset.parent.mkdir(parents=True)
+            asset.write_bytes(b"legacy")
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    "CREATE TABLE vfs_asset_links ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, sha256 TEXT NOT NULL, src_path TEXT NOT NULL, "
+                    "dst_path TEXT NOT NULL, strategy TEXT NOT NULL, "
+                    "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.execute(
+                    "INSERT INTO vfs_asset_links (sha256, src_path, dst_path, strategy) VALUES (?, ?, ?, ?)",
+                    ("legacy-sha", "legacy.png", str(asset), "copy"),
+                )
+                conn.commit()
+
+            db = StorageRuntimeDB(db_path=db_path)
+            db.ensure_ready()
+            with closing(db.get_connection()) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(vfs_asset_links)")}
+            self.assertTrue({"dst_size", "dst_mtime_ns"}.issubset(columns))
+            self.assertEqual(db.asset_hash_index(tmpdir / "assets"), {})
         finally:
             time.sleep(0.05)
             shutil.rmtree(tmpdir, ignore_errors=True)

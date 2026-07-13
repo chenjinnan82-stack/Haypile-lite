@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import httpx
 
 from app.core.config import get_settings
 from app.services.style_classifier import StyleClassifier
@@ -81,6 +83,38 @@ class StyleClassifierPowerTests(unittest.TestCase):
         self.assertFalse(classifier.enabled)
         self.assertEqual(result.reason, "low_power_mode")
         self.assertEqual(result.source, "disabled")
+
+    def test_sophon_transport_uses_gateway_and_returns_receipt(self) -> None:
+        classifier = StyleClassifier.__new__(StyleClassifier)
+        classifier.transport = "sophon"
+        classifier.sophon_base_url = "http://127.0.0.1:8030"
+        classifier.model = "qwen2.5vl:3b"
+        classifier._post_ollama_with_retry = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": " classified "}}]},
+            )
+        )
+        receipt = {
+            "schema_version": "sophon.runtime-receipt.v1",
+            "request_id": "receipt-id",
+            "status": "ok",
+        }
+        classifier._fetch_sophon_receipt = AsyncMock(return_value=receipt)
+
+        with patch.dict("os.environ", {"ADMIN_API_KEY": "local-secret"}, clear=False):
+            content, actual_receipt = asyncio.run(
+                classifier._call_model({"messages": [{"images": ["aW1hZ2U="]}]})
+            )
+
+        endpoint, _ = classifier._post_ollama_with_retry.await_args.args
+        headers = classifier._post_ollama_with_retry.await_args.kwargs["headers"]
+        self.assertEqual(content, "classified")
+        self.assertEqual(actual_receipt, receipt)
+        self.assertEqual(endpoint, "http://127.0.0.1:8030/v1/chat/completions")
+        self.assertEqual(headers["X-PimOS-Admin-Key"], "local-secret")
+        self.assertEqual(headers["X-Sophon-Client-Id"], "haypile-vision")
+        self.assertTrue(headers["X-Request-ID"].startswith("haypile-vision-"))
 
 
 if __name__ == "__main__":

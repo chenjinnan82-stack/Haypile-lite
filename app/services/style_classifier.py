@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from xml.etree import ElementTree
 
 import httpx
@@ -44,6 +46,7 @@ class StyleClassificationResult:
     tags: list[str] = field(default_factory=list)
     quality: str = "unknown"
     agent_summary: str = ""
+    runtime_receipt: dict[str, Any] = field(default_factory=dict)
 
     @property
     def confidence(self) -> float:
@@ -51,7 +54,7 @@ class StyleClassificationResult:
         return self.theme_confidence
 
     def ai_suggestions(self) -> dict[str, Any]:
-        return {
+        suggestions = {
             "source": self.source,
             "tags": self.tags,
             "usage": self.role,
@@ -63,6 +66,9 @@ class StyleClassificationResult:
             },
             "reason": self.reason,
         }
+        if self.runtime_receipt:
+            suggestions["runtime_receipt"] = self.runtime_receipt
+        return suggestions
 
 
 class StyleClassifier:
@@ -82,8 +88,10 @@ class StyleClassifier:
         settings = get_settings()
         self.low_power_mode: bool = bool(settings.HAYPILE_LOW_POWER_MODE)
         self.enabled: bool = bool(settings.VISION_CLASSIFIER_ENABLED) and not self.low_power_mode
+        self.transport: str = settings.VISION_CLASSIFIER_TRANSPORT
         self.model: str = settings.VISION_CLASSIFIER_MODEL
         self.base_url: str = settings.VISION_CLASSIFIER_BASE_URL.rstrip("/")
+        self.sophon_base_url: str = settings.SOPHON_BASE_URL.rstrip("/")
         self.timeout_seconds: float = float(settings.VISION_CLASSIFIER_TIMEOUT_SECONDS)
         self.max_image_bytes: int = int(settings.VISION_CLASSIFIER_MAX_IMAGE_BYTES)
         self.keep_alive: str = str(settings.VISION_CLASSIFIER_KEEP_ALIVE).strip()
@@ -164,23 +172,28 @@ class StyleClassifier:
         prompt = self._build_prompt(normalized_candidates, metadata)
         payload = self._build_request_payload(prompt=prompt, image_b64=image_b64)
 
-        raw = await self._call_model(payload)
+        raw, runtime_receipt = await self._call_model(payload)
         if not raw:
-            return self._fallback_result(
+            result = self._fallback_result(
                 reason="model_call_failed",
                 role="unknown",
                 source="model_fallback",
             )
+            result.runtime_receipt = runtime_receipt
+            return result
 
         parsed = self._parse_model_json(raw)
         if parsed is None:
-            return self._fallback_result(
+            result = self._fallback_result(
                 reason="model_json_parse_failed",
                 role="unknown",
                 source="model_fallback",
             )
+            result.runtime_receipt = runtime_receipt
+            return result
 
         result = self._normalize_result(parsed, normalized_candidates)
+        result.runtime_receipt = runtime_receipt
         if result.theme_confidence < self.confidence_threshold:
             return StyleClassificationResult(
                 theme_id=self.fallback_theme,
@@ -192,6 +205,7 @@ class StyleClassifier:
                 tags=result.tags,
                 quality=result.quality,
                 agent_summary=result.agent_summary,
+                runtime_receipt=runtime_receipt,
             )
 
         return result
@@ -302,15 +316,38 @@ class StyleClassifier:
         before_sleep=_log_timeout_retry,
         reraise=True,
     )
-    async def _post_ollama_with_retry(self, endpoint: str, payload: dict[str, Any]) -> httpx.Response:
+    async def _post_ollama_with_retry(
+        self,
+        endpoint: str,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
         async with self._limiter:
-            async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT) as client:
-                return await client.post(endpoint, json=payload)
+            async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT, trust_env=False) as client:
+                return await client.post(endpoint, json=payload, headers=headers)
 
-    async def _call_model(self, payload: dict[str, Any]) -> str:
-        endpoint = f"{self.base_url}/api/chat"
+    async def _call_model(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        request_id = ""
+        headers: dict[str, str] | None = None
+        if self.transport == "sophon":
+            api_key = self._sophon_api_key()
+            if not api_key:
+                logger.error("Sophon vision transport requires a local admin key.")
+                return "", {}
+            request_id = f"haypile-vision-{uuid4().hex}"
+            endpoint = f"{self.sophon_base_url}/v1/chat/completions"
+            headers = {
+                "X-PimOS-Admin-Key": api_key,
+                "X-Sophon-Provider": "ollama",
+                "X-Sophon-Client-Id": "haypile-vision",
+                "X-Sophon-Project-Id": "haypile",
+                "X-Request-ID": request_id,
+            }
+        else:
+            endpoint = f"{self.base_url}/api/chat"
         try:
-            response = await self._post_ollama_with_retry(endpoint, payload)
+            response = await self._post_ollama_with_retry(endpoint, payload, headers=headers)
+            receipt = await self._fetch_sophon_receipt(request_id) if request_id else {}
             if response.status_code != 200:
                 logger.error(
                     "Style classifier model call failed: status=%s endpoint=%s model=%s body=%s",
@@ -319,7 +356,7 @@ class StyleClassifier:
                     self.model,
                     response.text[:500],
                 )
-                return ""
+                return "", receipt
             data = response.json()
         except httpx.ReadTimeout as exc:
             logger.error(
@@ -346,23 +383,67 @@ class StyleClassifier:
                 self.model,
                 exc,
             )
-            return ""
+            receipt = await self._fetch_sophon_receipt(request_id) if request_id else {}
+            return "", receipt
 
         if not isinstance(data, dict):
-            return ""
+            return "", receipt
+
+        if self.transport == "sophon":
+            choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+            choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+            message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+            content = message.get("content")
+            return (content.strip(), receipt) if isinstance(content, str) else ("", receipt)
 
         message = data.get("message")
         if isinstance(message, dict):
             content = message.get("content")
             if isinstance(content, str):
-                return content.strip()
+                return content.strip(), receipt
 
         # Backward-compatible fallback key
         content = data.get("response")
         if isinstance(content, str):
-            return content.strip()
+            return content.strip(), receipt
 
-        return ""
+        return "", receipt
+
+    def _sophon_api_key(self) -> str:
+        configured = os.environ.get("ADMIN_API_KEY", "").strip()
+        if configured:
+            return configured
+        key_file = os.environ.get("PIMOS_ADMIN_API_KEY_FILE", "").strip()
+        if not key_file:
+            return ""
+        try:
+            return Path(key_file).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    async def _fetch_sophon_receipt(self, request_id: str) -> dict[str, Any]:
+        api_key = self._sophon_api_key()
+        if not request_id or not api_key:
+            return {}
+        try:
+            async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
+                response = await client.get(
+                    f"{self.sophon_base_url}/api/v1/sophon/model-usage/recent",
+                    params={"request_id": request_id},
+                    headers={"X-API-Key": api_key},
+                )
+            if response.status_code == 200:
+                payload = response.json()
+                events = payload.get("events") if isinstance(payload, dict) else None
+                if isinstance(events, list) and events and isinstance(events[0], dict):
+                    return events[0]
+        except (httpx.RequestError, ValueError):
+            pass
+        return {
+            "schema_version": "sophon.runtime-receipt.v1",
+            "request_id": request_id,
+            "status": "unavailable",
+        }
 
     @staticmethod
     def _parse_model_json(raw_text: str) -> dict[str, Any] | None:
@@ -519,7 +600,13 @@ class StyleClassifier:
                     or (getattr(image, "mode", "") == "P" and "transparency" in image.info)
                 )
                 return int(width), int(height), "yes" if has_alpha else "no"
-        except (UnidentifiedImageError, OSError, ValueError):
+        except (
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+            UnidentifiedImageError,
+            OSError,
+            ValueError,
+        ):
             return None, None, "unknown"
 
     @staticmethod

@@ -49,6 +49,10 @@ class AgentExampleTests(unittest.TestCase):
         self.assertEqual(handoff["assets"][0]["provenance"]["sha256"], "sha")
         self.assertEqual(handoff["assets"][0]["provenance"]["source_key"], "generic/images/hero.png")
         self.assertEqual(handoff["assets"][0]["ai_suggestions"]["quality"], "high")
+        self.assertIsNone(handoff["assets"][0]["duration_seconds"])
+        self.assertEqual(handoff["assets"][0]["audio_metadata"], {})
+        self.assertEqual(handoff["assets"][0]["audio_tags"], {})
+        self.assertEqual(handoff["assets"][0]["audio_usage"], "unknown")
         self.assertNotIn("storage/assets", json.dumps(handoff))
 
     def test_http_example_runs_against_http_endpoint(self) -> None:
@@ -148,6 +152,8 @@ class AgentExampleTests(unittest.TestCase):
         self.assertIn("source_key", text)
         self.assertIn("resolved_url", text)
         self.assertIn("provenance", text)
+        self.assertIn("audio_usage", text)
+        self.assertIn("audio_tags", text)
         self.assertIn("Never inspect Haypile's local storage directory.", text)
 
     def test_public_smoke_demo_creates_headless_handoff(self) -> None:

@@ -31,7 +31,11 @@ Default protections include loopback-only HTTP binding, no browser CORS access
 unless an explicit loopback origin is configured, manifest-gated static files,
 private local storage/log directories, authenticated local IPC, and sandboxed
 non-cacheable static responses. Browser-import source URLs are stored and
-exported without credentials, query parameters, or fragments.
+exported without credentials, query parameters, or fragments. Local model,
+MCP, and example HTTP calls bypass ambient proxy settings so local asset
+payloads do not leave the machine through an inherited proxy. Invalid or
+decompression-bomb images are rejected, and API 500 responses do not echo
+local filesystem paths.
 
 Haypile does not defend against malware or another process already running as
 the same operating-system user. Such a process has the user's own local access.

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+logger = logging.getLogger(__name__)
 
 
 class ResourceExhaustedError(RuntimeError):
@@ -75,12 +79,17 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request,
         exc: Exception,
     ) -> JSONResponse:
+        logger.exception(
+            "Unhandled Haypile request request_id=%s path=%s",
+            _request_id_from(request),
+            request.url.path,
+        )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=_error_body(
                 request=request,
                 error_code="INTERNAL_SERVER_ERROR",
                 message="Internal server error.",
-                detail=str(exc),
+                detail=None,
             ),
         )

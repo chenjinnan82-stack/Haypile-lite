@@ -28,7 +28,20 @@ class IpcConfigTests(unittest.TestCase):
         settings = Settings(_env_file=None)
 
         self.assertFalse(settings.HAYPILE_LOW_POWER_MODE)
+        self.assertEqual(settings.VISION_CLASSIFIER_TRANSPORT, "ollama")
         self.assertEqual(settings.VISION_CLASSIFIER_KEEP_ALIVE, "30s")
+
+    def test_sophon_transport_keeps_gateway_local(self) -> None:
+        settings = Settings(
+            _env_file=None,
+            VISION_CLASSIFIER_TRANSPORT="SOPHON",
+            SOPHON_BASE_URL="http://localhost:8030/",
+        )
+        invalid = Settings(_env_file=None, SOPHON_BASE_URL="https://example.com")
+
+        self.assertEqual(settings.VISION_CLASSIFIER_TRANSPORT, "sophon")
+        self.assertEqual(settings.SOPHON_BASE_URL, "http://localhost:8030")
+        self.assertEqual(invalid.SOPHON_BASE_URL, "http://127.0.0.1:8030")
 
     def test_ipc_authkey_uses_admin_key_when_available(self) -> None:
         with patch.dict("os.environ", {"ADMIN_API_KEY": "admin-secret", "IPC_AUTHKEY": ""}, clear=False):

@@ -11,16 +11,17 @@ from typing import Any
 BASE_URL = os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010").rstrip("/")
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_VERSION = "0.2.0"
+LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def get_json(path: str) -> Any:
-    with urllib.request.urlopen(BASE_URL + path, timeout=5) as response:
+    with LOCAL_OPENER.open(BASE_URL + path, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
 def get_status_json(path: str) -> dict[str, Any]:
     try:
-        with urllib.request.urlopen(BASE_URL + path, timeout=5) as response:
+        with LOCAL_OPENER.open(BASE_URL + path, timeout=5) as response:
             return {"status_code": response.status, "body": json.loads(response.read().decode("utf-8"))}
     except urllib.error.HTTPError as exc:
         return {"status_code": exc.code, "body": json.loads(exc.read().decode("utf-8") or "{}")}
@@ -32,12 +33,18 @@ def list_bundles(
     asset_type: str | None = None,
     role: str | None = None,
     theme_id: str | None = None,
+    audio_usage: str | None = None,
+    limit: int | None = None,
+    cursor: str | None = None,
 ) -> Any:
     query = {
         "status": status,
         "type": asset_type,
         "role": role,
         "theme_id": theme_id,
+        "audio_usage": audio_usage,
+        "limit": limit,
+        "cursor": cursor,
     }
     encoded = urllib.parse.urlencode({key: value for key, value in query.items() if value})
     return get_json("/api/v1/bundles" + (f"?{encoded}" if encoded else ""))
@@ -66,6 +73,10 @@ def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
         "access": bundle["access"],
         "resolved_url": resolved_url,
         "ai_suggestions": bundle.get("ai_suggestions", {}),
+        "duration_seconds": bundle.get("duration_seconds"),
+        "audio_metadata": bundle.get("audio_metadata", {}),
+        "audio_tags": bundle.get("audio_tags", {}),
+        "audio_usage": bundle.get("audio_usage", "unknown"),
         "provenance": {
             "source": "haypile",
             "id": bundle["id"],
@@ -87,6 +98,9 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             asset_type=arguments.get("type"),
             role=arguments.get("role"),
             theme_id=arguments.get("theme_id"),
+            audio_usage=arguments.get("audio_usage"),
+            limit=arguments.get("limit"),
+            cursor=arguments.get("cursor"),
         )
     if name == "haypile_copy_handoff":
         bundles = list_bundles(
@@ -94,6 +108,9 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             asset_type=arguments.get("type"),
             role=arguments.get("role"),
             theme_id=arguments.get("theme_id"),
+            audio_usage=arguments.get("audio_usage"),
+            limit=arguments.get("limit"),
+            cursor=arguments.get("cursor"),
         )
         return build_handoff(bundles)
     if name == "haypile_get_bundle":
@@ -119,7 +136,7 @@ TOOLS = [
     },
     {
         "name": "haypile_list_bundles",
-        "description": "List registered Haypile bundles. Defaults to status=ready and returns provenance fields id, sha256, source_key, and url.",
+        "description": "List registered Haypile bundles. Audio bundles include duration_seconds, audio_metadata, audio_tags, and audio_usage when available.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -127,12 +144,15 @@ TOOLS = [
                 "type": {"type": "string"},
                 "role": {"type": "string"},
                 "theme_id": {"type": "string"},
+                "audio_usage": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "cursor": {"type": "string"},
             },
         },
     },
     {
         "name": "haypile_copy_handoff",
-            "description": "Return an asset-handoff JSON payload for bundles. Agents should use resolved_url and preserve id, role, status, sha256, source_key, url, and provenance.",
+        "description": "Return asset-handoff JSON. Preserve identity/provenance fields and audio duration, metadata, and usage when present.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -140,6 +160,9 @@ TOOLS = [
                 "type": {"type": "string"},
                 "role": {"type": "string"},
                 "theme_id": {"type": "string"},
+                "audio_usage": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "cursor": {"type": "string"},
             },
         },
     },

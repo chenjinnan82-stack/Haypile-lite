@@ -6,16 +6,17 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from mutagen import File as MutagenFile
+from mutagen import File as MutagenFile, MutagenError
 from PIL import Image, UnidentifiedImageError
 
 from app.core.config import get_settings
 from app.services.json_io import atomic_write_json
+from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
 
 
 class AssetScanner:
     IMAGE_EXTENSIONS: set[str] = {".png", ".webp", ".svg", ".jpg", ".jpeg"}
-    AUDIO_EXTENSIONS: set[str] = {".mp3", ".ogg", ".wav"}
+    AUDIO_EXTENSIONS: set[str] = set(SUPPORTED_AUDIO_EXTENSIONS)
 
     def __init__(self, assets_dir: Path | None = None, manifest_path: Path | None = None) -> None:
         settings = get_settings()
@@ -55,7 +56,13 @@ class AssetScanner:
     def _scan_image(self, path: Path) -> dict[str, Any] | None:
         try:
             width, height = self._read_image_size(path)
-        except (UnidentifiedImageError, OSError, ValueError):
+        except (
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+            UnidentifiedImageError,
+            OSError,
+            ValueError,
+        ):
             return None
 
         if height == 0:
@@ -70,7 +77,10 @@ class AssetScanner:
         }
 
     def _scan_audio(self, path: Path) -> dict[str, Any] | None:
-        audio = MutagenFile(path)
+        try:
+            audio = MutagenFile(path)
+        except (MutagenError, OSError, ValueError):
+            return None
         if audio is None or audio.info is None:
             return None
 
@@ -78,8 +88,54 @@ class AssetScanner:
         return {
             "type": "audio",
             "duration_seconds": round(duration_seconds, 3),
+            "audio_metadata": self._audio_metadata(audio),
+            "audio_tags": self._audio_tags(audio),
             "url_path": self._to_url_path(path),
         }
+
+    @staticmethod
+    def _audio_metadata(audio: Any) -> dict[str, int]:
+        info = audio.info
+        fields = {
+            "bitrate_bps": getattr(info, "bitrate", None),
+            "sample_rate_hz": getattr(info, "sample_rate", None),
+            "channels": getattr(info, "channels", None),
+        }
+        return {
+            key: int(value)
+            for key, value in fields.items()
+            if isinstance(value, (int, float)) and value > 0
+        }
+
+    @classmethod
+    def _audio_tags(cls, audio: Any) -> dict[str, str]:
+        tags = getattr(audio, "tags", None)
+        if tags is None or not hasattr(tags, "get"):
+            return {}
+        fields = {
+            "title": ("title", "TITLE", "TIT2", "\u00a9nam"),
+            "artist": ("artist", "ARTIST", "TPE1", "\u00a9ART"),
+            "album": ("album", "ALBUM", "TALB", "\u00a9alb"),
+        }
+        return {
+            name: text
+            for name, keys in fields.items()
+            if (text := cls._tag_text(tags, keys))
+        }
+
+    @staticmethod
+    def _tag_text(tags: Any, keys: tuple[str, ...]) -> str:
+        for key in keys:
+            value = tags.get(key)
+            if value is None:
+                continue
+            value = getattr(value, "text", value)
+            if isinstance(value, (list, tuple)):
+                value = next((item for item in value if str(item).strip()), "")
+            text = str(value or "").strip()
+            if text:
+                return text[:160]
+        return ""
 
     def _read_image_size(self, path: Path) -> tuple[int, int]:
         if path.suffix.lower() == ".svg":
