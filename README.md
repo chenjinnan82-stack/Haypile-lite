@@ -32,8 +32,8 @@ No Python required.
 
 | Platform | Download | Status |
 | --- | --- | --- |
-| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.1/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed, not notarized |
-| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.2/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.2/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned test build |
+| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.3/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.3/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed, not notarized |
+| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.3/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.3/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned test build |
 
 ### macOS
 
