@@ -47,7 +47,7 @@ import httpx
 from app.core.config import configure_packaged_logging, get_settings, runtime_mode_command
 from app.core.exceptions import ResourceExhaustedError
 from app.core.ipc import send_ipc_request
-from app.services.asset_provenance import read_asset_provenance, write_asset_provenance
+from app.services.asset_provenance import public_origin_url, read_asset_provenance, write_asset_provenance
 from app.services.bundle_service import BundleService
 from app.services.json_io import atomic_write_json
 from app.services.scanner import AssetScanner
@@ -192,6 +192,8 @@ class RemoteDownloadWorker(QThread):
     progress_signal = Signal(int, str)
 
     MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024
+    MAX_TOTAL_DOWNLOAD_BYTES = 1024 * 1024 * 1024
+    MAX_URLS = 20
     TIMEOUT_SECONDS = 15.0
     CONTENT_TYPE_EXTENSIONS: dict[str, tuple[str, str]] = {
         "image/png": ("image", ".png"),
@@ -211,19 +213,26 @@ class RemoteDownloadWorker(QThread):
 
     def run(self) -> None:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            self.incoming_dir.chmod(0o700)
         downloaded: list[Path] = []
         failed = 0
         too_large = 0
         unsupported = 0
+        downloaded_bytes = 0
         total = max(len(self.urls), 1)
         for index, url in enumerate(self.urls, start=1):
             if self.isInterruptionRequested():
                 return
             self.progress_signal.emit(int((index - 1) / total * 80) + 8, ui_text(f"获取网页素材 {index}/{total}", f"Fetching web asset {index}/{total}"))
             try:
-                path, reason = self._download_one(url, index)
+                remaining = self.MAX_TOTAL_DOWNLOAD_BYTES - downloaded_bytes
+                if remaining <= 0:
+                    too_large += 1
+                    break
+                path, reason = self._download_one(url, index, max_bytes=min(self.MAX_FILE_SIZE_BYTES, remaining))
             except (httpx.HTTPError, OSError, ValueError) as exc:
-                logger.warning("网页素材下载失败 url=%s error=%s", url, exc)
+                logger.warning("网页素材下载失败 url=%s error=%s", public_origin_url(url), exc)
                 failed += 1
                 continue
             if path is None:
@@ -235,6 +244,7 @@ class RemoteDownloadWorker(QThread):
                     failed += 1
                 continue
             downloaded.append(path)
+            downloaded_bytes += path.stat().st_size
 
         if not downloaded:
             if unsupported and not failed and not too_large:
@@ -252,7 +262,7 @@ class RemoteDownloadWorker(QThread):
         self.progress_signal.emit(95, message)
         self.finished_signal.emit(downloaded, message, True)
 
-    def _download_one(self, url: str, index: int) -> tuple[Path | None, str]:
+    def _download_one(self, url: str, index: int, *, max_bytes: int | None = None) -> tuple[Path | None, str]:
         parsed = urlparse(url)
         if parsed.scheme.lower() not in {"http", "https"}:
             return None, "unsupported"
@@ -264,12 +274,14 @@ class RemoteDownloadWorker(QThread):
             if content_type not in self.CONTENT_TYPE_EXTENSIONS:
                 return None, "unsupported"
             content_length = self._content_length(response.headers.get("content-length"))
-            if content_length > self.MAX_FILE_SIZE_BYTES:
+            byte_limit = self.MAX_FILE_SIZE_BYTES if max_bytes is None else max(0, max_bytes)
+            if content_length > byte_limit:
                 return None, "too_large"
             _kind, default_extension = self.CONTENT_TYPE_EXTENSIONS[content_type]
             destination = self._destination_for(url, content_type, default_extension, index)
             total = 0
-            with destination.open("wb") as target:
+            fd = os.open(str(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as target:
                 for chunk in response.iter_bytes():
                     if self.isInterruptionRequested():
                         destination.unlink(missing_ok=True)
@@ -277,7 +289,7 @@ class RemoteDownloadWorker(QThread):
                     if not chunk:
                         continue
                     total += len(chunk)
-                    if total > self.MAX_FILE_SIZE_BYTES:
+                    if total > byte_limit:
                         destination.unlink(missing_ok=True)
                         return None, "too_large"
                     target.write(chunk)
@@ -287,7 +299,7 @@ class RemoteDownloadWorker(QThread):
                 write_asset_provenance(
                     destination,
                     {
-                        "origin_url": url,
+                        "origin_url": public_origin_url(url),
                         "content_type": content_type,
                         "downloaded_at": datetime.now(timezone.utc).isoformat(),
                         "temp_file": str(destination),
@@ -331,6 +343,8 @@ class RemoteDownloadWorker(QThread):
                 continue
             seen.add(key)
             result.append(key)
+            if len(result) >= RemoteDownloadWorker.MAX_URLS:
+                break
         return result
 
     @staticmethod

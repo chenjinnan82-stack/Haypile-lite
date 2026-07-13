@@ -77,4 +77,7 @@ def start_ipc_listener(
     ipc_address = address or get_ipc_address()
     family = get_listener_family()
     cleanup_unix_socket(ipc_address)
-    return Listener(ipc_address, family=family, authkey=authkey or get_ipc_authkey())
+    listener = Listener(ipc_address, family=family, authkey=authkey or get_ipc_authkey())
+    if not is_windows() and Path(ipc_address).exists():
+        Path(ipc_address).chmod(0o600)
+    return listener

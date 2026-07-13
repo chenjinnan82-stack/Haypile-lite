@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 import shutil
 import time
@@ -23,6 +24,8 @@ class VFSStorage:
         for attempt in range(self.copy_max_retries):
             try:
                 shutil.copy2(source, destination)
+                if os.name != "nt" and destination.exists():
+                    destination.chmod(0o600)
                 return
             except PermissionError as exc:
                 last_error = exc

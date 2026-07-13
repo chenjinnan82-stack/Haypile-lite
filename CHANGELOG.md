@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.0-test.4
+
+Local data security hardening.
+
+- Force the HTTP backend to bind to loopback and reject untrusted Host headers.
+- Disable browser CORS access by default and allow only explicit loopback origins.
+- Keep local AI model endpoints on loopback so assets are not silently uploaded.
+- Store Haypile data, logs, IPC secrets, sockets, JSON, and copied assets with private permissions.
+- Sandbox static responses, disable caching, and prevent MIME sniffing.
+- Strip credentials, query parameters, and fragments from browser-import provenance.
+- Bound remote imports to 20 URLs and 1 GiB per drop.
+
 ## v0.2.0-test.1
 
 Apple Silicon test app.

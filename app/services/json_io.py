@@ -19,7 +19,7 @@ def atomic_write_json(path: Path, payload: Any) -> None:
         for attempt in range(8):
             temp_path = _candidate_temp_path(target, attempt)
             try:
-                fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+                fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 break
             except FileExistsError as exc:
                 last_error = exc

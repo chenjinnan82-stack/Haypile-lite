@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.v1.health import router as health_router
 from app.api.v1.bundles import router as bundles_router
@@ -50,6 +51,14 @@ class ManifestStaticFiles(StaticFiles):
             return "", None
         return full_path, stat_result
 
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     def _manifest_keys(self) -> set[str]:
         try:
             payload = json.loads(self.manifest_path.read_text(encoding="utf-8"))
@@ -76,6 +85,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 
 app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"],
+)
+
+app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=settings.cors_allow_credentials,
@@ -91,6 +105,9 @@ async def attach_request_id(request: Request, call_next) -> Response:
     request.state.request_id = request_id
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    if request.url.path.startswith(("/api/", "/healthz", "/readyz")):
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 

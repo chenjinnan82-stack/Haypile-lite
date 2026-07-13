@@ -49,5 +49,6 @@ Agents should treat `ai_suggestions` as metadata, not as ground truth.
 
 ## Privacy
 
-The v0.1 AI path is local Ollama only. Haypile does not require a cloud API key
-for sorting.
+The current AI path is local Ollama only. Haypile does not require a cloud API
+key for sorting, and non-loopback model endpoints are rejected so imported
+images are not silently sent to a remote classifier.

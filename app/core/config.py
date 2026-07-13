@@ -9,6 +9,7 @@ from pathlib import Path
 import secrets
 import sys
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -103,7 +104,7 @@ def configure_packaged_logging(role: str, log_dir: Path) -> None:
     marker = f"haypile-{role}"
     if any(getattr(handler, "name", "") == marker for handler in root.handlers):
         return
-    log_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_private_directory(log_dir)
     handler = RotatingFileHandler(
         log_dir / f"{role}.log",
         maxBytes=1024 * 1024,
@@ -125,7 +126,7 @@ class Settings(BaseSettings):
     )
 
     PROJECT_NAME: str = "Haypile Asset Service"
-    CORS_ORIGINS: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
+    CORS_ORIGINS: list[str] = []
     DEFAULT_THEME: str = "default_theme"
     PORT: int = 8010
     HOST: str = "127.0.0.1"
@@ -166,6 +167,7 @@ class Settings(BaseSettings):
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: Any) -> list[str]:
+        candidates: list[str]
         if isinstance(value, str):
             text: str = value.strip()
             if not text:
@@ -175,11 +177,26 @@ class Settings(BaseSettings):
 
                 parsed: Any = json.loads(text)
                 if isinstance(parsed, list):
-                    return [str(item).strip() for item in parsed if str(item).strip()]
-            return [item.strip() for item in text.split(",") if item.strip()]
-        if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
-        return ["http://127.0.0.1:5173", "http://localhost:5173"]
+                    candidates = [str(item).strip() for item in parsed if str(item).strip()]
+                else:
+                    candidates = []
+            else:
+                candidates = [item.strip() for item in text.split(",") if item.strip()]
+        elif isinstance(value, list):
+            candidates = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            candidates = []
+        return [
+            origin
+            for origin in candidates
+            if (parsed := urlparse(origin)).scheme in {"http", "https"}
+            and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.path in {"", "/"}
+            and not parsed.query
+            and not parsed.fragment
+        ]
 
     @property
     def cors_allow_credentials(self) -> bool:
@@ -188,8 +205,11 @@ class Settings(BaseSettings):
     @field_validator("VISION_CLASSIFIER_BASE_URL", mode="before")
     @classmethod
     def normalize_vision_base_url(cls, value: Any) -> str:
-        text = str(value or "").strip()
-        return text.rstrip("/") if text else "http://127.0.0.1:11434"
+        text = str(value or "http://127.0.0.1:11434").strip().rstrip("/")
+        parsed = urlparse(text)
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            return "http://127.0.0.1:11434"
+        return text
 
     @field_validator("VISION_CLASSIFIER_TIMEOUT_SECONDS", mode="before")
     @classmethod
@@ -237,8 +257,7 @@ class Settings(BaseSettings):
     @field_validator("HOST", mode="before")
     @classmethod
     def normalize_host(cls, value: Any) -> str:
-        text = str(value or "").strip()
-        return text or "127.0.0.1"
+        return "127.0.0.1"
 
     @field_validator("IPC_CHANNEL", mode="before")
     @classmethod
@@ -262,7 +281,16 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    _ensure_private_directory(settings.STORAGE_DIR)
+    _ensure_private_directory(settings.LOG_DIR)
+    return settings
+
+
+def _ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        path.chmod(0o700)
 
 
 def _read_or_create_ipc_authkey() -> str:
@@ -273,15 +301,30 @@ def _read_or_create_ipc_authkey() -> str:
             str(storage_dir / "ipc_authkey"),
         )
     )
+    _ensure_private_directory(key_path.parent)
     try:
         existing = key_path.read_text(encoding="utf-8").strip()
         if existing and existing != "haypile-ipc-v1":
+            if os.name != "nt":
+                key_path.chmod(0o600)
             return existing
     except OSError:
         pass
     token = secrets.token_hex(32)
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-    key_path.write_text(token, encoding="ascii")
+    try:
+        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        try:
+            existing = key_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            existing = ""
+        if existing and existing != "haypile-ipc-v1":
+            if os.name != "nt":
+                key_path.chmod(0o600)
+            return existing
+        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as target:
+        target.write(token)
     try:
         key_path.chmod(0o600)
     except OSError:

@@ -20,12 +20,22 @@ enabled for the repository. Include:
 
 ## Supported Version
 
-The current public release line is `v0.1.x`.
+The current public test release line is `v0.2.x`.
 
 ## Notes
 
 HTTP and MCP APIs are intended for local use. Do not expose the Haypile backend
 directly to an untrusted network.
+
+Default protections include loopback-only HTTP binding, no browser CORS access
+unless an explicit loopback origin is configured, manifest-gated static files,
+private local storage/log directories, authenticated local IPC, and sandboxed
+non-cacheable static responses. Browser-import source URLs are stored and
+exported without credentials, query parameters, or fragments.
+
+Haypile does not defend against malware or another process already running as
+the same operating-system user. Such a process has the user's own local access.
+Do not place secrets in filenames or media metadata intended for agent handoff.
 
 Please report privately if:
 

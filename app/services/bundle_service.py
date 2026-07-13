@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
-from app.services.asset_provenance import read_asset_provenance
+from app.services.asset_provenance import public_origin_url, read_asset_provenance
 from app.services.json_io import atomic_write_json
 
 
@@ -69,7 +69,7 @@ class BundleService:
                     "url": url,
                     "access": "manifest_static",
                     "source_key": source_key,
-                    "origin_url": str(provenance.get("origin_url") or ""),
+                    "origin_url": public_origin_url(str(provenance.get("origin_url") or "")),
                     "content_type": str(provenance.get("content_type") or ""),
                     "downloaded_at": str(provenance.get("downloaded_at") or ""),
                     "ai_suggestions": ai_suggestions if isinstance(ai_suggestions, dict) else {},
@@ -95,7 +95,7 @@ class BundleService:
                     "url": url,
                     "access": "manifest_static",
                     "source_key": source_key,
-                    "origin_url": str(provenance.get("origin_url") or ""),
+                    "origin_url": public_origin_url(str(provenance.get("origin_url") or "")),
                     "content_type": str(provenance.get("content_type") or ""),
                     "downloaded_at": str(provenance.get("downloaded_at") or ""),
                     "ai_suggestions": ai_suggestions if isinstance(ai_suggestions, dict) else {},
