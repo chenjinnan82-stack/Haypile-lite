@@ -32,6 +32,13 @@ dist/Haypile-v0.2.0-macos-arm64.app.zip.sha256
 
 Build outputs are intentionally ignored by Git.
 
+## Install and open
+
+Unzip the test build and drag `Haypile.app` into `/Applications`. Open it from
+Spotlight, Launchpad, Finder's Applications folder, or keep it in the Dock.
+On the first launch, right-click the app and choose **Open** because the test
+build is not notarized.
+
 ## Runtime modes
 
 The same frozen executable provides all three entry points:

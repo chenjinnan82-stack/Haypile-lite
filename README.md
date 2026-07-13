@@ -38,7 +38,8 @@ No Python required.
 ### macOS
 
 This limited test build is ad-hoc signed and not notarized. After unzipping,
-right-click `Haypile.app` and choose **Open**. If macOS still blocks it, use
+drag `Haypile.app` into **Applications**, then right-click it and choose
+**Open**. Later, launch Haypile from Spotlight, Launchpad, or the Dock. If macOS still blocks it, use
 **System Settings -> Privacy & Security -> Open Anyway**.
 
 ### Windows

@@ -18,6 +18,7 @@ APP="$DIST_DIR/Haypile.app"
 BIN="$APP/Contents/MacOS/Haypile"
 ZIP="$DIST_DIR/Haypile-v0.2.0-macos-arm64.app.zip"
 SPEC="$ROOT/pysidedeploy.spec"
+ICON_SOURCE="$ROOT/assets/haypile-app-icon.png"
 SPEC_BACKUP=""
 SMOKE_ROOT=""
 backend_pid=""
@@ -42,6 +43,7 @@ command -v sips >/dev/null
 command -v iconutil >/dev/null
 command -v codesign >/dev/null
 command -v ditto >/dev/null
+test -f "$ICON_SOURCE"
 
 if [[ ! -x "$VENV/bin/python3" ]]; then
   "$PYTHON" -m venv "$VENV"
@@ -57,7 +59,7 @@ rm -rf "$ICONSET" "$APP" "$ZIP" "$ZIP.sha256"
 mkdir -p "$ICONSET" "$DIST_DIR"
 
 while read -r pixels filename; do
-  sips -z "$pixels" "$pixels" assets/logo.png --out "$ICONSET/$filename" >/dev/null
+  sips -z "$pixels" "$pixels" "$ICON_SOURCE" --out "$ICONSET/$filename" >/dev/null
 done <<'EOF'
 16 icon_16x16.png
 32 icon_16x16@2x.png
@@ -75,9 +77,14 @@ iconutil -c icns "$ICONSET" -o "$BUILD_DIR/Haypile.icns"
 "$VENV/bin/pyside6-deploy" -c pysidedeploy.spec -f
 
 test -x "$BIN"
+test -f "$APP/Contents/Resources/Haypile.icns"
 test -f "$APP/Contents/MacOS/ui_assets/haypile-icon.png"
 test -f "$APP/Contents/MacOS/ui_assets/drop-leaf-frame.svg"
-test -f "$APP/Contents/MacOS/assets/logo.png"
+test -f "$APP/Contents/MacOS/assets/haypile-app-icon.png"
+if /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$APP/Contents/Info.plist" >/dev/null 2>&1; then
+  echo "Haypile.app unexpectedly hides its Dock icon." >&2
+  exit 1
+fi
 
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"

@@ -68,7 +68,7 @@ macos.permissions =
 mode = standalone
 
 # specify any extra nuitka arguments
-extra_args = --quiet --assume-yes-for-downloads --noinclude-qt-translations --include-data-dir=ui_assets=ui_assets --include-data-dir=assets=assets --output-filename=Haypile --macos-app-name=Haypile --macos-app-mode=ui-element --macos-app-version=0.2.0 --product-name=Haypile --product-version=0.2.0
+extra_args = --quiet --assume-yes-for-downloads --noinclude-qt-translations --include-data-dir=ui_assets=ui_assets --include-data-dir=assets=assets --output-filename=Haypile --macos-app-name=Haypile --macos-app-version=0.2.0 --product-name=Haypile --product-version=0.2.0
 
 [buildozer]
 
