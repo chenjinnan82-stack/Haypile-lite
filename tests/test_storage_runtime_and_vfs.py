@@ -61,7 +61,7 @@ class StorageRuntimeDBTests(unittest.TestCase):
             with closing(db.get_connection()) as conn:
                 rows = conn.execute("SELECT sha256, src_path, dst_path, strategy FROM vfs_asset_links").fetchall()
 
-            self.assertEqual(rows, [("abc", "two.png", str(two), "hardlink")])
+            self.assertEqual(rows, [("abc", "two.png", two.as_posix(), "hardlink")])
         finally:
             time.sleep(0.05)
             shutil.rmtree(tmpdir, ignore_errors=True)
