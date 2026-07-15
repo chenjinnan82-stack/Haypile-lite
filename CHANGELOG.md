@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.0-test.6
+
+Desktop package synchronization release.
+
+- Rebuild macOS Apple Silicon and Windows x64 packages from the latest hardened main branch.
+- Add audio metadata and usage fields to bundles and agent handoffs.
+- Add cursor pagination for larger bundle collections.
+- Add local Sophon vision transport and receipt support.
+- Reject decompression-bomb images and manifest paths outside the asset root.
+- Prevent local filesystem paths from leaking through internal HTTP errors.
+- Bypass ambient proxies for local model payloads, MCP, and example HTTP calls.
+- Verify the release with 184 tests, packaged backend/MCP smoke checks, and SHA-256 files.
+
 ## v0.2.0-test.5
 
 Local data and dependency security hardening.
