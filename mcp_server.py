@@ -55,7 +55,7 @@ class McpSessionHeartbeat:
 
     def touch(self) -> None:
         try:
-            os.utime(self.path, None, follow_symlinks=False)
+            os.utime(self.path, None)
         except OSError:
             pass
 
