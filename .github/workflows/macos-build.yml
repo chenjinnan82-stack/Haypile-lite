@@ -1,0 +1,49 @@
+name: macOS app build
+
+on:
+  push:
+    tags:
+      - "v0.2.0-test.*"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Tag or commit to build
+        required: true
+        type: string
+      release_tag:
+        description: Draft release tag to receive the ZIP
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build and verify Apple Silicon app
+        run: ./scripts/build_macos_app.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Haypile-v0.2.0-macos-arm64
+          path: |
+            dist/Haypile-v0.2.0-macos-arm64.app.zip
+            dist/Haypile-v0.2.0-macos-arm64.app.zip.sha256
+          if-no-files-found: error
+      - name: Upload draft release assets
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            dist/Haypile-v0.2.0-macos-arm64.app.zip \
+            dist/Haypile-v0.2.0-macos-arm64.app.zip.sha256 \
+            --clobber
