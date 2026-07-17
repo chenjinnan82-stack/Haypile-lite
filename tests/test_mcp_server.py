@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +16,56 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class McpServerTests(unittest.TestCase):
+    def test_mcp_heartbeat_is_private_and_contains_no_asset_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            index_dir = Path(tmp) / "index"
+            heartbeat = mcp_server.McpSessionHeartbeat(index_dir).start()
+            try:
+                sessions = mcp_server.active_mcp_sessions(index_dir)
+                self.assertEqual(len(sessions), 1)
+                self.assertNotIn("client", sessions[0])
+                self.assertNotIn("source_key", json.dumps(sessions[0]))
+                self.assertNotIn("handoff", json.dumps(sessions[0]))
+                if os.name != "nt":
+                    self.assertEqual(heartbeat.directory.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual(heartbeat.path.stat().st_mode & 0o777, 0o600)
+                heartbeat.path.unlink()
+                heartbeat.touch()
+                self.assertFalse(heartbeat.path.exists())
+            finally:
+                heartbeat.stop()
+            self.assertEqual(mcp_server.active_mcp_sessions(index_dir), [])
+
+    def test_mcp_session_reader_times_out_and_cleans_old_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            index_dir = Path(tmp) / "index"
+            directory = index_dir / "mcp_sessions"
+            directory.mkdir(parents=True)
+            stale = directory / "101.json"
+            expired = directory / "102.json"
+            for path, pid in ((stale, 101), (expired, 102)):
+                path.write_text(json.dumps({"pid": pid, "client": {"name": "Codex"}}), encoding="utf-8")
+            now = time.time()
+            os.utime(stale, (now - 13, now - 13))
+            os.utime(expired, (now - 61, now - 61))
+
+            self.assertEqual(mcp_server.active_mcp_sessions(index_dir, now=now), [])
+            self.assertTrue(stale.exists())
+            self.assertFalse(expired.exists())
+
+    @unittest.skipIf(os.name == "nt", "Windows symlink permissions vary")
+    def test_mcp_session_storage_rejects_symlink_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            index_dir = Path(tmp) / "index"
+            target = Path(tmp) / "redirected"
+            target.mkdir()
+            index_dir.mkdir()
+            (index_dir / "mcp_sessions").symlink_to(target, target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                mcp_server.McpSessionHeartbeat(index_dir).start()
+            self.assertEqual(mcp_server.active_mcp_sessions(index_dir), [])
+
     def test_app_entry_mcp_mode_does_not_load_qt(self) -> None:
         request = {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
         process = subprocess.run(

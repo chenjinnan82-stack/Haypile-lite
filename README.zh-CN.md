@@ -31,8 +31,8 @@ Haypile 副本仅用于兼容，不得作为公开发行包，也不得反向覆
 
 | 平台 | 下载 | 状态 |
 | --- | --- | --- |
-| macOS Apple Silicon | [应用 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.6/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.6/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc 签名，未公证 |
-| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.6/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.6/Haypile-v0.2.0-windows-x64.zip.sha256) | 未签名测试版 |
+| macOS Apple Silicon | [应用 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc 签名，未公证 |
+| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-windows-x64.zip.sha256) | 未签名测试版 |
 
 ### macOS
 
@@ -43,7 +43,7 @@ Haypile 副本仅用于兼容，不得作为公开发行包，也不得反向覆
 
 ### Windows
 
-解压便携包后运行 `Haypile\Haypile.exe`。首个 x64 测试包尚未签名，Windows 可能
+解压便携包后运行 `Haypile\Haypile.exe`。这个 x64 测试包尚未签名，Windows 可能
 显示 Microsoft Defender SmartScreen 提示；运行前请先核对 SHA-256。Windows
 自动测试、打包后 MCP/后端冒烟检查及产物校验均已通过，真实 Windows 桌面交互
 仍待外部测试。
@@ -78,6 +78,9 @@ python3 examples/use_haypile_http.py
 
 ![Haypile agent workflow demo](docs/haypile-demo.gif)
 
+桌面界面现在始终以草堆为固定原点：三入口 C 环展开附着式“素材、Agent、设置”
+抽屉，投放目标本身不会被面板推走。
+
 ## 为什么
 
 agent 如果能拿到用户真实的图片、音频和主题碎片，生成效果会好很多。问题是原始文件夹太乱：素材散落、命名不可靠、重复文件越来越多，而且简单生成任务不应该获得整个硬盘目录的访问权。
@@ -89,6 +92,7 @@ Haypile 是一个带边界的本地素材草堆。你把文件拖进去，它负
 ## 现在能做什么
 
 - 提供一个小型桌面拖拽入口，接收图片和音频（`mp3`、`wav`、`ogg`、`m4a`、`flac`、`aac`）。
+- 将素材、Agent 接入和设置收束在一个附着式桌面组件中。
 - 对素材做 hash、去重、重命名，并存入本地仓库。
 - 生成 manifest，只通过 `/static` 服务已登记文件。
 - 通过只读 HTTP API 暴露 ready bundles。

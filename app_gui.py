@@ -76,12 +76,17 @@ from PySide6.QtCore import (
     QThread,
     QTimer,
     Signal,
+    QUrl,
 )
 from PySide6.QtGui import (
     QColor,
+    QCursor,
+    QDesktopServices,
     QDragEnterEvent,
     QDragLeaveEvent,
+    QDragMoveEvent,
     QDropEvent,
+    QLinearGradient,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -101,6 +106,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -109,6 +115,7 @@ logger = logging.getLogger(__name__)
 
 
 _UI_LANGUAGE_CACHE: tuple[tuple[str, ...], str] | None = None
+_UI_LANGUAGE_OVERRIDE = "auto"
 
 
 def _language_from_value(value: str) -> str:
@@ -143,6 +150,8 @@ def _macos_apple_language() -> str:
 
 def ui_language() -> str:
     global _UI_LANGUAGE_CACHE
+    if _UI_LANGUAGE_OVERRIDE in {"zh", "en"}:
+        return _UI_LANGUAGE_OVERRIDE
     env_values = (
         os.environ.get("HAYPILE_UI_LANG", ""),
         os.environ.get("LC_ALL", ""),
@@ -175,17 +184,40 @@ def ui_text(zh: str, en: str) -> str:
     return zh if ui_language() == "zh" else en
 
 
+def set_ui_language(mode: str) -> None:
+    global _UI_LANGUAGE_OVERRIDE, _UI_LANGUAGE_CACHE
+    _UI_LANGUAGE_OVERRIDE = mode if mode in {"zh", "en"} else "auto"
+    _UI_LANGUAGE_CACHE = None
+
+
 class DroppedMediaHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.urls: list[str] = []
+        self.audio_urls: set[str] = set()
+        self.image_urls: set[str] = set()
+        self._audio_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() not in {"img", "audio", "source"}:
+        tag = tag.lower()
+        if tag == "audio":
+            self._audio_depth += 1
+        if tag not in {"img", "audio", "source"}:
             return
-        for name, value in attrs:
-            if name.lower() == "src" and value:
-                self.urls.append(value.strip())
+        values = {name.lower(): value.strip() for name, value in attrs if value}
+        source = values.get("src")
+        if not source:
+            return
+        self.urls.append(source)
+        media_type = values.get("type", "").lower()
+        if tag == "img" or media_type.startswith("image/"):
+            self.image_urls.add(source)
+        elif tag == "audio" or self._audio_depth or media_type.startswith("audio/"):
+            self.audio_urls.add(source)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "audio" and self._audio_depth:
+            self._audio_depth -= 1
 
 
 class RemoteDownloadWorker(QThread):
@@ -1314,39 +1346,48 @@ class ConfirmationPreviewWindow(QWidget):
 
 
 class MaterialPanelWindow(QWidget):
-    def __init__(self) -> None:
-        super().__init__(None)
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.NoDropShadowWindowHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    def __init__(self, parent: QWidget | None = None, *, embedded: bool = False) -> None:
+        super().__init__(parent)
+        self._embedded = bool(embedded)
+        if not self._embedded:
+            self.setWindowFlags(
+                Qt.WindowType.Window
+                | Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowStaysOnTopHint
+                | Qt.WindowType.NoDropShadowWindowHint
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setFixedSize(336, 608)
+        if self._embedded:
+            self.setMinimumSize(0, 0)
+        else:
+            self.setFixedSize(336, 608)
         self._confirmation_available = False
         self._recent_items = []
         self._all_recent_items = []
         self._filter_mode = "all"
         self._selected_bundle_id = ""
+        self._suggested_ai_role = ""
         self._toast_callback = None
         self.ai_refresh_worker: AIRefreshWorker | None = None
-        self.confirmation_preview = ConfirmationPreviewWindow()
-        self.confirmation_preview.set_action_handler(self._execute_confirmation_action)
+        self.confirmation_preview: ConfirmationPreviewWindow | None = None
+        if not self._embedded:
+            self.confirmation_preview = ConfirmationPreviewWindow()
+            self.confirmation_preview.set_action_handler(self._execute_confirmation_action)
         self._hiding_panel = False
         self._opacity_effect = QGraphicsOpacityEffect(self)
-        self._opacity_effect.setOpacity(0.0)
+        self._opacity_effect.setOpacity(1.0 if self._embedded else 0.0)
         self.setGraphicsEffect(self._opacity_effect)
         self._fade_animation = QPropertyAnimation(self._opacity_effect, b"opacity", self)
         self._fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._fade_animation.finished.connect(self._on_fade_finished)
 
         self.container = QWidget(self)
-        self.container.setGeometry(0, 0, 336, 608)
+        self.container.setGeometry(self.rect())
         self.container.setStyleSheet(
-            "QWidget { background-color: #FFFDF5; "
-            "border: 2px solid #6F7F5A; border-radius: 18px; }"
+            "QWidget { background: transparent; border: none; }"
+            if self._embedded
+            else "QWidget { background-color: #FFFDF5; border: 2px solid #6F7F5A; border-radius: 18px; }"
         )
 
         layout = QVBoxLayout(self.container)
@@ -1368,7 +1409,12 @@ class MaterialPanelWindow(QWidget):
         layout.addWidget(self.project_label)
         self.project_label.hide()
 
-        self.summary_label = QLabel(ui_text("0 个 bundle · 可用 0 · 待确认 0", "0 bundles · ready 0 · pending 0"), self.container)
+        initial_summary = (
+            ui_text("0 个素材 · 可用 0\n待确认 0", "0 assets · ready 0\npending 0")
+            if self._embedded
+            else ui_text("0 个 bundle · 可用 0 · 待确认 0", "0 bundles · ready 0 · pending 0")
+        )
+        self.summary_label = QLabel(initial_summary, self.container)
         self.summary_label.setWordWrap(True)
         self.summary_label.setStyleSheet(
             "QLabel { color: #333333; font-size: 12px; "
@@ -1494,6 +1540,17 @@ class MaterialPanelWindow(QWidget):
         self.retry_ai_button.hide()
         layout.addWidget(self.retry_ai_button)
 
+        self.accept_ai_button = QPushButton(ui_text("采纳 AI 建议", "Accept AI suggestion"), self.container)
+        self.accept_ai_button.setFixedHeight(26)
+        self.accept_ai_button.setStyleSheet(
+            "QPushButton { color: #FFF9EA; background: #6F7F5A; "
+            "border: none; border-radius: 7px; font-size: 11px; font-weight: bold; }"
+            "QPushButton:hover { background: #5D704A; }"
+        )
+        self.accept_ai_button.clicked.connect(self._accept_ai_suggestion)
+        self.accept_ai_button.hide()
+        layout.addWidget(self.accept_ai_button)
+
         self.preview_label = QLabel("", self.container)
         self.preview_label.setFixedHeight(48)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1502,6 +1559,18 @@ class MaterialPanelWindow(QWidget):
         )
         self.preview_label.hide()
         layout.addWidget(self.preview_label)
+
+        self.copy_selected_button = QPushButton(ui_text("复制 handoff", "Copy handoff"), self.container)
+        self.copy_selected_button.setFixedHeight(28)
+        self.copy_selected_button.setStyleSheet(
+            "QPushButton { color: #FFF9EA; background: #6F7F5A; "
+            "border: none; border-radius: 7px; font-size: 12px; font-weight: bold; }"
+            "QPushButton:hover { background: #5D704A; }"
+            "QPushButton:disabled { color: #B7B09D; background: #E7E0D1; }"
+        )
+        self.copy_selected_button.clicked.connect(self._copy_selected_handoff)
+        self.copy_selected_button.setEnabled(False)
+        layout.addWidget(self.copy_selected_button)
 
         self.copy_ready_button = QPushButton(ui_text("复制可用 handoff", "Copy ready handoff"), self.container)
         self.copy_ready_button.setFixedHeight(28)
@@ -1544,12 +1613,112 @@ class MaterialPanelWindow(QWidget):
         )
         layout.addWidget(self.service_label)
         self.service_label.hide()
+        if self._embedded:
+            self._configure_embedded_layout(layout)
         self.hide()
+
+    def _configure_embedded_layout(self, layout: QVBoxLayout) -> None:
+        while layout.count():
+            layout.takeAt(0)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        self.title.hide()
+        self.project_label.hide()
+        self.copy_ready_button.hide()
+        self.copy_recipe_button.hide()
+        self.rehearsal_label.hide()
+        self.service_label.hide()
+        self.filter_buttons["ready"].hide()
+        self.filter_buttons["pending"].hide()
+
+        toolbar = QWidget(self.container)
+        toolbar.setStyleSheet("QWidget { background: transparent; border: none; }")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(8)
+        toolbar_layout.addWidget(self.search_input, 1)
+        toolbar_layout.addWidget(self.filter_row, 0)
+        layout.addWidget(toolbar)
+
+        body = QWidget(self.container)
+        body.setStyleSheet("QWidget { background: transparent; border: none; }")
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(12)
+
+        list_pane = QWidget(body)
+        list_pane.setStyleSheet("QWidget { background: transparent; border: none; }")
+        list_layout = QVBoxLayout(list_pane)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(6)
+        list_layout.addWidget(self.summary_label)
+        self.pending_label.hide()
+        for label in self.item_labels:
+            list_layout.addWidget(label)
+        list_layout.addStretch(1)
+
+        detail_pane = QWidget(body)
+        detail_pane.setStyleSheet("QWidget { background: transparent; border: none; }")
+        detail_layout = QVBoxLayout(detail_pane)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(6)
+        self.preview_label.setFixedHeight(72)
+        detail_layout.addWidget(self.preview_label)
+        detail_layout.addWidget(self.detail_label, 1)
+        detail_layout.addWidget(self.accept_ai_button)
+        detail_layout.addWidget(self.role_row)
+        detail_layout.addWidget(self.audio_usage_row)
+        detail_layout.addWidget(self.retry_ai_button)
+        detail_layout.addWidget(self.copy_selected_button)
+
+        body_layout.addWidget(list_pane, 42)
+        body_layout.addWidget(detail_pane, 58)
+        layout.addWidget(body, 1)
 
     def set_toast_handler(self, callback) -> None:
         self._toast_callback = callback
 
+    def retranslate(self) -> None:
+        labels = {
+            "all": ui_text("全部", "All"),
+            "ready": ui_text("可用", "Ready"),
+            "pending": ui_text("待确认", "Pending"),
+            "image": ui_text("图片", "Images"),
+            "audio": ui_text("音频", "Audio"),
+        }
+        for mode, button in self.filter_buttons.items():
+            button.setText(labels[mode])
+        self.search_input.setPlaceholderText(ui_text("搜索文件、用途、状态", "Search file, role, status"))
+        role_labels = {
+            "main_background": ui_text("背景", "Background"),
+            "hero_image": ui_text("主视觉", "Hero"),
+            "icon": ui_text("图标", "Icon"),
+            "texture": ui_text("纹理", "Texture"),
+        }
+        for role, button in self.role_buttons.items():
+            button.setText(role_labels[role])
+        usage_labels = {
+            "music": ui_text("音乐", "Music"),
+            "voice": ui_text("人声", "Voice"),
+            "ambience": ui_text("环境", "Ambient"),
+            "sound_effect": ui_text("音效", "SFX"),
+            "loop": ui_text("循环", "Loop"),
+        }
+        for usage, button in self.audio_usage_buttons.items():
+            button.setText(usage_labels[usage])
+        self.retry_ai_button.setText(ui_text("重新 AI 分拣", "Retry AI sorting"))
+        self.accept_ai_button.setText(ui_text("采纳 AI 建议", "Accept AI suggestion"))
+        self.copy_selected_button.setText(ui_text("复制 handoff", "Copy handoff"))
+        self.copy_ready_button.setText(ui_text("复制可用 handoff", "Copy ready handoff"))
+        self.copy_recipe_button.setText(ui_text("复制 Agent 配方", "Copy Agent recipe"))
+        self.refresh()
+
     def show_panel(self) -> None:
+        if self._embedded:
+            self._leave_search_input_mode()
+            self.show()
+            return
         self._hiding_panel = False
         if self._fade_animation.state() == QPropertyAnimation.State.Running:
             self._fade_animation.stop()
@@ -1565,8 +1734,12 @@ class MaterialPanelWindow(QWidget):
         self._fade_animation.start()
 
     def hide_panel(self) -> None:
-        self.confirmation_preview.hide_preview()
+        if self.confirmation_preview is not None:
+            self.confirmation_preview.hide_preview()
         self._leave_search_input_mode()
+        if self._embedded:
+            self.hide()
+            return
         if not self.isVisible():
             return
         self._hiding_panel = True
@@ -1591,7 +1764,10 @@ class MaterialPanelWindow(QWidget):
         self.role_row.hide()
         self.audio_usage_row.hide()
         self.retry_ai_button.hide()
+        self.accept_ai_button.hide()
+        self._suggested_ai_role = ""
         self.preview_label.hide()
+        self.copy_selected_button.setEnabled(False)
         self.copy_ready_button.setVisible(bool(summary.recent_items))
         if not summary.recent_items:
             self.detail_label.setText(ui_text("拖入图片或音频开始收纳", "Drop images or audio to start storing"))
@@ -1612,19 +1788,25 @@ class MaterialPanelWindow(QWidget):
             self.project_label.setToolTip("")
         self.project_label.hide()
 
-        self.summary_label.setText(
-            ui_text(
+        if self._embedded:
+            summary_text = ui_text(
+                f"{summary.total_count} 个素材 · 可用 {summary.recognized_count}\n待确认 {summary.pending_count}",
+                f"{summary.total_count} assets · ready {summary.recognized_count}\npending {summary.pending_count}",
+            )
+        else:
+            summary_text = ui_text(
                 f"{summary.total_count} 个 bundle · 可用 {summary.recognized_count} · 待确认 {summary.pending_count}",
                 f"{summary.total_count} bundles · ready {summary.recognized_count} · pending {summary.pending_count}",
             )
-        )
-        if summary.pending_count:
+        self.summary_label.setText(summary_text)
+        if summary.pending_count and not self._embedded:
             self.pending_label.setText(ui_text(f"{summary.pending_count} 个待确认用途", f"{summary.pending_count} roles need review"))
             self.pending_label.show()
         else:
             self.pending_label.setText("")
             self.pending_label.hide()
 
+        selected_item = None
         for idx, label in enumerate(self.item_labels):
             if idx >= len(self._recent_items):
                 label.hide()
@@ -1632,6 +1814,8 @@ class MaterialPanelWindow(QWidget):
             item = self._recent_items[idx]
             bundle = self._bundle_for_item(item)
             selected = bool(selected_id and bundle["id"] == selected_id)
+            if selected:
+                selected_item = item
             label.setText(
                 f"{item.title}\n"
                 f"{self._asset_type_label(item.asset_type)} · {self._display_role_label(item.usage_label)} · "
@@ -1640,6 +1824,11 @@ class MaterialPanelWindow(QWidget):
             label.setStyleSheet(self._item_label_style(selected))
             label.setToolTip(item.origin_url or item.source_key or item.preview_url)
             label.show()
+
+        if selected_item is not None:
+            selected_bundle = self._bundle_for_item(selected_item)
+            self._show_preview_for_item(selected_item)
+            self._show_detail_for_bundle(selected_bundle)
 
         service_lines = [summary.recognition_status, summary.service_status]
         if summary.project_picker_status_line:
@@ -1654,17 +1843,18 @@ class MaterialPanelWindow(QWidget):
         self.rehearsal_label.hide()
         self.service_label.hide()
         self._confirmation_available = summary.confirmation_available
-        self.confirmation_preview.update_prompt(
-            title=summary.confirmation_title,
-            body=summary.confirmation_body,
-            summary=summary.confirmation_summary,
-            warning=summary.confirmation_warning,
-            action=summary.confirmation_action,
-            project_root=summary.real_project_root,
-            primary_label=summary.confirmation_primary_label,
-        )
-        if not self._confirmation_available:
-            self.confirmation_preview.hide()
+        if self.confirmation_preview is not None:
+            self.confirmation_preview.update_prompt(
+                title=summary.confirmation_title,
+                body=summary.confirmation_body,
+                summary=summary.confirmation_summary,
+                warning=summary.confirmation_warning,
+                action=summary.confirmation_action,
+                project_root=summary.real_project_root,
+                primary_label=summary.confirmation_primary_label,
+            )
+            if not self._confirmation_available:
+                self.confirmation_preview.hide()
 
     def _set_filter_mode(self, mode: str) -> None:
         self._leave_search_input_mode()
@@ -1742,8 +1932,7 @@ class MaterialPanelWindow(QWidget):
         self._selected_bundle_id = bundle["id"]
         self._refresh_item_selection_styles()
         self._show_preview_for_item(item)
-        self._show_detail_for_bundle(bundle, copied=True)
-        QApplication.clipboard().setText(json.dumps(self._handoff_for_bundles([bundle]), ensure_ascii=False, indent=2))
+        self._show_detail_for_bundle(bundle)
         event.accept()
 
     def _show_detail_for_bundle(self, bundle: dict[str, object], *, copied: bool = False, confirmed: bool = False) -> None:
@@ -1773,8 +1962,16 @@ class MaterialPanelWindow(QWidget):
             f"{handoff_line}"
         )
         self.detail_label.show()
+        self.copy_selected_button.setEnabled(bool(bundle.get("id")))
         self.role_row.setVisible(not is_audio and bundle["status"] != "missing")
         self.audio_usage_row.setVisible(is_audio and bundle["status"] != "missing")
+        self._suggested_ai_role = self._suggested_role(bundle.get("ai_suggestions"))
+        self.accept_ai_button.setVisible(
+            not is_audio
+            and bundle["status"] != "missing"
+            and bool(self._suggested_ai_role)
+            and self._suggested_ai_role != str(bundle.get("role") or "")
+        )
         if is_audio:
             self._refresh_audio_usage_buttons(str(bundle.get("audio_usage") or "unknown"))
         else:
@@ -1852,6 +2049,8 @@ class MaterialPanelWindow(QWidget):
             payload = json.loads((settings.INDEX_DIR / "gui_state.json").read_text(encoding="utf-8"))
         except (OSError, TypeError, json.JSONDecodeError):
             return True
+        if isinstance(payload, dict) and payload.get("low_power_enabled") is True:
+            return False
         stored = payload.get("ai_enabled") if isinstance(payload, dict) else None
         return bool(stored) if isinstance(stored, bool) else True
 
@@ -1868,8 +2067,7 @@ class MaterialPanelWindow(QWidget):
             return
         self._selected_bundle_id = updated["id"]
         self.refresh()
-        self._show_detail_for_bundle(updated, copied=True, confirmed=True)
-        QApplication.clipboard().setText(json.dumps(self._handoff_for_bundles([updated]), ensure_ascii=False, indent=2))
+        self._show_detail_for_bundle(updated, confirmed=True)
 
     def _set_selected_audio_usage(self, usage: str) -> None:
         if not self._selected_bundle_id:
@@ -1884,8 +2082,32 @@ class MaterialPanelWindow(QWidget):
             return
         self._selected_bundle_id = updated["id"]
         self.refresh()
-        self._show_detail_for_bundle(updated, copied=True, confirmed=True)
-        QApplication.clipboard().setText(json.dumps(self._handoff_for_bundles([updated]), ensure_ascii=False, indent=2))
+        self._show_detail_for_bundle(updated, confirmed=True)
+
+    def _copy_selected_handoff(self) -> None:
+        self._leave_search_input_mode()
+        if not self._selected_bundle_id:
+            return
+        bundle = BundleService().get_bundle(self._selected_bundle_id)
+        if bundle is None:
+            return
+        QApplication.clipboard().setText(
+            json.dumps(self._handoff_for_bundles([bundle]), ensure_ascii=False, indent=2)
+        )
+        self._show_detail_for_bundle(bundle, copied=True)
+        if self._toast_callback is not None:
+            self._toast_callback(ui_text("已复制 handoff", "Handoff copied"), True)
+
+    @staticmethod
+    def _suggested_role(value: object) -> str:
+        if not isinstance(value, dict):
+            return ""
+        role = str(value.get("usage") or "").strip()
+        return role if role in {"main_background", "hero_image", "icon", "texture"} else ""
+
+    def _accept_ai_suggestion(self) -> None:
+        if self._suggested_ai_role:
+            self._set_selected_role(self._suggested_ai_role)
 
     def _show_preview_for_item(self, item) -> None:
         self.preview_label.clear()
@@ -2172,6 +2394,10 @@ class MaterialPanelWindow(QWidget):
             self._leave_search_input_mode()
         super().mousePressEvent(event)
 
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self.container.setGeometry(self.rect())
+
     @staticmethod
     def _project_display_color(state: str) -> str:
         if state == "applied_verified":
@@ -2183,16 +2409,19 @@ class MaterialPanelWindow(QWidget):
         return "#666666"
 
     def hideEvent(self, event) -> None:
-        self.confirmation_preview.hide_preview()
+        if self.confirmation_preview is not None:
+            self.confirmation_preview.hide_preview()
         super().hideEvent(event)
 
     def closeEvent(self, event) -> None:
-        self.confirmation_preview.hide()
-        self.confirmation_preview.close()
+        if self.confirmation_preview is not None:
+            self.confirmation_preview.hide()
+            self.confirmation_preview.close()
         super().closeEvent(event)
 
     def _show_confirmation_preview(self, event: QMouseEvent) -> None:
-        if not self._confirmation_available:
+        preview = self.confirmation_preview
+        if not self._confirmation_available or preview is None:
             event.ignore()
             return
         anchor = self.frameGeometry()
@@ -2201,21 +2430,24 @@ class MaterialPanelWindow(QWidget):
         screen = QApplication.screenAt(anchor.center()) or QApplication.primaryScreen()
         if screen is not None:
             available = screen.availableGeometry()
-            if preview_y + self.confirmation_preview.height() > available.bottom() - 10:
-                preview_y = anchor.top() - self.confirmation_preview.height() - 8
+            if preview_y + preview.height() > available.bottom() - 10:
+                preview_y = anchor.top() - preview.height() - 8
             preview_x = max(
                 available.left() + 10,
-                min(preview_x, available.right() - self.confirmation_preview.width() - 10),
+                min(preview_x, available.right() - preview.width() - 10),
             )
             preview_y = max(
                 available.top() + 10,
-                min(preview_y, available.bottom() - self.confirmation_preview.height() - 10),
+                min(preview_y, available.bottom() - preview.height() - 10),
             )
-        self.confirmation_preview.move(preview_x, preview_y)
-        self.confirmation_preview.show_at(preview_x, preview_y)
+        preview.move(preview_x, preview_y)
+        preview.show_at(preview_x, preview_y)
         event.accept()
 
     def _execute_confirmation_action(self, action: str, project_root: str) -> None:
+        preview = self.confirmation_preview
+        if preview is None:
+            return
         try:
             if action == "reapply":
                 result = execute_haypile_minimal_real_project_reapply(
@@ -2232,7 +2464,7 @@ class MaterialPanelWindow(QWidget):
             else:
                 raise HaypileRealProjectOperationError("unknown confirmation action")
         except HaypileRealProjectOperationError as exc:
-            self.confirmation_preview.show_result(
+            preview.show_result(
                 success=False,
                 title=ui_text("未执行", "Not executed"),
                 body=str(exc),
@@ -2240,7 +2472,7 @@ class MaterialPanelWindow(QWidget):
             )
             return
         self.refresh()
-        self.confirmation_preview.show_result(
+        preview.show_result(
             success=True,
             title=title,
             body=ui_text(f"{result.get('operation_count', 0)} 项已处理", f"{result.get('operation_count', 0)} items processed"),
@@ -2248,7 +2480,7 @@ class MaterialPanelWindow(QWidget):
         )
 
 
-class QuickMenuWindow(QWidget):
+class _LegacyQuickMenuWindow(QWidget):
     def __init__(self) -> None:
         super().__init__(None)
         self.setWindowFlags(
@@ -2421,6 +2653,8 @@ class QuickMenuWindow(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
+        if getattr(self, "_feedback_only", False):
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.translate(self._content_shift)
@@ -2440,7 +2674,7 @@ class QuickMenuWindow(QWidget):
         start_angle, span_angle = self._arc_angles()
         painter.drawArc(arc_rect.translated(2, 4), start_angle * 16, span_angle * 16)
 
-        lift_pen = QPen(QColor(255, 249, 225, 22), 13)
+        lift_pen = QPen(QColor(255, 249, 225, 104), 16)
         lift_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         lift_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(lift_pen)
@@ -2462,7 +2696,8 @@ class QuickMenuWindow(QWidget):
             slot_rect = self._slot_rect(action)
             hovered = action == self._hovered_action
             attention = action == self._attention_action
-            active = attention or (action == "ai" and self._ai_enabled)
+            selected = action == getattr(self, "_drawer_page", "")
+            active = attention or selected or (action == "ai" and self._ai_enabled)
             ai_on = action == "ai" and self._ai_enabled
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(0, 0, 0, 30))
@@ -2483,6 +2718,11 @@ class QuickMenuWindow(QWidget):
             painter.drawEllipse(slot_rect)
             fg = QColor("#2E3A26") if (hovered or ai_on) else QColor("#FFF9EA")
             self._draw_action_icon(painter, icon_name, slot_rect.center(), fg)
+        self._paint_overlay(painter)
+        painter.end()
+
+    def _paint_overlay(self, painter: QPainter) -> None:
+        del painter
 
     def _track_geometry(self) -> tuple[QPointF, int]:
         return QPointF(self._track_center), 76
@@ -2591,6 +2831,821 @@ class QuickMenuWindow(QWidget):
             self._action_callback(action)
 
 
+class QuickMenuWindow(_LegacyQuickMenuWindow):
+    RING_SIZE = 240
+    DRAWER_WIDTH = 456
+    DRAWER_MIN_WIDTH = 408
+    DRAWER_HEIGHT = 392
+    CONNECTOR_REACH = 48
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._hide_timer.stop()
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        self.resize(self.RING_SIZE, self.RING_SIZE)
+        self.actions = [
+            ("assets", "assets", ui_text("素材", "Assets")),
+            ("agent", "mcp", "Agent"),
+            ("settings", "status", ui_text("设置", "Settings")),
+        ]
+        self.action_tooltips = {action: label for action, _icon, label in self.actions}
+        self._close_callback = None
+        self._drawer_page = ""
+        self._drawer_side = "right"
+        self._anchor = QRect()
+        self._available = QRect(0, 0, 1280, 720)
+        self._drawer_global_rect = QRect()
+        self._feedback_only = False
+        self._progress_active = False
+        self._page_shift_direction = 1
+        self._detail_buttons: dict[str, QPushButton] = {}
+        self._low_power_enabled = False
+        self._language_mode = "auto"
+        self._drawer_transition_id = 0
+        self._build_drawer()
+        self._feedback_timer = QTimer(self)
+        self._feedback_timer.setSingleShot(True)
+        self._feedback_timer.setInterval(1700)
+        self._feedback_timer.timeout.connect(self._hide_feedback)
+        self._agent_timer = QTimer(self)
+        self._agent_timer.setInterval(5000)
+        self._agent_timer.timeout.connect(self.refresh_agent_status)
+        self.hide()
+
+    def _build_drawer(self) -> None:
+        self.drawer_shell = QWidget(self)
+        self.drawer_shell.setObjectName("attachedDrawer")
+        self.drawer_shell.setStyleSheet(
+            "QWidget#attachedDrawer { background: #FFFDF5; border: 1px solid #6F7F5A; border-radius: 8px; }"
+            "QLabel { background: transparent; border: none; color: #443F33; }"
+        )
+        drawer_layout = QVBoxLayout(self.drawer_shell)
+        drawer_layout.setContentsMargins(14, 12, 14, 10)
+        drawer_layout.setSpacing(8)
+
+        self.drawer_title = QLabel("", self.drawer_shell)
+        self.drawer_title.setStyleSheet(
+            "QLabel { color: #4E5F3D; font-size: 14px; font-weight: bold; background: transparent; border: none; }"
+        )
+        drawer_layout.addWidget(self.drawer_title)
+
+        self.drawer_stack = QStackedWidget(self.drawer_shell)
+        self.drawer_stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
+        self.material_panel = MaterialPanelWindow(self.drawer_stack, embedded=True)
+        self.agent_page = self._build_agent_page()
+        self.settings_page = self._build_settings_page()
+        self.ai_page = self._build_ai_page()
+        self._pages = {
+            "assets": self.material_panel,
+            "agent": self.agent_page,
+            "settings": self.settings_page,
+            "ai": self.ai_page,
+        }
+        for page in self._pages.values():
+            self.drawer_stack.addWidget(page)
+        drawer_layout.addWidget(self.drawer_stack, 1)
+
+        self.feedback_label = QLabel("", self.drawer_shell)
+        self.feedback_label.setWordWrap(True)
+        self.feedback_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.feedback_label.setFixedHeight(28)
+        self.feedback_label.hide()
+        drawer_layout.addWidget(self.feedback_label)
+
+        self.progress_bar = QProgressBar(self.drawer_shell)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(6)
+        self.progress_bar.setStyleSheet(
+            "QProgressBar { background: #E9E4D4; border: none; border-radius: 3px; }"
+            "QProgressBar::chunk { background: #C8A24A; border-radius: 3px; }"
+        )
+        self.progress_bar.hide()
+        drawer_layout.addWidget(self.progress_bar)
+
+        self._drawer_motion = QPropertyAnimation(self.drawer_shell, b"pos", self)
+        self._drawer_motion.setDuration(150)
+        self._drawer_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._page_slide = QPropertyAnimation(self.drawer_stack, b"pos", self)
+        self._page_slide.setDuration(130)
+        self._page_slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.drawer_shell.hide()
+
+    def _build_agent_page(self) -> QWidget:
+        page = QWidget(self.drawer_stack)
+        page.setStyleSheet("QWidget { background: transparent; border: none; }")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.agent_status_label = QLabel(ui_text("MCP 未连接", "MCP offline"), page)
+        self.agent_status_label.setStyleSheet(
+            "QLabel { color: #A67624; font-size: 12px; font-weight: bold; padding: 4px 0; }"
+        )
+        layout.addWidget(self.agent_status_label)
+        self.connection_section = self._section_label(ui_text("连接", "Connection"), page)
+        layout.addWidget(self.connection_section)
+        layout.addWidget(self._action_button(ui_text("复制 MCP 配置", "Copy MCP config"), "mcp", page))
+        layout.addWidget(self._action_button(ui_text("复制 HTTP 地址", "Copy HTTP URL"), "http", page))
+        layout.addSpacing(6)
+        self.delivery_section = self._section_label(ui_text("交付", "Delivery"), page)
+        layout.addWidget(self.delivery_section)
+        layout.addWidget(self._action_button(ui_text("复制可用 handoff", "Copy ready handoff"), "ready_handoff", page))
+        layout.addWidget(self._action_button(ui_text("复制 Agent 配方", "Copy Agent recipe"), "agent_recipe", page))
+        layout.addStretch(1)
+        return page
+
+    def _build_settings_page(self) -> QWidget:
+        page = QWidget(self.drawer_stack)
+        page.setStyleSheet("QWidget { background: transparent; border: none; }")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.ai_settings_button = self._action_button(ui_text("AI 分拣", "AI sorting"), "ai_setup", page)
+        self.low_power_button = self._action_button(ui_text("低功耗：关", "Low power: off"), "low_power", page)
+        layout.addWidget(self.ai_settings_button)
+        layout.addWidget(self.low_power_button)
+
+        self.language_section = self._section_label(ui_text("语言", "Language"), page)
+        layout.addWidget(self.language_section)
+        language_row = QWidget(page)
+        language_row.setStyleSheet("QWidget { background: transparent; border: none; }")
+        language_layout = QHBoxLayout(language_row)
+        language_layout.setContentsMargins(0, 0, 0, 0)
+        language_layout.setSpacing(5)
+        self.language_buttons: dict[str, QPushButton] = {}
+        for mode, label in (("auto", ui_text("自动", "Auto")), ("zh", "简体中文"), ("en", "English")):
+            button = self._action_button(label, f"language:{mode}", language_row)
+            self.language_buttons[mode] = button
+            language_layout.addWidget(button)
+        layout.addWidget(language_row)
+
+        self.service_section = self._section_label(ui_text("服务与日志", "Service & logs"), page)
+        layout.addWidget(self.service_section)
+        self.service_status_label = QLabel("", page)
+        self.service_status_label.setWordWrap(True)
+        self.service_status_label.setStyleSheet(
+            "QLabel { color: #625B4C; font-size: 11px; padding: 7px 8px; background: #F6F1E4; border-radius: 7px; }"
+        )
+        layout.addWidget(self.service_status_label)
+        layout.addWidget(self._action_button(ui_text("打开日志目录", "Open logs folder"), "logs", page))
+        layout.addStretch(1)
+        self.exit_button = self._action_button(ui_text("退出 Haypile", "Quit Haypile"), "exit", page, danger=True)
+        layout.addWidget(self.exit_button)
+        return page
+
+    def _build_ai_page(self) -> QWidget:
+        page = QWidget(self.drawer_stack)
+        page.setStyleSheet("QWidget { background: transparent; border: none; }")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        back = self._action_button(ui_text("返回设置", "Back to settings"), "settings", page)
+        layout.addWidget(back)
+        self.ai_status_label = QLabel("", page)
+        self.ai_status_label.setWordWrap(True)
+        self.ai_status_label.setStyleSheet(
+            "QLabel { color: #4A463A; font-size: 12px; padding: 10px; background: #F6F1E4; border-radius: 8px; }"
+        )
+        layout.addWidget(self.ai_status_label)
+        self.ai_toggle_button = self._action_button(ui_text("开启 AI", "Enable AI"), "ai_toggle", page)
+        self.ai_command_button = self._action_button(ui_text("复制模型安装命令", "Copy model install command"), "ai_copy_command", page)
+        self.ai_recheck_button = self._action_button(ui_text("重新检测", "Check again"), "ai_recheck", page)
+        layout.addWidget(self.ai_toggle_button)
+        layout.addWidget(self.ai_command_button)
+        layout.addWidget(self.ai_recheck_button)
+        layout.addStretch(1)
+        return page
+
+    @staticmethod
+    def _section_label(text: str, parent: QWidget) -> QLabel:
+        label = QLabel(text, parent)
+        label.setStyleSheet(
+            "QLabel { color: #6F7F5A; font-size: 10px; font-weight: bold; padding-top: 3px; }"
+        )
+        return label
+
+    def _action_button(self, text: str, action: str, parent: QWidget, *, danger: bool = False) -> QPushButton:
+        button = QPushButton(text, parent)
+        button.setFixedHeight(30)
+        color = "#9B4C37" if danger else "#4E5F3D"
+        button.setStyleSheet(
+            "QPushButton { text-align: left; padding: 0 10px; "
+            f"color: {color}; background: #F6F1E4; border: 1px solid #DDD3BB; border-radius: 7px; font-size: 11px; }}"
+            "QPushButton:hover { background: #EFE3C7; }"
+        )
+        button.clicked.connect(lambda _checked=False, selected=action: self._emit_action(selected))
+        self._detail_buttons[action] = button
+        return button
+
+    def retranslate(self) -> None:
+        self.actions = [
+            ("assets", "assets", ui_text("素材", "Assets")),
+            ("agent", "mcp", "Agent"),
+            ("settings", "status", ui_text("设置", "Settings")),
+        ]
+        self.action_tooltips = {action: label for action, _icon, label in self.actions}
+        button_labels = {
+            "mcp": ui_text("复制 MCP 配置", "Copy MCP config"),
+            "http": ui_text("复制 HTTP 地址", "Copy HTTP URL"),
+            "ready_handoff": ui_text("复制可用 handoff", "Copy ready handoff"),
+            "agent_recipe": ui_text("复制 Agent 配方", "Copy Agent recipe"),
+            "ai_setup": ui_text("AI 分拣", "AI sorting"),
+            "logs": ui_text("打开日志目录", "Open logs folder"),
+            "exit": ui_text("退出 Haypile", "Quit Haypile"),
+            "ai_copy_command": ui_text("复制模型安装命令", "Copy model install command"),
+            "ai_recheck": ui_text("重新检测", "Check again"),
+            "settings": ui_text("返回设置", "Back to settings"),
+            "language:auto": ui_text("自动", "Auto"),
+            "language:zh": "简体中文",
+            "language:en": "English",
+        }
+        for action, label in button_labels.items():
+            button = self._detail_buttons.get(action)
+            if button is not None:
+                button.setText(label)
+        self.connection_section.setText(ui_text("连接", "Connection"))
+        self.delivery_section.setText(ui_text("交付", "Delivery"))
+        self.language_section.setText(ui_text("语言", "Language"))
+        self.service_section.setText(ui_text("服务与日志", "Service & logs"))
+        self.low_power_button.setText(
+            ui_text("低功耗：开", "Low power: on")
+            if self._low_power_enabled
+            else ui_text("低功耗：关", "Low power: off")
+        )
+        self.ai_toggle_button.setText(
+            ui_text("关闭 AI", "Disable AI") if self._ai_enabled else ui_text("开启 AI", "Enable AI")
+        )
+        self.material_panel.retranslate()
+        if self._drawer_page:
+            self._switch_page(self._drawer_page, animate=False)
+        self.refresh_agent_status()
+        self.update()
+
+    def set_close_handler(self, callback) -> None:
+        self._close_callback = callback
+
+    def show_menu(self, x: int, y: int) -> None:
+        self._anchor = QRect(x + 84, y + 84, 72, 72)
+        self._available = QRect(x, y, self.RING_SIZE, self.RING_SIZE)
+        self._drawer_page = ""
+        self._feedback_only = False
+        self.drawer_shell.hide()
+        self.setGeometry(x, y, self.RING_SIZE, self.RING_SIZE)
+        self.set_track_center(QPointF(120, 120))
+        self._show_ring_animation()
+
+    def show_attached(self, anchor: QRect, available: QRect) -> None:
+        self._anchor = QRect(anchor)
+        self._available = QRect(available)
+        self._drawer_page = ""
+        self._feedback_only = False
+        self.drawer_shell.hide()
+        self._apply_attached_geometry(drawer_open=False, allow_flip=True)
+        self._show_ring_animation()
+
+    def _show_ring_animation(self) -> None:
+        self._drawer_transition_id += 1
+        self._hide_after_slide = False
+        self._hovered_action = ""
+        offset = self._slide_offset()
+        start_shift = QPointF(offset.x() * 0.55, offset.y() * 0.55)
+        self._set_content_shift(start_shift)
+        self.setWindowOpacity(0.45)
+        self.show()
+        self.raise_()
+        self._fade_animation.stop()
+        self._slide_animation.stop()
+        self._fade_animation.setDuration(125)
+        self._fade_animation.setStartValue(0.45)
+        self._fade_animation.setEndValue(1.0)
+        self._slide_animation.setDuration(125)
+        self._slide_animation.setStartValue(self._content_shift)
+        self._slide_animation.setEndValue(QPointF())
+        self._fade_animation.start()
+        self._slide_animation.start()
+
+    @staticmethod
+    def _animations_enabled() -> bool:
+        return os.environ.get("QT_QPA_PLATFORM", "").strip().lower() != "offscreen"
+
+    def _drawer_anchor_offset(self, distance: int) -> QPoint:
+        return QPoint(-distance if self._drawer_side == "right" else distance, 0)
+
+    def _start_drawer_motion(
+        self,
+        start: QPoint,
+        end: QPoint,
+        duration: int,
+        easing: QEasingCurve.Type,
+    ) -> None:
+        self._drawer_motion.stop()
+        self.drawer_shell.move(start)
+        self._drawer_motion.setDuration(duration)
+        self._drawer_motion.setEasingCurve(easing)
+        self._drawer_motion.setStartValue(start)
+        self._drawer_motion.setEndValue(end)
+        self._drawer_motion.start()
+
+    def hide_menu(self) -> None:
+        self._drawer_transition_id += 1
+        self._feedback_timer.stop()
+        self._agent_timer.stop()
+        had_drawer = self.drawer_shell.isVisible() and not self._feedback_only
+        self._drawer_page = ""
+        self._progress_active = False
+        self._hovered_action = ""
+        self.setToolTip("")
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+        if not self.isVisible():
+            self.drawer_shell.hide()
+            self.progress_bar.hide()
+            self.feedback_label.hide()
+            return
+        self._fade_animation.stop()
+        self._slide_animation.stop()
+        self._drawer_motion.stop()
+        if had_drawer and self._animations_enabled():
+            current = self.drawer_shell.pos()
+            self._start_drawer_motion(
+                current,
+                current + self._drawer_anchor_offset(14),
+                150,
+                QEasingCurve.Type.InOutCubic,
+            )
+        else:
+            self.drawer_shell.hide()
+        self._hide_after_slide = True
+        self._fade_animation.setDuration(150)
+        self._fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._fade_animation.setStartValue(self.windowOpacity())
+        self._fade_animation.setEndValue(0.0)
+        self._slide_animation.setDuration(150)
+        self._slide_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._slide_animation.setStartValue(self._content_shift)
+        self._slide_animation.setEndValue(self._slide_offset())
+        self._fade_animation.start()
+        self._slide_animation.start()
+
+    def _on_fade_finished(self) -> None:
+        was_hiding = self._hide_after_slide
+        super()._on_fade_finished()
+        if was_hiding:
+            self.drawer_shell.hide()
+            self.progress_bar.hide()
+            self.feedback_label.hide()
+            self._drawer_motion.stop()
+
+    def enterEvent(self, event) -> None:
+        super(_LegacyQuickMenuWindow, self).enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hovered_action = ""
+        self.setToolTip("")
+        self.update()
+        super(_LegacyQuickMenuWindow, self).leaveEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            if self._close_callback is not None:
+                self._close_callback()
+            else:
+                self.hide_menu()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            anchor_rect = QRect(self.mapFromGlobal(self._anchor.topLeft()), self._anchor.size())
+            if anchor_rect.contains(event.position().toPoint()):
+                if self._close_callback is not None:
+                    self._close_callback()
+                else:
+                    self.hide_menu()
+                event.accept()
+                return
+            action = self._action_at(event.position())
+            if action:
+                self._emit_action(action)
+                event.accept()
+                return
+        QWidget.mousePressEvent(self, event)
+
+    def _emit_action(self, action: str) -> None:
+        if action == self._attention_action:
+            self._attention_action = ""
+        if self._action_callback is not None:
+            self._action_callback(action)
+
+    def open_drawer(self, page: str, anchor: QRect | None = None, available: QRect | None = None) -> None:
+        if page not in self._pages:
+            return
+        self._drawer_transition_id += 1
+        if self._fade_animation.state() == QPropertyAnimation.State.Running:
+            self._fade_animation.stop()
+        if self._slide_animation.state() == QPropertyAnimation.State.Running:
+            self._slide_animation.stop()
+        self.setWindowOpacity(1.0)
+        self._set_content_shift(QPointF())
+        if anchor is not None:
+            self._anchor = QRect(anchor)
+        if available is not None:
+            self._available = QRect(available)
+        old_page = self._drawer_page
+        self._drawer_page = page
+        self._feedback_only = False
+        self.drawer_title.show()
+        self.drawer_stack.show()
+        self._apply_attached_geometry(drawer_open=True, allow_flip=True)
+        if page == "assets":
+            self.material_panel.show()
+        if page == "agent":
+            self.refresh_agent_status()
+            self._agent_timer.start()
+        else:
+            self._agent_timer.stop()
+        self._switch_page(page, animate=bool(old_page and old_page != page))
+        self.drawer_shell.show()
+        if not self.isVisible():
+            self.setWindowOpacity(1.0)
+            self.show()
+        self.raise_()
+        final_pos = self.drawer_shell.pos()
+        if not old_page and self._animations_enabled():
+            self._start_drawer_motion(
+                final_pos + self._drawer_anchor_offset(8),
+                final_pos,
+                150,
+                QEasingCurve.Type.OutCubic,
+            )
+        else:
+            self._drawer_motion.stop()
+            self.drawer_shell.move(final_pos)
+        if page == "assets":
+            QTimer.singleShot(0, self.material_panel.refresh)
+        self.update()
+
+    def _switch_page(self, page: str, *, animate: bool = True) -> None:
+        animate = animate and self._animations_enabled()
+        if self._page_slide.state() == QPropertyAnimation.State.Running:
+            end = self._page_slide.endValue()
+            self._page_slide.stop()
+            if isinstance(end, QPoint):
+                self.drawer_stack.move(end)
+        widget = self._pages[page]
+        self.drawer_stack.setCurrentWidget(widget)
+        self.drawer_title.setText(
+            {
+                "assets": ui_text("素材", "Assets"),
+                "agent": "Agent",
+                "settings": ui_text("设置", "Settings"),
+                "ai": ui_text("AI 分拣", "AI sorting"),
+            }[page]
+        )
+        if not animate:
+            return
+        base = self.drawer_stack.pos()
+        offset = QPoint(6 * self._page_shift_direction, 0)
+        self._page_shift_direction *= -1
+        self.drawer_stack.move(base + offset)
+        self._page_slide.stop()
+        self._page_slide.setStartValue(base + offset)
+        self._page_slide.setEndValue(base)
+        self._page_slide.start()
+
+    def close_drawer(self) -> None:
+        if not self._drawer_page:
+            return
+        self._drawer_transition_id += 1
+        transition_id = self._drawer_transition_id
+        self._drawer_page = ""
+        self._agent_timer.stop()
+        if not self._animations_enabled():
+            self.drawer_shell.hide()
+            self._apply_attached_geometry(drawer_open=False, allow_flip=False)
+            self.update()
+            return
+        current = self.drawer_shell.pos()
+        self._start_drawer_motion(
+            current,
+            current + self._drawer_anchor_offset(8),
+            150,
+            QEasingCurve.Type.InOutCubic,
+        )
+
+        def finish() -> None:
+            if transition_id != self._drawer_transition_id or self._drawer_page:
+                return
+            self.drawer_shell.hide()
+            self._apply_attached_geometry(drawer_open=False, allow_flip=False)
+            self.update()
+
+        QTimer.singleShot(150, finish)
+
+    def is_drawer_open(self) -> bool:
+        return bool(self._drawer_page and self.drawer_shell.isVisible())
+
+    def current_page(self) -> str:
+        return self._drawer_page
+
+    def reposition(self, anchor: QRect, available: QRect, *, allow_flip: bool = True) -> None:
+        self._anchor = QRect(anchor)
+        self._available = QRect(available)
+        if not self.isVisible():
+            return
+        previous_side = self._drawer_side
+        desired_side = self._choose_drawer_side()
+        if self.is_drawer_open() and allow_flip and desired_side != previous_side:
+            if not self._animations_enabled():
+                self._drawer_side = desired_side
+                self._apply_attached_geometry(drawer_open=True, allow_flip=False)
+                return
+            page = self._drawer_page
+            self._drawer_transition_id += 1
+            transition_id = self._drawer_transition_id
+            current = self.drawer_shell.pos()
+            self._start_drawer_motion(
+                current,
+                current + self._drawer_anchor_offset(12),
+                120,
+                QEasingCurve.Type.InOutCubic,
+            )
+
+            def mirror() -> None:
+                if transition_id != self._drawer_transition_id or self._drawer_page != page:
+                    return
+                self.drawer_shell.hide()
+                self._drawer_side = desired_side
+                self._apply_attached_geometry(drawer_open=True, allow_flip=False)
+                self._switch_page(page, animate=False)
+                final_pos = self.drawer_shell.pos()
+                self._start_drawer_motion(
+                    final_pos + self._drawer_anchor_offset(12),
+                    final_pos,
+                    160,
+                    QEasingCurve.Type.OutCubic,
+                )
+                self.drawer_shell.show()
+
+            QTimer.singleShot(120, mirror)
+            return
+        if allow_flip:
+            self._drawer_side = desired_side
+        self._apply_attached_geometry(drawer_open=self.is_drawer_open(), allow_flip=False)
+
+    def _choose_drawer_side(self) -> str:
+        center_x = self._anchor.center().x()
+        right_space = self._available.right() - (center_x + self.CONNECTOR_REACH)
+        left_space = (center_x - self.CONNECTOR_REACH) - self._available.left()
+        if right_space >= self.DRAWER_MIN_WIDTH:
+            return "right"
+        if left_space >= self.DRAWER_MIN_WIDTH:
+            return "left"
+        return "right" if right_space >= left_space else "left"
+
+    def _apply_attached_geometry(self, *, drawer_open: bool, allow_flip: bool) -> None:
+        if allow_flip:
+            self._drawer_side = self._choose_drawer_side()
+        center = self._anchor.center()
+        ring = QRect(
+            center.x() - self.RING_SIZE // 2,
+            center.y() - self.RING_SIZE // 2,
+            self.RING_SIZE,
+            self.RING_SIZE,
+        )
+        visible_ring = ring.intersected(self._available)
+        if visible_ring.isEmpty():
+            visible_ring = QRect(center.x(), center.y(), 1, 1)
+        union = QRect(visible_ring)
+        self._drawer_global_rect = QRect()
+        if drawer_open:
+            available_width = (
+                self._available.right() - (center.x() + self.CONNECTOR_REACH)
+                if self._drawer_side == "right"
+                else (center.x() - self.CONNECTOR_REACH) - self._available.left()
+            )
+            drawer_width = min(self.DRAWER_WIDTH, max(self.DRAWER_MIN_WIDTH, available_width - 8))
+            drawer_y = center.y() - self.DRAWER_HEIGHT // 2
+            drawer_y = max(
+                self._available.top() + 8,
+                min(drawer_y, self._available.bottom() - self.DRAWER_HEIGHT - 8),
+            )
+            if self._drawer_side == "right":
+                drawer_x = center.x() + self.CONNECTOR_REACH
+            else:
+                drawer_x = center.x() - self.CONNECTOR_REACH - drawer_width
+            drawer_x = max(
+                self._available.left() + 8,
+                min(drawer_x, self._available.right() - drawer_width - 8),
+            )
+            self._drawer_global_rect = QRect(drawer_x, drawer_y, drawer_width, self.DRAWER_HEIGHT)
+            union = union.united(self._drawer_global_rect)
+        self.setGeometry(union)
+        self.set_track_center(QPointF(center.x() - union.left(), center.y() - union.top()))
+        if drawer_open:
+            self.drawer_shell.setGeometry(
+                self._drawer_global_rect.translated(-union.left(), -union.top())
+            )
+        self.update()
+
+    def _slot_angles(self) -> list[int]:
+        center = self._anchor.center()
+        left = center.x() - self._available.left() < 88
+        right = self._available.right() - center.x() < 88
+        top = center.y() - self._available.top() < 88
+        bottom = self._available.bottom() - center.y() < 88
+        if left and top:
+            return [18, 54, 90]
+        if right and top:
+            return [90, 126, 162]
+        if left and bottom:
+            return [-90, -54, -18]
+        if right and bottom:
+            return [-162, -126, -90]
+        if left:
+            return [-64, 0, 64]
+        if right:
+            return [116, 180, 244]
+        if top:
+            return [26, 90, 154]
+        if bottom:
+            return [-154, -90, -26]
+        if self._drawer_side == "right":
+            return [112, 180, 248]
+        return [-68, 0, 68]
+
+    def _label_rect(self, action: str) -> QRectF:
+        slot = self._slot_rect(action)
+        center = slot.center()
+        width, height = 52.0, 16.0
+        x = max(2.0, min(center.x() - width / 2, self.width() - width - 2.0))
+        y = slot.bottom() + 2.0
+        if y + height > self.height() - 2.0:
+            y = slot.top() - height - 2.0
+        return QRectF(x, max(2.0, y), width, height)
+
+    def _action_at(self, point: QPointF) -> str:
+        point = QPointF(point) - self._content_shift
+        for action, _icon, _label in self.actions:
+            if self._slot_rect(action).contains(point) or self._label_rect(action).contains(point):
+                return action
+        return ""
+
+    def _paint_overlay(self, painter: QPainter) -> None:
+        if self.is_drawer_open():
+            drawer = QRectF(self.drawer_shell.geometry())
+            center = QPointF(self._track_center)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 18))
+            painter.drawRoundedRect(drawer.translated(0, 3), 8, 8)
+            if self._drawer_side == "right":
+                neck_left = center.x() + 30
+                neck = QRectF(
+                    neck_left,
+                    center.y() - 9,
+                    max(8.0, drawer.left() + 8 - neck_left),
+                    18,
+                )
+            else:
+                neck_left = drawer.right() - 8
+                neck = QRectF(
+                    neck_left,
+                    center.y() - 9,
+                    max(8.0, center.x() - 30 - neck_left),
+                    18,
+                )
+            painter.setPen(QPen(QColor("#6F7F5A"), 1.0))
+            painter.setBrush(QColor("#FFFDF5"))
+            painter.drawRoundedRect(neck, 8, 8)
+        font = painter.font()
+        font.setPointSizeF(8.0)
+        painter.setFont(font)
+        for action, _icon, label in self.actions:
+            label_rect = self._label_rect(action)
+            alignment = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+            painter.setPen(QColor(255, 253, 245, 205))
+            for offset in (QPointF(-1, 0), QPointF(1, 0), QPointF(0, -1), QPointF(0, 1)):
+                painter.drawText(label_rect.translated(offset), alignment, label)
+            painter.setPen(QColor("#4E5F3D"))
+            painter.drawText(label_rect, alignment, label)
+
+    def show_feedback(self, message: str, success: bool, anchor: QRect, available: QRect) -> None:
+        self._feedback_timer.stop()
+        self.feedback_label.setText(message)
+        self.feedback_label.setStyleSheet(
+            "QLabel { padding: 4px 8px; border-radius: 8px; font-size: 11px; font-weight: bold; "
+            f"color: {'#4E5F3D' if success else '#9B4C37'}; background: {'#F3EDDA' if success else '#F4E2DC'}; }}"
+        )
+        self.feedback_label.show()
+        if self.is_drawer_open():
+            self._feedback_timer.start()
+            return
+        self._anchor = QRect(anchor)
+        self._available = QRect(available)
+        self._feedback_only = True
+        width, height = 270, 44
+        right = anchor.right() + 10
+        x = right if right + width <= available.right() - 8 else anchor.left() - width - 10
+        y = max(available.top() + 8, min(anchor.center().y() - height // 2, available.bottom() - height - 8))
+        self.setGeometry(x, y, width, height)
+        self.drawer_shell.setGeometry(0, 0, width, height)
+        self.drawer_title.hide()
+        self.drawer_stack.hide()
+        self.progress_bar.setVisible(self._progress_active)
+        self.drawer_shell.show()
+        self.setWindowOpacity(1.0)
+        self.show()
+        self.raise_()
+        self._feedback_timer.start()
+
+    def _hide_feedback(self) -> None:
+        if self._progress_active:
+            return
+        self.feedback_label.hide()
+        if self._feedback_only:
+            self._feedback_only = False
+            self.drawer_shell.hide()
+            self.hide()
+
+    def begin_progress(self, anchor: QRect, available: QRect, text: str) -> None:
+        self._progress_active = True
+        self.progress_bar.setValue(3)
+        self.progress_bar.show()
+        self.show_feedback(text, True, anchor, available)
+
+    def set_progress(self, percent: int, text: str) -> None:
+        self.progress_bar.setValue(max(0, min(100, percent)))
+        self.feedback_label.setText(text)
+
+    def complete_progress(self, success: bool, message: str) -> None:
+        self._progress_active = False
+        self.progress_bar.setValue(100 if success else max(15, self.progress_bar.value()))
+        self.progress_bar.hide()
+        anchor = self._anchor if not self._anchor.isNull() else QRect(60, 60, 72, 72)
+        self.show_feedback(message, success, anchor, self._available)
+
+    def refresh_agent_status(self) -> None:
+        try:
+            from mcp_server import active_mcp_sessions
+
+            sessions = active_mcp_sessions(get_settings().INDEX_DIR)
+        except (OSError, ValueError):
+            sessions = []
+        if sessions:
+            self.agent_status_label.setText(ui_text(f"MCP 已连接 · {len(sessions)} 个会话", f"MCP connected · {len(sessions)} session(s)"))
+            self.agent_status_label.setStyleSheet(
+                "QLabel { color: #4E7A46; font-size: 12px; font-weight: bold; padding: 4px 0; }"
+            )
+        else:
+            self.agent_status_label.setText(ui_text("MCP 未连接", "MCP offline"))
+            self.agent_status_label.setStyleSheet(
+                "QLabel { color: #A67624; font-size: 12px; font-weight: bold; padding: 4px 0; }"
+            )
+
+    def update_settings_state(
+        self,
+        *,
+        ai_enabled: bool,
+        ai_status: str,
+        low_power: bool,
+        language: str,
+        service_status: str,
+    ) -> None:
+        self.low_power_button.setText(
+            ui_text("低功耗：开", "Low power: on") if low_power else ui_text("低功耗：关", "Low power: off")
+        )
+        self._low_power_enabled = bool(low_power)
+        self._language_mode = language
+        self.ai_settings_button.setText(
+            ui_text("AI 分拣：开", "AI sorting: on") if ai_enabled else ui_text("AI 分拣：关", "AI sorting: off")
+        )
+        self.ai_status_label.setText(ai_status)
+        self.ai_toggle_button.setText(
+            ui_text("关闭 AI", "Disable AI") if ai_enabled else ui_text("开启 AI", "Enable AI")
+        )
+        self.service_status_label.setText(service_status)
+        for mode, button in self.language_buttons.items():
+            active = mode == language
+            button.setStyleSheet(
+                "QPushButton { text-align: center; padding: 0 5px; "
+                f"color: {'#FFF9EA' if active else '#4E5F3D'}; background: {'#6F7F5A' if active else '#F6F1E4'}; "
+                "border: 1px solid #DDD3BB; border-radius: 7px; font-size: 10px; }"
+            )
+
+
+AttachedHubWindow = QuickMenuWindow
+
+
 class HaypileFloatingBall(QWidget):
     COLLAPSED_SIZE = 72
     EXPANDED_SIZE = 300
@@ -2603,13 +3658,32 @@ class HaypileFloatingBall(QWidget):
         self.themes_dir: Path = self.settings.THEMES_DIR
         self.manifest_path: Path = self.settings.MANIFEST_PATH
         self.haypile_icon = QPixmap(str(self.project_root / "ui_assets" / "haypile-icon.png"))
+        self._haypile_alpha_image = self.haypile_icon.toImage()
+        self._haypile_glow_pixmap = self._tinted_haypile_pixmap(QColor("#FFD66D"))
+        self._haypile_direction_glow_pixmap = self._tinted_haypile_pixmap(QColor("#FFF1B2"))
+        self._haypile_exit_glow_pixmap = self._tinted_haypile_pixmap(QColor("#9B4C37"))
         self._drop_leaf_frame_runs = self._load_drop_leaf_frame_runs()
         self._drop_leaf_frame_renderer = QSvgRenderer(str(self.project_root / "ui_assets" / "drop-leaf-frame.svg"))
         self._drop_leaf_renderers = self._load_drop_leaf_renderers()
+        self._audio_leaf_layer_key: tuple[int, int, int] | None = None
+        self._audio_leaf_layer_buffers: tuple[QPixmap, ...] = ()
         self._gui_state_path = self.settings.INDEX_DIR / "gui_state.json"
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.themes_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        stored_state = self._read_gui_state()
+        self.language_mode = str(stored_state.get("language") or "auto")
+        if self.language_mode not in {"auto", "zh", "en"}:
+            self.language_mode = "auto"
+        set_ui_language(self.language_mode)
+        self.low_power_enabled = bool(
+            stored_state.get("low_power_enabled", self.settings.HAYPILE_LOW_POWER_MODE)
+        )
+        stored_ai = stored_state.get("ai_enabled")
+        self._ai_preference = (
+            bool(stored_ai) if isinstance(stored_ai, bool) else bool(self.settings.VISION_CLASSIFIER_ENABLED)
+        )
 
         self.api_process: subprocess.Popen[str] | None = None
         self.api_owned_by_gui = False
@@ -2624,6 +3698,7 @@ class HaypileFloatingBall(QWidget):
         self._last_drag_sample_at = 0.0
         self._drag_moved = False
         self._window_drag_active = False
+        self._pointer_press_owned = False
         self._drag_velocity = QPointF(0, 0)
         self.is_expanded = False
         self._hovered = False
@@ -2639,6 +3714,17 @@ class HaypileFloatingBall(QWidget):
         self._drag_release_feedback_until = 0.0
         self._has_pending_assets = False
         self._drag_prepare_active = False
+        self._drop_anchor_global: QPoint | None = None
+        self._drop_visual_kind = "leaf"
+        self._audio_suction_progress = 0.0
+        self._audio_suction_animation: QPropertyAnimation | None = None
+        self._external_drag_candidate = False
+        self._global_drag_origin: QPoint | None = None
+        self._drag_awareness_angle = -math.pi / 2
+        self._drag_awareness_target_angle = -math.pi / 2
+        self._drag_awareness_distance = math.inf
+        self._drag_awareness_has_direction = False
+        self._cg_button_state = None
         self._drop_open_progress = 0.0
         self._drop_open_animation: QPropertyAnimation | None = None
         self._pulse_phase = 0.0
@@ -2663,6 +3749,9 @@ class HaypileFloatingBall(QWidget):
         self._visual_timer = QTimer(self)
         self._visual_timer.setInterval(58)
         self._visual_timer.timeout.connect(self._advance_visual_state)
+        self._drag_awareness_timer = QTimer(self)
+        self._drag_awareness_timer.setInterval(80)
+        self._drag_awareness_timer.timeout.connect(self._poll_external_drag_candidate)
 
         self.setWindowFlags(
             Qt.WindowType.Window
@@ -2672,7 +3761,7 @@ class HaypileFloatingBall(QWidget):
             | Qt.WindowType.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAutoFillBackground(False)
@@ -2683,17 +3772,11 @@ class HaypileFloatingBall(QWidget):
         self.move(self._restore_window_position())
         self._update_window_mask()
 
-        self.toast = ToastLabel()
-        self.progress_window = UploadProgressWindow()
-        self.ai_setup_panel = AISetupWindow()
-        self.ai_setup_panel.set_handlers(
-            lambda: self.show_toast(ui_text("已复制 Ollama 命令", "Ollama command copied"), success=True),
-            self._recheck_ai_setup,
-        )
-        self.material_panel = MaterialPanelWindow()
-        self.material_panel.set_toast_handler(self.show_toast)
         self.quick_menu = QuickMenuWindow()
+        self.material_panel = self.quick_menu.material_panel
+        self.material_panel.set_toast_handler(self.show_toast)
         self.quick_menu.set_action_handler(self._handle_quick_menu_action)
+        self.quick_menu.set_close_handler(self._close_attached_ui)
         self._refresh_ai_menu_status()
         self._refresh_pending_badge()
 
@@ -2760,7 +3843,10 @@ class HaypileFloatingBall(QWidget):
         painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
-        if self.is_expanded:
+        if self.is_expanded or self._drop_open_progress > 0.0:
+            progress = self._drop_open_progress
+            painter.save()
+            painter.translate(self._drop_visual_offset(progress))
             panel_size = min(self.width(), self.height()) * 0.47
             panel_rect = QRectF(
                 (self.width() - panel_size) / 2,
@@ -2768,7 +3854,9 @@ class HaypileFloatingBall(QWidget):
                 panel_size,
                 panel_size,
             )
-            if self._drag_hover:
+            if self._drag_hover and self._drop_visual_kind != "audio":
+                painter.save()
+                painter.setOpacity(progress)
                 drop_glow = QRadialGradient(panel_rect.center(), panel_size * 0.55)
                 drop_glow.setColorAt(0.0, QColor(255, 252, 232, 42))
                 drop_glow.setColorAt(0.72, QColor(255, 252, 232, 64))
@@ -2776,33 +3864,37 @@ class HaypileFloatingBall(QWidget):
                 painter.setBrush(drop_glow)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawEllipse(panel_rect.adjusted(-6, -6, 6, 6))
+                painter.restore()
 
-            self._draw_drop_leaf_frame(painter, panel_rect, self._drop_open_progress)
-            self._draw_drop_center_cutout(painter, panel_rect, self._drop_open_progress)
+            if self._drop_visual_kind == "audio":
+                self._draw_audio_intake(
+                    painter,
+                    panel_rect,
+                    progress,
+                    self._audio_suction_progress,
+                )
+            else:
+                self._draw_drop_leaf_frame(painter, panel_rect, progress)
+                self._draw_drop_center_cutout(painter, panel_rect, progress)
 
+            transition_span = 0.24 if self._drop_visual_kind == "audio" else 0.45
+            pile_opacity = max(0.0, 1.0 - progress / transition_span)
+            if pile_opacity > 0.0:
+                painter.save()
+                painter.setOpacity(pile_opacity)
+                self._draw_collapsed_haypile(painter, show_pending=False)
+                painter.restore()
+
+            painter.restore()
             return
 
+        self._draw_collapsed_haypile(painter)
+
+    def _draw_collapsed_haypile(self, painter: QPainter, *, show_pending: bool = True) -> None:
         circle_rect = self._get_collapsed_circle_rect()
         outer_rect = QRectF(circle_rect)
 
         pulse = 0.5 + 0.5 * math.sin(self._pulse_phase)
-        aura_rect = outer_rect.adjusted(-3, -3, 3, 3)
-        aura = QRadialGradient(aura_rect.center(), aura_rect.width() / 2)
-        if self._exit_armed:
-            aura.setColorAt(0.58, QColor(155, 76, 55, 62 + int(36 * pulse)))
-            aura.setColorAt(1.0, QColor(155, 76, 55, 0))
-        elif self._drag_hover:
-            aura.setColorAt(0.55, QColor(200, 162, 74, 72 + int(44 * pulse)))
-            aura.setColorAt(1.0, QColor(200, 162, 74, 0))
-        elif self._hovered:
-            aura.setColorAt(0.60, QColor(111, 127, 90, 44 + int(20 * pulse)))
-            aura.setColorAt(1.0, QColor(111, 127, 90, 0))
-        else:
-            aura.setColorAt(0.62, QColor(111, 127, 90, 0))
-            aura.setColorAt(1.0, QColor(111, 127, 90, 0))
-        painter.setBrush(aura)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(aura_rect)
 
         busy = self.worker is not None and self.worker.isRunning()
         drop_feedback = self._drop_feedback_active()
@@ -2824,33 +3916,50 @@ class HaypileFloatingBall(QWidget):
             icon_rect = self._rejected_icon_rect(icon_rect)
         elif busy:
             icon_rect = self._busy_breath_icon_rect(icon_rect, pulse)
+        active = (
+            self._drag_hover
+            or self._external_drag_candidate
+            or self._hovered
+            or busy
+            or drop_feedback
+            or self._nudge_feedback_active()
+            or self._reject_feedback_active()
+            or self._window_drag_active
+            or self._drag_release_feedback_active()
+        )
+        self._draw_haypile_aura(painter, icon_rect, pulse, active=active)
         self._draw_haypile_icon(
             painter,
             icon_rect,
-            active=(
-                self._drag_hover
-                or self._hovered
-                or busy
-                or drop_feedback
-                or self._nudge_feedback_active()
-                or self._reject_feedback_active()
-                or self._window_drag_active
-                or self._drag_release_feedback_active()
-            ),
+            active=active,
         )
-        if self._has_pending_assets and not busy:
+        self._draw_directional_haypile_aura(painter, icon_rect, pulse)
+        if show_pending and self._has_pending_assets and not busy:
             self._draw_pending_badge(painter, outer_rect)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self.setFixedSize(self.size())
         self._configure_window_surface()
+        if (
+            not self.low_power_enabled
+            and (sys.platform == "darwin" or sys.platform.startswith("win"))
+            and not self._drag_awareness_timer.isActive()
+        ):
+            self._drag_awareness_timer.start()
+
+    def hideEvent(self, event) -> None:
+        self._drag_awareness_timer.stop()
+        self._pointer_press_owned = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_external_drag_candidate()
+        self._reset_drop_visual_state()
+        super().hideEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._update_window_mask()
-        self._reposition_material_panel()
         self._reposition_quick_menu()
-        self._reposition_progress_window()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if not self.is_expanded:
@@ -2877,6 +3986,9 @@ class HaypileFloatingBall(QWidget):
             return
         if event.button() == Qt.MouseButton.LeftButton:
             self._clear_exit_armed()
+            self._pointer_press_owned = True
+            self._clear_external_drag_candidate()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
             self._press_global_pos = event.globalPosition().toPoint()
             self._last_drag_global_pos = self._press_global_pos
             self._last_drag_sample_at = time.monotonic()
@@ -2892,6 +4004,8 @@ class HaypileFloatingBall(QWidget):
 
     def enterEvent(self, event) -> None:
         self._hovered = True
+        if not self._pointer_press_owned:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._sync_visual_timer()
         self.update()
         super().enterEvent(event)
@@ -2939,8 +4053,7 @@ class HaypileFloatingBall(QWidget):
             self.close()
             return
         if event.button() == Qt.MouseButton.LeftButton:
-            self.quick_menu.hide_menu()
-            self._toggle_material_panel()
+            self._toggle_quick_menu()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
@@ -2950,13 +4063,10 @@ class HaypileFloatingBall(QWidget):
             if (event.globalPosition().toPoint() - self._press_global_pos).manhattanLength() > 5:
                 self._drag_moved = True
                 self._window_drag_active = True
-                self.quick_menu.hide_menu()
             self._sample_drag_velocity(event.globalPosition().toPoint())
             self.move(self._clamped_window_point(event.globalPosition().toPoint() - self.drag_offset))
-            self._reposition_quick_menu()
-            self._reposition_material_panel()
-            self._reposition_progress_window()
-            self._reposition_toast()
+            if self.quick_menu.isVisible():
+                self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=False)
             self._sync_visual_timer()
             self.update()
             event.accept()
@@ -2965,16 +4075,16 @@ class HaypileFloatingBall(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            self._pointer_press_owned = False
+            self._clear_external_drag_candidate()
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
             if not self._drag_moved and not self.is_expanded:
-                if self.material_panel.isVisible():
-                    self.material_panel.hide_panel()
-                    self._reposition_progress_window()
-                    self._refresh_pending_badge()
-                else:
-                    self._toggle_quick_menu()
+                self._toggle_quick_menu()
             elif self._drag_moved:
                 self._start_drag_release_feedback()
                 self._save_window_position()
+                if self.quick_menu.isVisible():
+                    self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=True)
             self._window_drag_active = False
             self._drag_velocity = QPointF(0, 0)
             self._sync_visual_timer()
@@ -2987,9 +4097,12 @@ class HaypileFloatingBall(QWidget):
         files = self._extract_local_files(event.mimeData())
         remote_urls = self._extract_remote_media_urls(event.mimeData())
         if files or remote_urls:
-            self.quick_menu.hide_menu()
+            self._close_attached_ui()
+            self._cancel_audio_suction()
+            self._drop_visual_kind = self._drop_visual_kind_for_mime_data(event.mimeData())
             self._drag_hover = True
             self._drag_prepare_active = True
+            self._update_drag_awareness_target_local(event.position())
             self._collapse_timer.stop()
             event.acceptProposedAction()
             self._drag_prepare_timer.start()
@@ -2998,26 +4111,38 @@ class HaypileFloatingBall(QWidget):
             return
         event.ignore()
 
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if not self._drag_hover:
+            event.ignore()
+            return
+        self._update_drag_awareness_target_local(event.position())
+        event.acceptProposedAction()
+        self.update()
+
     def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
         event.accept()
         self._drag_hover = False
         self._drag_prepare_active = False
         self._drag_prepare_timer.stop()
-        self._animate_drop_open(False)
-        self._collapse_timer.start()
+        self._cancel_audio_suction()
+        self._close_drop_target()
         self._sync_visual_timer()
 
     def dropEvent(self, event: QDropEvent) -> None:
         files = self._extract_local_files(event.mimeData())
         remote_urls = self._extract_remote_media_urls(event.mimeData())
-        self.quick_menu.hide_menu()
+        self._drop_visual_kind = self._drop_visual_kind_for_mime_data(event.mimeData())
+        self._close_attached_ui()
         self._drag_hover = False
+        self._clear_external_drag_candidate()
         self._drag_prepare_active = False
         self._drag_prepare_timer.stop()
         self._collapse_timer.stop()
         event.acceptProposedAction()
-        self._animate_drop_open(False)
-        self._collapse_timer.start()
+        if self._drop_visual_kind == "audio" and self._drop_open_progress > 0.05:
+            self._animate_audio_suction()
+        else:
+            self._close_drop_target()
         self._sync_visual_timer()
 
         if not files and not remote_urls:
@@ -3038,11 +4163,92 @@ class HaypileFloatingBall(QWidget):
         if not self._drag_hover:
             return
         self._drag_prepare_active = False
+        if self._drop_anchor_global is None:
+            self._drop_anchor_global = self.mapToGlobal(self._get_collapsed_circle_rect().center())
         self._animate_drop_open(True)
         self._sync_visual_timer()
         self._animate_size(self.EXPANDED_SIZE)
 
+    def _poll_external_drag_candidate(self) -> None:
+        if self._closing:
+            return
+        # ponytail: this may glow for other external drags; MIME validation still gates intake.
+        cursor_pos = QCursor.pos()
+        if self._pointer_press_owned or self._window_drag_active or not self._global_left_button_down():
+            self._clear_external_drag_candidate()
+            return
+        if self._global_drag_origin is None:
+            self._global_drag_origin = QPoint(cursor_pos)
+            return
+        if self.frameGeometry().contains(self._global_drag_origin):
+            if self._external_drag_candidate:
+                self._external_drag_candidate = False
+                if not self._drag_hover:
+                    self._drag_awareness_has_direction = False
+                self._sync_visual_timer()
+                self.update()
+            return
+        if not self._external_drag_candidate:
+            if (cursor_pos - self._global_drag_origin).manhattanLength() <= 8:
+                return
+            self._external_drag_candidate = True
+        self._update_drag_awareness_target_global(cursor_pos)
+        self._sync_visual_timer()
+        self.update()
+
+    def _global_left_button_down(self) -> bool:
+        if sys.platform == "darwin":
+            if self._cg_button_state is None:
+                try:
+                    framework = ctypes.CDLL(
+                        "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+                    )
+                    button_state = framework.CGEventSourceButtonState
+                    button_state.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+                    button_state.restype = ctypes.c_bool
+                    self._cg_button_state = button_state
+                except (AttributeError, OSError):
+                    self._cg_button_state = False
+            return bool(self._cg_button_state and self._cg_button_state(1, 0))
+        if sys.platform.startswith("win"):
+            try:
+                return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+            except (AttributeError, OSError):
+                return False
+        return False
+
+    def _clear_external_drag_candidate(self) -> None:
+        changed = self._external_drag_candidate or self._global_drag_origin is not None
+        self._external_drag_candidate = False
+        self._global_drag_origin = None
+        if not self._drag_hover:
+            self._drag_awareness_has_direction = False
+        if changed:
+            self._sync_visual_timer()
+            self.update()
+
+    def _update_drag_awareness_target_global(self, cursor_pos: QPoint) -> None:
+        center = self.mapToGlobal(self._get_collapsed_circle_rect().center())
+        self._set_drag_awareness_target(QPointF(cursor_pos - center))
+
+    def _update_drag_awareness_target_local(self, cursor_pos: QPointF) -> None:
+        center = QPointF(self._get_collapsed_circle_rect().center())
+        self._set_drag_awareness_target(cursor_pos - center)
+
+    def _set_drag_awareness_target(self, direction: QPointF) -> None:
+        distance = math.hypot(direction.x(), direction.y())
+        self._drag_awareness_distance = distance
+        if distance < 0.5:
+            return
+        target = math.atan2(direction.y(), direction.x())
+        self._drag_awareness_target_angle = target
+        if not self._drag_awareness_has_direction:
+            self._drag_awareness_angle = target
+            self._drag_awareness_has_direction = True
+
     def closeEvent(self, event) -> None:
+        self._drag_awareness_timer.stop()
+        self._clear_external_drag_candidate()
         self.shutdown()
         event.accept()
         super().closeEvent(event)
@@ -3154,9 +4360,50 @@ class HaypileFloatingBall(QWidget):
             urls.extend(value for value in mime_data.text().split() if HaypileFloatingBall._is_http_url(value))
         return RemoteDownloadWorker._dedupe_urls(urls)
 
+    @classmethod
+    def _drop_visual_kind_for_mime_data(cls, mime_data) -> str:
+        local_files = [
+            Path(url.toLocalFile())
+            for url in mime_data.urls()
+            if url.isLocalFile() and Path(url.toLocalFile()).is_file()
+        ]
+        if any(path.suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS for path in local_files):
+            return "leaf"
+
+        parser = DroppedMediaHTMLParser()
+        if mime_data.hasHtml():
+            parser.feed(mime_data.html())
+        if parser.image_urls:
+            return "leaf"
+        if parser.audio_urls:
+            unknown_html = set(parser.urls) - parser.audio_urls - parser.image_urls
+            return "audio" if not unknown_html else "leaf"
+
+        remote_urls = {
+            url.toString().strip()
+            for url in mime_data.urls()
+            if not url.isLocalFile() and cls._is_http_url(url.toString().strip())
+        }
+        remote_urls.update(parser.urls)
+        if mime_data.hasText():
+            remote_urls.update(value for value in mime_data.text().split() if cls._is_http_url(value))
+        candidates = [*local_files, *remote_urls]
+        if not candidates:
+            return "leaf"
+        return "audio" if all(
+            candidate.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
+            if isinstance(candidate, Path)
+            else cls._is_audio_url(candidate)
+            for candidate in candidates
+        ) else "leaf"
+
     @staticmethod
     def _is_http_url(value: str) -> bool:
         return urlparse(value).scheme.lower() in {"http", "https"}
+
+    @staticmethod
+    def _is_audio_url(value: str) -> bool:
+        return Path(urlparse(value).path).suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
 
     def _ingest_busy(self) -> bool:
         return bool(
@@ -3172,8 +4419,12 @@ class HaypileFloatingBall(QWidget):
         )
         self.remote_worker.start()
         self.show_toast(ui_text("正在获取网页素材...", "Fetching web assets..."), success=True)
-        self.progress_window.begin_at(self._progress_window_position())
-        self.progress_window.set_progress(5, ui_text("正在获取网页素材...", "Fetching web assets..."))
+        self.quick_menu.begin_progress(
+            self._toast_anchor(),
+            self._available_geometry(),
+            ui_text("正在获取网页素材...", "Fetching web assets..."),
+        )
+        self.quick_menu.set_progress(5, ui_text("正在获取网页素材...", "Fetching web assets..."))
 
     def _on_remote_download_finished(
         self,
@@ -3187,12 +4438,12 @@ class HaypileFloatingBall(QWidget):
             self.remote_worker = None
         if not success and not local_files:
             self.show_toast(message, success=False)
-            self.progress_window.complete(False, message)
+            self.quick_menu.complete_progress(False, message)
             return
         files = [*local_files, *downloaded_files]
         if not files:
             self.show_toast(ui_text("没有找到可收纳的图片或音频", "No images or audio to store"), success=False)
-            self.progress_window.complete(False, message)
+            self.quick_menu.complete_progress(False, message)
             return
         self._drop_feedback_until = time.monotonic() + 0.65
         self._sync_visual_timer()
@@ -3220,7 +4471,11 @@ class HaypileFloatingBall(QWidget):
         self.worker.start()
         self._sync_visual_timer()
         self.show_toast(ui_text(f"已接收 {len(merged_files)} 个文件，正在收纳...", f"Received {len(merged_files)} files, storing..."), success=True)
-        self.progress_window.begin_at(self._progress_window_position())
+        self.quick_menu.begin_progress(
+            self._toast_anchor(),
+            self._available_geometry(),
+            ui_text("正在收纳...", "Storing..."),
+        )
 
     def _on_ingest_finished(self, message: str, success: bool) -> None:
         if success:
@@ -3249,8 +4504,8 @@ class HaypileFloatingBall(QWidget):
             self._sync_visual_timer()
             self.update()
         self.show_toast(message, success=success)
-        self.progress_window.complete(success, message)
-        if self.material_panel.isVisible():
+        self.quick_menu.complete_progress(success, message)
+        if self.quick_menu.current_page() == "assets":
             self.material_panel.refresh()
         self._refresh_pending_badge()
         if self.worker is not None:
@@ -3258,8 +4513,7 @@ class HaypileFloatingBall(QWidget):
             self.worker = None
 
     def _on_ingest_progress(self, percent: int, text: str) -> None:
-        self.progress_window.set_progress(percent, text)
-        self._reposition_progress_window()
+        self.quick_menu.set_progress(percent, text)
 
     def _on_ingest_degraded(
         self,
@@ -3278,29 +4532,50 @@ class HaypileFloatingBall(QWidget):
         )
 
     def show_toast(self, message: str, *, success: bool) -> None:
-        self.toast.show_message(
+        self.quick_menu.show_feedback(
             message,
-            success=success,
-            anchor=self._toast_anchor(),
-            available=self._available_geometry(),
+            success,
+            self._toast_anchor(),
+            self._available_geometry(),
         )
 
     def _reposition_toast(self) -> None:
-        self.toast.reposition(self._toast_anchor(), self._available_geometry())
+        self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=False)
 
     def _toast_anchor(self) -> QRect:
         circle = self._get_collapsed_circle_rect()
         top_left = self.mapToGlobal(circle.topLeft())
         return QRect(top_left, circle.size())
 
+    def _ball_anchor_rect(self) -> QRect:
+        return self._toast_anchor()
+
     def _animate_size(self, target_size: int) -> None:
         if self._closing:
+            return
+        # Keep native resize handles disabled while idle; only Haypile may resize itself.
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        if self._drop_anchor_global is not None:
+            if self._geometry_animation is not None:
+                self._geometry_animation.stop()
+            self.is_expanded = target_size > self.COLLAPSED_SIZE
+            self.setGeometry(self._clamped_geometry_for_size(target_size))
+            self.setFixedSize(target_size, target_size)
+            self._update_window_mask()
+            if target_size == self.COLLAPSED_SIZE:
+                self._drop_anchor_global = None
+                self._reset_drop_visual_state()
+            self.update()
             return
         if self.width() == target_size and self.height() == target_size:
             self.is_expanded = target_size > self.COLLAPSED_SIZE
             clamped = self._clamped_geometry_for_size(target_size)
             if clamped.topLeft() != self.pos():
                 self.setGeometry(clamped)
+            self.setFixedSize(target_size, target_size)
+            if target_size == self.COLLAPSED_SIZE:
+                self._reset_drop_visual_state()
             self._update_window_mask()
             self.update()
             return
@@ -3321,16 +4596,19 @@ class HaypileFloatingBall(QWidget):
 
     def _on_resize_animation_done(self, target_size: int) -> None:
         self.is_expanded = target_size > self.COLLAPSED_SIZE
+        self.setFixedSize(target_size, target_size)
+        if target_size == self.COLLAPSED_SIZE:
+            self._reset_drop_visual_state()
         self._update_window_mask()
-        self._reposition_progress_window()
         self.update()
 
     def _clamped_geometry_for_size(self, target_size: int) -> QRect:
         current = self.geometry()
-        center = current.center()
+        center = self._drop_anchor_global or current.center()
+        half_span = (target_size - 1) // 2
         x, y = self._clamp_window_position(
-            center.x() - target_size // 2,
-            center.y() - target_size // 2,
+            center.x() - half_span,
+            center.y() - half_span,
             target_size,
             target_size,
         )
@@ -3367,21 +4645,59 @@ class HaypileFloatingBall(QWidget):
             logger.debug("Failed to save Haypile window position", exc_info=True)
 
     def _default_ai_enabled(self) -> bool:
-        return bool(self.settings.VISION_CLASSIFIER_ENABLED) and not bool(
-            self.settings.HAYPILE_LOW_POWER_MODE
-        )
+        return bool(self.settings.VISION_CLASSIFIER_ENABLED) and not self.low_power_enabled
 
     def _restore_ai_enabled(self) -> bool:
-        if self.settings.HAYPILE_LOW_POWER_MODE:
-            return False
-        stored = self._read_gui_state().get("ai_enabled")
-        return bool(stored) if isinstance(stored, bool) else self._default_ai_enabled()
+        return bool(self._ai_preference) and not self.low_power_enabled
 
     def _save_ai_enabled(self) -> None:
+        if not self.low_power_enabled:
+            self._ai_preference = bool(self.ai_enabled)
         try:
-            self._save_gui_state({"ai_enabled": self.ai_enabled})
+            self._save_gui_state({"ai_enabled": self._ai_preference})
         except OSError:
             logger.debug("Failed to save Haypile AI setting", exc_info=True)
+
+    def _set_low_power_enabled(self, enabled: bool) -> None:
+        self.low_power_enabled = bool(enabled)
+        if self.low_power_enabled:
+            self._ai_preference = bool(self.ai_enabled or self._ai_preference)
+            self.ai_enabled = False
+            self._drag_awareness_timer.stop()
+            self._clear_external_drag_candidate()
+        else:
+            self.ai_enabled = bool(self._ai_preference)
+            if self.isVisible() and (sys.platform == "darwin" or sys.platform.startswith("win")):
+                self._drag_awareness_timer.start()
+        try:
+            self._save_gui_state(
+                {
+                    "low_power_enabled": self.low_power_enabled,
+                    "ai_enabled": self._ai_preference,
+                }
+            )
+        except OSError:
+            logger.debug("Failed to save Haypile low-power setting", exc_info=True)
+        self._sync_visual_timer()
+        self._refresh_ai_menu_status()
+        self.show_toast(
+            ui_text("低功耗模式已开启", "Low power enabled")
+            if self.low_power_enabled
+            else ui_text("低功耗模式已关闭", "Low power disabled"),
+            success=True,
+        )
+
+    def _set_language_mode(self, mode: str) -> None:
+        self.language_mode = mode if mode in {"auto", "zh", "en"} else "auto"
+        set_ui_language(self.language_mode)
+        try:
+            self._save_gui_state({"language": self.language_mode})
+        except OSError:
+            logger.debug("Failed to save Haypile language setting", exc_info=True)
+        self.quick_menu.retranslate()
+        self.material_panel.refresh()
+        self._refresh_ai_menu_status()
+        self.show_toast(ui_text("语言已更新", "Language updated"), success=True)
 
     def _clear_exit_armed(self) -> None:
         self._exit_armed = False
@@ -3419,103 +4735,59 @@ class HaypileFloatingBall(QWidget):
         self._drag_prepare_timer.stop()
         self._exit_timer.stop()
         self._visual_timer.stop()
+        self._drag_awareness_timer.stop()
         if self._drop_open_animation is not None:
             self._drop_open_animation.stop()
+        if self._audio_suction_animation is not None:
+            self._audio_suction_animation.stop()
         self._shutdown_remote_worker()
         self._shutdown_worker()
         self.stop_api_server()
-        self.toast.hide()
-        self.toast.close()
-        self.progress_window.hide()
-        self.progress_window.close()
-        self.ai_setup_panel.hide()
-        self.ai_setup_panel.close()
         self.quick_menu.hide()
         self.quick_menu.close()
-        self.material_panel.hide()
-        self.material_panel.close()
         QTimer.singleShot(0, QCoreApplication.quit)
 
     def _reposition_progress_window(self) -> None:
-        if not self.progress_window.isVisible():
-            return
-        self.progress_window.move(self._progress_window_position())
-        self.progress_window.raise_()
+        if self.quick_menu.isVisible():
+            self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=False)
 
     def _progress_window_position(self) -> QPoint:
-        if self.material_panel.isVisible():
-            material_pos = self.material_panel.pos()
-            available = self._available_geometry()
-            x = material_pos.x()
-            y = material_pos.y() - self.progress_window.height() - 10
-            if y < available.top() + 10:
-                y = material_pos.y() + self.material_panel.height() + 10
-            x, y = self._clamp_window_position(
-                x, y, self.progress_window.width(), self.progress_window.height()
-            )
-        else:
-            x, y = self._side_window_position(
-                self.progress_window.width(),
-                self.progress_window.height(),
-            )
+        x, y = self._side_window_position(270, 44)
         return QPoint(x, y)
 
     def _toggle_material_panel(self) -> None:
-        self.quick_menu.hide_menu()
-        if self.material_panel.isVisible():
-            self.material_panel.hide_panel()
-            self._reposition_progress_window()
-            self._refresh_pending_badge()
-            return
-        self.material_panel.refresh()
-        self._refresh_pending_badge()
-        self._reposition_material_panel()
-        self.material_panel.show_panel()
-        self._reposition_progress_window()
+        self.quick_menu.open_drawer("assets", self._ball_anchor_rect(), self._available_geometry())
 
     def _reposition_material_panel(self) -> None:
-        x, y = self._side_window_position(
-            self.material_panel.width(),
-            self.material_panel.height(),
-        )
-        self.material_panel.move(x, y)
-        if self.material_panel.isVisible():
-            self.material_panel.raise_()
+        self._reposition_quick_menu()
+
+    def _close_attached_ui(self) -> None:
+        self.quick_menu.hide_menu()
+        QTimer.singleShot(0, self._refresh_pending_badge)
 
     def _toggle_quick_menu(self) -> None:
         if self.quick_menu.isVisible():
-            self.quick_menu.hide_menu()
+            self._close_attached_ui()
             return
         if self._has_pending_assets and not self.quick_menu._attention_action:
-            self.quick_menu.set_attention_action("status")
-        self._refresh_ai_menu_status()
-        self._reposition_quick_menu()
-        self.quick_menu.show_menu(self.quick_menu.x(), self.quick_menu.y())
-        self._align_quick_menu_track_to_ball()
-        QTimer.singleShot(0, self._align_quick_menu_track_to_ball)
+            self.quick_menu.set_attention_action("assets")
+        self.quick_menu.show_attached(self._ball_anchor_rect(), self._available_geometry())
 
     def _reposition_quick_menu(self) -> None:
-        frame = self.frameGeometry()
-        x = frame.center().x() - self.quick_menu.width() // 2
-        y = frame.center().y() - self.quick_menu.height() // 2
-        x, y = self._clamp_window_position(x, y, self.quick_menu.width(), self.quick_menu.height())
-        self.quick_menu.move(x, y)
-        self._align_quick_menu_track_to_ball()
-        self.quick_menu.raise_()
+        if self.quick_menu.isVisible():
+            self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=False)
 
     def _align_quick_menu_track_to_ball(self) -> None:
-        frame = self.frameGeometry()
-        menu_top_left = self.quick_menu.frameGeometry().topLeft()
-        self.quick_menu.set_track_center(
-            QPointF(
-                frame.center().x() - menu_top_left.x(),
-                frame.center().y() - menu_top_left.y(),
-            )
-        )
+        self._reposition_quick_menu()
 
     def _handle_quick_menu_action(self, action: str) -> None:
         if action == "assets":
             self._toggle_material_panel()
+            return
+        if action in {"agent", "settings"}:
+            self.quick_menu.open_drawer(action, self._ball_anchor_rect(), self._available_geometry())
+            if action == "settings":
+                QTimer.singleShot(0, self._refresh_ai_menu_status)
             return
         if action == "mcp":
             QApplication.clipboard().setText(self._mcp_config_text())
@@ -3526,15 +4798,25 @@ class HaypileFloatingBall(QWidget):
             QApplication.clipboard().setText(base_url)
             self.show_toast(ui_text(f"已复制 HTTP 地址 {base_url}", f"HTTP URL copied {base_url}"), success=True)
             return
-        if action == "status":
-            running = self._probe_backend_via_ipc() or self._is_port_open(
-                self.settings.HOST,
-                self.settings.PORT,
+        if action == "ready_handoff":
+            bundles = BundleService().list_bundles(status="ready")
+            if not bundles:
+                self.show_toast(ui_text("没有可用素材", "No ready assets"), success=False)
+                return
+            QApplication.clipboard().setText(
+                json.dumps(self.material_panel._handoff_for_bundles(bundles), ensure_ascii=False, indent=2)
             )
-            self.show_toast(self._status_text() if running else ui_text("Haypile 后台未启动", "Haypile backend is not running"), success=running)
+            self.show_toast(ui_text(f"已复制 {len(bundles)} 个可用素材", f"Copied {len(bundles)} ready assets"), success=True)
             return
-        if action == "ai":
-            if not self.ai_enabled and self.settings.HAYPILE_LOW_POWER_MODE:
+        if action == "agent_recipe":
+            QApplication.clipboard().setText(self.material_panel._agent_recipe_text())
+            self.show_toast(ui_text("已复制 Agent 配方", "Agent recipe copied"), success=True)
+            return
+        if action == "ai_setup":
+            self._show_ai_setup_panel(self._ai_model_status_text())
+            return
+        if action == "ai_toggle":
+            if not self.ai_enabled and self.low_power_enabled:
                 self.show_toast(self._ai_status_text(), success=False)
                 return
             if not self.ai_enabled:
@@ -3543,19 +4825,61 @@ class HaypileFloatingBall(QWidget):
                     self._show_ai_setup_panel(status_text)
                     return
             self.ai_enabled = not self.ai_enabled
+            self._ai_preference = self.ai_enabled
             self._save_ai_enabled()
             self._refresh_ai_menu_status()
             self.show_toast(self._ai_status_text(), success=True)
+            return
+        if action == "ai_copy_command":
+            model = str(self.settings.VISION_CLASSIFIER_MODEL or "qwen2.5vl:3b")
+            QApplication.clipboard().setText(f"ollama pull {model}")
+            self.show_toast(ui_text("已复制模型安装命令", "Model install command copied"), success=True)
+            return
+        if action == "ai_recheck":
+            self._recheck_ai_setup()
+            return
+        if action == "low_power":
+            self._set_low_power_enabled(not self.low_power_enabled)
+            return
+        if action.startswith("language:"):
+            self._set_language_mode(action.partition(":")[2])
+            return
+        if action == "logs":
+            self.settings.LOG_DIR.mkdir(parents=True, exist_ok=True)
+            opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.settings.LOG_DIR)))
+            self.show_toast(ui_text("已打开日志目录", "Logs folder opened"), success=bool(opened))
+            return
+        if action == "exit":
+            if self._ingest_busy():
+                if getattr(self, "_busy_exit_armed", False):
+                    self.close()
+                    return
+                self._busy_exit_armed = True
+                self.quick_menu.exit_button.setText(ui_text("再次点击以退出", "Click again to quit"))
+                self.show_toast(ui_text("仍在收纳，退出会中断任务", "Import is active; quitting will stop it"), success=False)
+                QTimer.singleShot(2200, self._clear_busy_exit_armed)
+                return
+            self.close()
 
     def _refresh_ai_menu_status(self) -> None:
-        self.quick_menu.set_ai_enabled(self.ai_enabled, self._ai_status_text())
+        if not hasattr(self, "quick_menu"):
+            return
+        ai_status = self._ai_status_text()
+        self.quick_menu.set_ai_enabled(self.ai_enabled, ai_status)
+        self.quick_menu.update_settings_state(
+            ai_enabled=self.ai_enabled,
+            ai_status=ai_status,
+            low_power=self.low_power_enabled,
+            language=self.language_mode,
+            service_status=self._status_text(),
+        )
 
     def _ai_status_text(self) -> str:
-        if self.settings.HAYPILE_LOW_POWER_MODE:
+        if self.low_power_enabled:
             return ui_text("低功耗模式 · AI 分拣关闭", "Low power · AI sorting off")
         if not self.ai_enabled:
             return ui_text("AI 分拣已关闭", "AI sorting off")
-        return ui_text("AI 分拣已开启", "AI sorting on") + " · " + self._ai_model_status_text()
+        return ui_text("AI 分拣已开启", "AI sorting on")
 
     def _ai_model_status_text(self) -> str:
         return self._ai_model_state()[1]
@@ -3582,25 +4906,25 @@ class HaypileFloatingBall(QWidget):
         return "missing", ui_text(f"模型未安装 {model}", f"Model missing {model}")
 
     def _show_ai_setup_panel(self, status_text: str) -> None:
-        model = str(self.settings.VISION_CLASSIFIER_MODEL or "").strip() or "qwen2.5vl:3b"
-        self.ai_setup_panel.show_setup(
-            model=model,
-            status_text=status_text,
-            anchor=self._toast_anchor(),
-            available=self._available_geometry(),
-        )
+        self.quick_menu.open_drawer("ai", self._ball_anchor_rect(), self._available_geometry())
+        self.quick_menu.ai_status_label.setText(status_text)
         self.show_toast(ui_text("先安装本地视觉模型", "Install the local vision model first"), success=False)
 
     def _recheck_ai_setup(self) -> None:
         state, status_text = self._ai_model_state()
         if state == "ready":
             self.ai_enabled = True
+            self._ai_preference = True
             self._save_ai_enabled()
             self._refresh_ai_menu_status()
-            self.ai_setup_panel.hide()
             self.show_toast(self._ai_status_text(), success=True)
             return
         self._show_ai_setup_panel(status_text)
+
+    def _clear_busy_exit_armed(self) -> None:
+        self._busy_exit_armed = False
+        if hasattr(self, "quick_menu"):
+            self.quick_menu.exit_button.setText(ui_text("退出 Haypile", "Quit Haypile"))
 
     def _status_text(self) -> str:
         summary = build_material_panel_summary()
@@ -3680,7 +5004,58 @@ class HaypileFloatingBall(QWidget):
         self._drop_open_progress = max(0.0, min(float(value), 1.0))
         self.update()
 
+    def _drop_visual_offset(self, progress: float) -> QPointF:
+        if self._drop_anchor_global is None:
+            return QPointF()
+        progress = max(0.0, min(float(progress), 1.0))
+        eased = progress * progress * (3.0 - 2.0 * progress)
+        center = QRectF(self.rect()).center()
+        anchor = QPointF(self.mapFromGlobal(self._drop_anchor_global))
+        return (anchor - center) * (1.0 - eased)
+
     dropOpenProgress = Property(float, _get_drop_open_progress, _set_drop_open_progress)
+
+    def _get_audio_suction_progress(self) -> float:
+        return self._audio_suction_progress
+
+    def _set_audio_suction_progress(self, value: float) -> None:
+        self._audio_suction_progress = max(0.0, min(float(value), 1.0))
+        self.update()
+
+    audioSuctionProgress = Property(
+        float,
+        _get_audio_suction_progress,
+        _set_audio_suction_progress,
+    )
+
+    def _cancel_audio_suction(self) -> None:
+        if self._audio_suction_animation is not None:
+            self._audio_suction_animation.stop()
+            self._audio_suction_animation = None
+        self._set_audio_suction_progress(0.0)
+
+    def _animate_audio_suction(self) -> None:
+        self._cancel_audio_suction()
+        animation = QPropertyAnimation(self, b"audioSuctionProgress", self)
+        self._audio_suction_animation = animation
+        animation.setDuration(150)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.finished.connect(self._finish_audio_suction)
+        animation.start()
+
+    def _finish_audio_suction(self) -> None:
+        self._audio_suction_animation = None
+        self._close_drop_target()
+
+    def _close_drop_target(self) -> None:
+        self._animate_drop_open(False)
+        self._collapse_timer.start()
+
+    def _reset_drop_visual_state(self) -> None:
+        self._cancel_audio_suction()
+        self._drop_visual_kind = "leaf"
 
     def _animate_drop_open(self, opened: bool) -> None:
         target = 1.0 if opened else 0.0
@@ -3696,6 +5071,189 @@ class HaypileFloatingBall(QWidget):
         animation.setStartValue(self._drop_open_progress)
         animation.setEndValue(target)
         animation.start()
+
+    def _draw_audio_intake(
+        self,
+        painter: QPainter,
+        panel_rect: QRectF,
+        progress: float,
+        suction: float,
+    ) -> None:
+        progress = max(0.0, min(progress, 1.0))
+        suction = max(0.0, min(suction, 1.0))
+        if progress <= 0.0:
+            return
+        self._draw_audio_leaf_nest(painter, panel_rect, progress, suction)
+        self._draw_audio_center_cutout(painter, panel_rect, progress)
+
+    def _draw_audio_leaf_nest(
+        self,
+        painter: QPainter,
+        panel_rect: QRectF,
+        progress: float,
+        suction: float,
+    ) -> None:
+        if not self._drop_leaf_renderers:
+            self._draw_drop_leaf_frame(painter, panel_rect, progress, leaf_width_scale=0.78)
+            return
+
+        layers = (
+            (
+                QColor("#A8A96F"),
+                (
+                    (0, -165, 0.96, 0.40, 28, 0.42),
+                    (1, -105, 0.92, 0.37, -25, 0.39),
+                    (0, -45, 0.98, 0.41, 30, 0.43),
+                    (1, 15, 0.93, 0.38, -26, 0.40),
+                    (0, 75, 0.97, 0.40, 27, 0.42),
+                    (1, 135, 0.92, 0.37, -24, 0.39),
+                ),
+            ),
+            (
+                QColor("#C4963C"),
+                (
+                    (2, -145, 0.86, 0.34, -24, 0.72),
+                    (2, -85, 0.81, 0.32, 26, 0.69),
+                    (2, -25, 0.88, 0.35, -22, 0.73),
+                    (2, 35, 0.82, 0.33, 28, 0.70),
+                    (2, 95, 0.87, 0.34, -25, 0.72),
+                    (2, 155, 0.80, 0.32, 24, 0.69),
+                ),
+            ),
+            (
+                QColor("#4D582F"),
+                (
+                    (4, 179, 0.70, 0.33, -10, 0.92),
+                    (3, -121, 0.75, 0.30, 8, 0.90),
+                    (4, -61, 0.69, 0.32, -9, 0.93),
+                    (3, -1, 0.74, 0.30, 11, 0.90),
+                    (4, 59, 0.71, 0.33, -8, 0.92),
+                    (3, 119, 0.76, 0.30, 10, 0.91),
+                ),
+            ),
+        )
+        buffers = self._audio_leaf_buffers()
+        center = panel_rect.center()
+        source_angle = self._drag_awareness_angle if self._drag_awareness_has_direction else -math.pi / 2
+        source_degrees = math.degrees(source_angle)
+        source_vector = QPointF(math.cos(source_angle), math.sin(source_angle))
+        layer_delays = (0.0, 25.0 / 210.0, 50.0 / 210.0)
+        tint_opacities = (0.82, 0.92, 1.0)
+
+        for layer_index, ((color, placements), buffer) in enumerate(zip(layers, buffers)):
+            buffer.fill(Qt.GlobalColor.transparent)
+            layer_painter = QPainter(buffer)
+            layer_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            layer_painter.setClipPath(self._drop_outer_path(panel_rect))
+            for leaf_index, angle, radius_scale, width_scale, rotation_offset, opacity in placements:
+                if leaf_index >= len(self._drop_leaf_renderers):
+                    continue
+                renderer = self._drop_leaf_renderers[leaf_index]
+                svg_size = renderer.defaultSize()
+                if svg_size.width() <= 0:
+                    continue
+
+                delta = (angle - source_degrees + 180.0) % 360.0 - 180.0
+                source_weight = max(0.0, math.cos(math.radians(delta))) if abs(delta) <= 65.0 else 0.0
+                delay = max(0.0, layer_delays[layer_index] - source_weight * (15.0 / 210.0))
+                leaf_progress = self._staggered_progress(progress, delay)
+                suction_delay = (55.0 / 150.0) * (abs(delta) / 180.0)
+                leaf_suction = self._staggered_progress(suction, suction_delay)
+
+                radians = math.radians(angle)
+                radius = panel_rect.width() * radius_scale
+                full_center = center + QPointF(math.cos(radians) * radius, math.sin(radians) * radius)
+                slide = 0.98 - 0.18 * leaf_progress
+                draw_center = center + (full_center - center) * slide
+                greeting = (6.0 if layer_index < 2 else 1.8) * source_weight * leaf_progress * (1.0 - leaf_suction)
+                draw_center += source_vector * greeting
+                toward_center = center - draw_center
+                toward_length = math.hypot(toward_center.x(), toward_center.y())
+                if toward_length > 0.5:
+                    draw_center += toward_center * ((9.0 * leaf_suction) / toward_length)
+
+                open_scale = 0.72 + 0.28 * leaf_progress
+                suction_scale = 1.0 - 0.06 * leaf_suction
+                draw_width = min(self.width(), self.height()) * width_scale * open_scale * 0.68 * suction_scale
+                draw_height = draw_width * svg_size.height() / svg_size.width()
+                direction_turn = -math.sin(math.radians(delta)) * 10.0 * source_weight * (1.0 - leaf_suction)
+                draw_rotation = angle - 90 + rotation_offset * (1.0 - 0.38 * leaf_suction) + direction_turn
+
+                layer_painter.save()
+                layer_painter.setOpacity(
+                    opacity
+                    * (0.18 + 0.82 * leaf_progress)
+                    * (1.0 - 0.68 * leaf_suction)
+                )
+                layer_painter.translate(draw_center)
+                layer_painter.rotate(draw_rotation)
+                clip_height = 0.42 if leaf_index in {3, 4} else 0.48
+                layer_painter.setClipRect(
+                    QRectF(-draw_width * 0.56, -draw_height * 0.52, draw_width * 1.12, draw_height * clip_height),
+                    Qt.ClipOperation.IntersectClip,
+                )
+                renderer.render(
+                    layer_painter,
+                    QRectF(-draw_width * 0.5, -draw_height * 0.5, draw_width, draw_height),
+                )
+                layer_painter.restore()
+
+            layer_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            layer_color = QColor(color)
+            layer_color.setAlphaF(tint_opacities[layer_index])
+            layer_painter.fillRect(QRectF(self.rect()), layer_color)
+            layer_painter.end()
+            painter.drawPixmap(QPointF(0.0, 0.0), buffer)
+
+    def _audio_leaf_buffers(self) -> tuple[QPixmap, ...]:
+        dpr = max(1.0, self.devicePixelRatioF())
+        key = (self.width(), self.height(), round(dpr * 100))
+        if self._audio_leaf_layer_key != key:
+            pixel_size = self.size() * dpr
+            self._audio_leaf_layer_buffers = tuple(QPixmap(pixel_size) for _ in range(3))
+            for buffer in self._audio_leaf_layer_buffers:
+                buffer.setDevicePixelRatio(dpr)
+            self._audio_leaf_layer_key = key
+        return self._audio_leaf_layer_buffers
+
+    @staticmethod
+    def _staggered_progress(value: float, delay: float) -> float:
+        if value <= delay:
+            return 0.0
+        progress = min(1.0, (value - delay) / max(0.001, 1.0 - delay))
+        return progress * progress * (3.0 - 2.0 * progress)
+
+    @staticmethod
+    def _audio_center_path(panel_rect: QRectF, progress: float) -> QPainterPath:
+        center = panel_rect.center()
+        radius = panel_rect.width() * 0.155 * (0.72 + 0.28 * progress)
+        points = (
+            (-8, 0.93), (24, 1.13), (57, 0.86), (91, 1.08),
+            (126, 0.90), (163, 1.16), (199, 0.84), (234, 1.09),
+            (270, 0.89), (306, 1.14), (339, 0.87),
+        )
+        vertices = [
+            center
+            + QPointF(
+                math.cos(math.radians(angle)) * radius * scale,
+                math.sin(math.radians(angle)) * radius * scale,
+            )
+            for angle, scale in points
+        ]
+        path = QPainterPath()
+        path.moveTo((vertices[-1] + vertices[0]) * 0.5)
+        for index, point in enumerate(vertices):
+            path.quadTo(point, (point + vertices[(index + 1) % len(vertices)]) * 0.5)
+        path.closeSubpath()
+        return path
+
+    def _draw_audio_center_cutout(self, painter: QPainter, panel_rect: QRectF, progress: float) -> None:
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(Qt.GlobalColor.transparent)
+        painter.drawPath(self._audio_center_path(panel_rect, progress))
+        painter.restore()
 
     def _load_drop_leaf_renderers(self) -> list[QSvgRenderer]:
         leaf_dir = self.project_root / "ui_assets"
@@ -3719,10 +5277,17 @@ class HaypileFloatingBall(QWidget):
         except (OSError, ValueError):
             return []
 
-    def _draw_drop_leaf_frame(self, painter: QPainter, panel_rect: QRectF, progress: float) -> None:
+    def _draw_drop_leaf_frame(
+        self,
+        painter: QPainter,
+        panel_rect: QRectF,
+        progress: float,
+        *,
+        leaf_width_scale: float = 1.0,
+    ) -> None:
         progress = max(0.0, min(progress, 1.0))
         if self._drop_leaf_renderers:
-            self._draw_vector_leaf_frame(painter, panel_rect, progress)
+            self._draw_vector_leaf_frame(painter, panel_rect, progress, leaf_width_scale)
             return
         if self._drop_leaf_frame_renderer.isValid():
             size = min(self.width(), self.height())
@@ -3758,7 +5323,13 @@ class HaypileFloatingBall(QWidget):
                 painter.fillRect(QRectF(offset_x + x * step, offset_y + y * step, width * step, step), leaf_color)
             painter.restore()
             return
-    def _draw_vector_leaf_frame(self, painter: QPainter, panel_rect: QRectF, progress: float) -> None:
+    def _draw_vector_leaf_frame(
+        self,
+        painter: QPainter,
+        panel_rect: QRectF,
+        progress: float,
+        leaf_width_scale: float,
+    ) -> None:
         center = panel_rect.center()
         placements = [
             (0, -171, 0.91, 0.39, -10, 0.44),
@@ -3802,7 +5373,7 @@ class HaypileFloatingBall(QWidget):
             slide = 0.98 - 0.18 * progress
             scale = 0.72 + 0.28 * progress
             draw_center = center + (full_center - center) * slide
-            draw_width = full_width * scale * 0.84
+            draw_width = full_width * scale * 0.84 * leaf_width_scale
             draw_height = full_height * scale * 0.84
 
             painter.save()
@@ -3925,17 +5496,153 @@ class HaypileFloatingBall(QWidget):
             painter.restore()
         painter.restore()
 
+    def _tinted_haypile_pixmap(self, color: QColor) -> QPixmap:
+        if self.haypile_icon.isNull():
+            return QPixmap()
+        tinted = QPixmap(self.haypile_icon.size())
+        tinted.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(tinted)
+        painter.drawPixmap(tinted.rect(), self.haypile_icon)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(tinted.rect(), color)
+        painter.end()
+        return tinted
+
+    def _draw_haypile_aura(
+        self,
+        painter: QPainter,
+        rect: QRectF,
+        pulse: float,
+        *,
+        active: bool,
+    ) -> None:
+        if not active or self._haypile_glow_pixmap.isNull():
+            return
+        if self._exit_armed:
+            glow_pixmap = self._haypile_exit_glow_pixmap
+            intensity = 1.0
+        elif self._drag_hover:
+            glow_pixmap = self._haypile_glow_pixmap
+            intensity = 1.0
+        elif self._external_drag_candidate:
+            glow_pixmap = self._haypile_glow_pixmap
+            intensity = 0.74
+        elif self._hovered:
+            glow_pixmap = self._haypile_glow_pixmap
+            intensity = 0.88
+        else:
+            glow_pixmap = self._haypile_glow_pixmap
+            intensity = 0.44
+
+        inherited_opacity = painter.opacity()
+        painter.save()
+        painter.setClipRect(
+            QRectF(
+                rect.left() - 8,
+                rect.top() - 8,
+                rect.width() + 16,
+                rect.height() * 0.90 + 8,
+            )
+        )
+        source = QRectF(glow_pixmap.rect())
+        breath = 0.96 + pulse * 0.04
+        for expansion, opacity in ((0.030, 0.44), (0.075, 0.25), (0.130, 0.13)):
+            width = rect.width() * (1.0 + expansion)
+            height = rect.height() * (1.0 + expansion)
+            target = QRectF(
+                rect.center().x() - width / 2,
+                rect.bottom() - height,
+                width,
+                height,
+            )
+            painter.setOpacity(inherited_opacity * opacity * intensity * breath)
+            painter.drawPixmap(target, glow_pixmap, source)
+        painter.restore()
+
+    def _draw_directional_haypile_aura(
+        self,
+        painter: QPainter,
+        rect: QRectF,
+        pulse: float,
+    ) -> None:
+        intensity = self._drag_awareness_intensity()
+        if intensity <= 0.0 or not self._drag_awareness_has_direction or self._haypile_direction_glow_pixmap.isNull():
+            return
+
+        edge = self._haypile_edge_point(rect, self._drag_awareness_angle)
+        direction = QPointF(
+            math.cos(self._drag_awareness_angle),
+            math.sin(self._drag_awareness_angle),
+        )
+        width = max(1, math.ceil(rect.width()))
+        height = max(1, math.ceil(rect.height()))
+        local_rect = QRectF(0, 0, width, height)
+        center = QPointF(width / 2, height * 0.58)
+        local_edge = QPointF(edge.x() - rect.left(), edge.y() - rect.top())
+        gradient = QLinearGradient(
+            center - direction * (width * 0.28),
+            local_edge,
+        )
+        gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
+        gradient.setColorAt(0.48, QColor(255, 255, 255, 36))
+        gradient.setColorAt(1.0, QColor(255, 255, 255, 255))
+
+        highlight = QPixmap(width, height)
+        highlight.fill(Qt.GlobalColor.transparent)
+        highlight_painter = QPainter(highlight)
+        highlight_painter.drawPixmap(
+            local_rect,
+            self._haypile_direction_glow_pixmap,
+            QRectF(self._haypile_direction_glow_pixmap.rect()),
+        )
+        highlight_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        highlight_painter.fillRect(local_rect, gradient)
+        highlight_painter.end()
+
+        inherited_opacity = painter.opacity()
+        breath = 0.96 + pulse * 0.04
+        painter.save()
+        painter.setOpacity(inherited_opacity * 0.62 * intensity * breath)
+        painter.drawPixmap(rect, highlight, QRectF(highlight.rect()))
+        painter.restore()
+
+    def _drag_awareness_intensity(self) -> float:
+        if not (self._external_drag_candidate or self._drag_hover):
+            return 0.0
+        if self._drag_hover:
+            intensity = 1.0
+        else:
+            proximity = 1.0 - min(self._drag_awareness_distance / 420.0, 1.0)
+            intensity = 0.40 + proximity * 0.60
+        return intensity * max(0.0, 1.0 - self._drop_open_progress * 2.0)
+
+    def _haypile_edge_point(self, rect: QRectF, angle: float) -> QPointF:
+        direction = QPointF(math.cos(angle), math.sin(angle))
+        center = QPointF(rect.center().x(), rect.top() + rect.height() * 0.58)
+        if self._haypile_alpha_image.isNull() or rect.width() <= 0 or rect.height() <= 0:
+            return center + direction * (min(rect.width(), rect.height()) * 0.42)
+
+        last_opaque = center
+        max_distance = math.hypot(rect.width(), rect.height())
+        image_width = self._haypile_alpha_image.width()
+        image_height = self._haypile_alpha_image.height()
+        for step in range(1, 97):
+            distance = max_distance * step / 96.0
+            point = center + direction * distance
+            unit_x = (point.x() - rect.left()) / rect.width()
+            unit_y = (point.y() - rect.top()) / rect.height()
+            if not (0.0 <= unit_x < 1.0 and 0.0 <= unit_y < 1.0):
+                break
+            source_x = min(int(unit_x * image_width), image_width - 1)
+            source_y = min(int(unit_y * image_height), image_height - 1)
+            if self._haypile_alpha_image.pixelColor(source_x, source_y).alpha() >= 20:
+                last_opaque = point
+        return last_opaque + direction * 1.2
+
     def _draw_haypile_icon(self, painter: QPainter, rect: QRectF, *, active: bool) -> None:
         painter.save()
         if not self.haypile_icon.isNull():
             bend = self._drag_bend_values() if self._window_drag_active else (0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0)
-            if active:
-                glow = QRadialGradient(rect.center(), rect.width() * 0.68)
-                glow.setColorAt(0.0, QColor(255, 202, 70, 90))
-                glow.setColorAt(1.0, QColor(255, 202, 70, 0))
-                painter.setBrush(glow)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawEllipse(rect.adjusted(-6, -4, 6, 4))
             painter.setBrush(QColor(0, 0, 0, 26))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(
@@ -3958,14 +5665,6 @@ class HaypileFloatingBall(QWidget):
 
         def point(x: float, y: float) -> QPointF:
             return QPointF(left + x / 64.0 * width, top + y / 64.0 * height)
-
-        if active:
-            glow = QRadialGradient(rect.center(), width * 0.68)
-            glow.setColorAt(0.0, QColor(255, 202, 70, 90))
-            glow.setColorAt(1.0, QColor(255, 202, 70, 0))
-            painter.setBrush(glow)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(rect.adjusted(-6, -4, 6, 4))
 
         painter.setBrush(QColor(0, 0, 0, 26))
         painter.setPen(Qt.PenStyle.NoPen)
@@ -4093,12 +5792,33 @@ class HaypileFloatingBall(QWidget):
             self.update()
             return
         self._pulse_phase = (self._pulse_phase + 0.18) % (math.pi * 2)
+        if self._drag_awareness_has_direction and (self._external_drag_candidate or self._drag_hover):
+            delta = (
+                self._drag_awareness_target_angle
+                - self._drag_awareness_angle
+                + math.pi
+            ) % (math.pi * 2) - math.pi
+            self._drag_awareness_angle += delta * 0.35
         self.update()
 
     def _visual_state_active(self) -> bool:
         busy = self.worker is not None and self.worker.isRunning()
+        if self.low_power_enabled:
+            return (
+                self._drag_hover
+                or self._drop_open_progress > 0.0
+                or self._exit_armed
+                or busy
+                or self._drop_feedback_active()
+                or self._bounce_feedback_active()
+                or self._nudge_feedback_active()
+                or self._reject_feedback_active()
+                or self._window_drag_active
+                or self._drag_release_feedback_active()
+            )
         return (
             self._hovered
+            or self._external_drag_candidate
             or self._drag_hover
             or self._drop_open_progress > 0.0
             or self._exit_armed

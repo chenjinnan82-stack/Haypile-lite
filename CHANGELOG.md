@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.0-test.7
+
+Attached desktop container release.
+
+- Keep the grass pile fixed while the C-ring and drawers unfold around it.
+- Consolidate first-level navigation into Assets, Agent, and Settings.
+- Embed asset review, explicit handoff copying, AI setup, language, low-power,
+  service, and log controls in one attached shell.
+- Add private MCP session heartbeats for a real connection indicator without
+  storing asset paths or handoff content.
+- Refine drag awareness, image and audio intake visuals, edge placement, and
+  open/close timing without changing the HTTP, MCP, storage, or handoff contracts.
+- Replace the old independent-panel demo with the current attached UI render.
+- Verify the release with 208 tests and packaged backend/MCP smoke checks.
+
 ## v0.2.0-test.6
 
 Desktop package synchronization release.

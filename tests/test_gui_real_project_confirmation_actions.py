@@ -12,7 +12,7 @@ try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("IPC_AUTHKEY", "test-ipc-authkey")
     from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
-    from PySide6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent, QPixmap
+    from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QMouseEvent, QPixmap
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
@@ -40,6 +40,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmpdir = Path(tempfile.mkdtemp())
+        app_gui_module.set_ui_language("auto")
         self.previous_root = os.environ.get("HAYPILE_REAL_PROJECT_ROOT")
         self.previous_haypile_picker_preview_path = os.environ.get("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH")
         self.previous_haypile_gui_backend_start = os.environ.get("HAYPILE_GUI_ALLOW_BACKEND_START")
@@ -50,6 +51,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         os.environ.pop("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH", None)
 
     def tearDown(self) -> None:
+        app_gui_module.set_ui_language("auto")
         if self.previous_root is None:
             os.environ.pop("HAYPILE_REAL_PROJECT_ROOT", None)
         else:
@@ -161,7 +163,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             panel.confirmation_preview.close()
             panel.close()
 
-    def test_material_panel_recent_item_copies_asset_handoff(self) -> None:
+    def test_material_panel_recent_item_selects_then_explicitly_copies_asset_handoff(self) -> None:
         summary = MaterialPanelSummary(
             total_count=1,
             recognized_count=1,
@@ -212,11 +214,17 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )()
         panel = MaterialPanelWindow()
         try:
+            QApplication.clipboard().clear()
             panel.refresh()
             point = panel.item_labels[0].rect().center()
             event = QMouseEvent(QEvent.Type.MouseButtonPress, point, point, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
 
             panel._select_recent_item(0, event)
+
+            self.assertEqual(QApplication.clipboard().text(), "")
+            self.assertEqual(panel._selected_bundle_id, "hero")
+            self.assertIn("handoff 可复制", panel.detail_label.text())
+            panel._copy_selected_handoff()
 
             payload = json.loads(QApplication.clipboard().text())
             self.assertEqual(payload["source"], "haypile")
@@ -388,6 +396,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         toasts: list[tuple[str, bool]] = []
         panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
         try:
+            QApplication.clipboard().clear()
             panel.refresh()
             event = QMouseEvent(QEvent.Type.MouseButtonPress, panel.item_labels[0].rect().center(), panel.item_labels[0].rect().center(), Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
             panel._select_recent_item(0, event)
@@ -606,6 +615,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         toasts: list[tuple[str, bool]] = []
         panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
         try:
+            QApplication.clipboard().clear()
             panel.refresh()
             self.assertIn("音频 · 未确定 · 需确认后给 agent", panel.item_labels[0].text())
             self.assertIn("图片 · 图标 · agent 不可用", panel.item_labels[1].text())
@@ -618,7 +628,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("key generic/audio/voice.mp3", panel.detail_label.text())
             self.assertIn("url /static/generic/audio/voice.mp3", panel.detail_label.text())
             self.assertIn("需确认后给 agent", panel.detail_label.text())
-            self.assertIn("已复制 handoff", panel.detail_label.text())
+            self.assertIn("handoff 可复制", panel.detail_label.text())
             self.assertIn("音频用途 未确定", panel.detail_label.text())
             self.assertIn("Pika Call", panel.detail_label.text())
             self.assertIn("Winter Ridge", panel.detail_label.text())
@@ -769,6 +779,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         toasts: list[tuple[str, bool]] = []
         panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
         try:
+            QApplication.clipboard().clear()
             panel.refresh()
             point = panel.item_labels[0].rect().center()
             event = QMouseEvent(QEvent.Type.MouseButtonPress, point, point, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
@@ -781,11 +792,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("已确认：主视觉", panel.detail_label.text())
             self.assertIn("agent 可用", panel.detail_label.text())
             self.assertIn("background: #6F7F5A", panel.role_buttons["hero_image"].styleSheet())
+            self.assertEqual(QApplication.clipboard().text(), "")
+            self.assertIn("handoff 可复制", panel.detail_label.text())
+
+            panel._copy_selected_handoff()
             payload = json.loads(QApplication.clipboard().text())
             self.assertEqual(payload["assets"][0]["role"], "hero_image")
             self.assertEqual(payload["assets"][0]["status"], "ready")
             self.assertIn("已复制 handoff", panel.detail_label.text())
-            self.assertEqual(toasts, [])
+            self.assertEqual(toasts, [("已复制 handoff", True)])
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -934,18 +949,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         actions: list[str] = []
         menu.set_action_handler(actions.append)
         try:
-            self.assertEqual({action for action, _icon, _tooltip in menu.actions}, {"assets", "mcp", "http", "status", "ai"})
-            self.assertEqual(menu.action_tooltips["assets"], "Haypile")
+            self.assertEqual({action for action, _icon, _tooltip in menu.actions}, {"assets", "agent", "settings"})
+            self.assertEqual(menu.action_tooltips["assets"], app_gui_module.ui_text("素材", "Assets"))
 
-            point = menu._slot_rect("mcp").center()
-            self.assertEqual(menu._action_at(point), "mcp")
+            point = menu._slot_rect("agent").center()
+            self.assertEqual(menu._action_at(point), "agent")
             event = QMouseEvent(QEvent.Type.MouseButtonPress, point, point, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
             menu.mousePressEvent(event)
 
-            self.assertEqual(actions, ["mcp"])
-            QTest.qWait(250)
-            self.app.processEvents()
-            self.assertFalse(menu.isVisible())
+            self.assertEqual(actions, ["agent"])
         finally:
             menu.close()
 
@@ -958,7 +970,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             menu.mouseMoveEvent(event)
 
             self.assertEqual(menu._hovered_action, "assets")
-            self.assertEqual(menu.toolTip(), "Haypile")
+            self.assertEqual(menu.toolTip(), app_gui_module.ui_text("素材", "Assets"))
             menu.hide_menu()
             self.assertEqual(menu._hovered_action, "")
             self.assertEqual(menu.toolTip(), "")
@@ -969,7 +981,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             menu.close()
 
-    def test_quick_menu_empty_click_hides_menu(self) -> None:
+    def test_quick_menu_empty_click_keeps_attached_component_open(self) -> None:
         menu = QuickMenuWindow()
         actions: list[str] = []
         menu.set_action_handler(actions.append)
@@ -982,9 +994,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             menu.mousePressEvent(event)
 
             self.assertEqual(actions, [])
-            QTest.qWait(250)
-            self.app.processEvents()
-            self.assertFalse(menu.isVisible())
+            self.assertTrue(menu.isVisible())
         finally:
             menu.close()
 
@@ -995,9 +1005,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             menu.show_menu(10, 20)
 
+            self.assertNotEqual(menu._content_shift, QPointF(0, 0))
+            QTest.qWait(210)
+            self.app.processEvents()
             self.assertEqual(menu._content_shift, QPointF(0, 0))
             center, _radius = menu._track_geometry()
-            self.assertEqual(center, QPointF(96, 112))
+            self.assertEqual(center, QPointF(120, 120))
         finally:
             menu.close()
 
@@ -1026,7 +1039,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 flags = widget.windowFlags()
                 self.assertNotEqual(flags & Qt.WindowType.WindowType_Mask, Qt.WindowType.Tool)
                 self.assertTrue(bool(flags & Qt.WindowType.WindowStaysOnTopHint))
-                self.assertTrue(bool(flags & Qt.WindowType.WindowDoesNotAcceptFocus))
+            self.assertTrue(bool(ball.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus))
+            self.assertFalse(bool(menu.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus))
         finally:
             menu.close()
             ball.close()
@@ -1070,9 +1084,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.quick_menu._emit_action("http")
 
             self.assertEqual(QApplication.clipboard().text(), "http://127.0.0.1:8010")
-            QTest.qWait(250)
-            self.app.processEvents()
-            self.assertFalse(ball.quick_menu.isVisible())
+            self.assertTrue(ball.quick_menu.isVisible())
         finally:
             ball.close()
             self.app.processEvents()
@@ -1083,7 +1095,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
-            ball.material_panel.show()
+            ball._handle_quick_menu_action("assets")
+            self.app.processEvents()
             self.assertTrue(ball.material_panel.isVisible())
             point = ball.rect().center()
             event = QMouseEvent(
@@ -1121,6 +1134,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             expected = ball.frameGeometry().center() - ball.quick_menu.frameGeometry().topLeft()
             self.assertLessEqual(abs(track_center.x() - expected.x()), 1)
             self.assertLessEqual(abs(track_center.y() - expected.y()), 1)
+            QTest.qWait(210)
+            self.app.processEvents()
             self.assertEqual(ball.quick_menu._content_shift, QPointF(0, 0))
         finally:
             ball.close()
@@ -1145,18 +1160,17 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball._handle_quick_menu_action("assets")
             self.assertTrue(ball.material_panel.isVisible())
 
+            ball._handle_quick_menu_action("agent")
+            self.assertEqual(ball.quick_menu.current_page(), "agent")
+
             ball._handle_quick_menu_action("mcp")
             self.assertIn('"haypile"', QApplication.clipboard().text())
             self.assertIn(("已复制 MCP 配置", True), toasts)
 
-            ball._probe_backend_via_ipc = lambda: True
-            ball._handle_quick_menu_action("status")
-            self.assertIn(("运行中 · 可用 2 · 待确认 1", True), toasts)
-
             initial_ai = ball.ai_enabled
             ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
             ball._ai_status_text = lambda: "AI 分拣已开启" if ball.ai_enabled else "AI 分拣已关闭"
-            ball._handle_quick_menu_action("ai")
+            ball._handle_quick_menu_action("ai_toggle")
             self.assertEqual(ball.ai_enabled, not initial_ai)
             self.assertEqual(ball.quick_menu._ai_enabled, ball.ai_enabled)
             self.assertIn(
@@ -1180,15 +1194,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         try:
             ball.ai_enabled = False
 
-            ball._handle_quick_menu_action("ai")
+            ball._handle_quick_menu_action("ai_toggle")
 
             self.assertFalse(ball.ai_enabled)
-            self.assertTrue(ball.ai_setup_panel.isVisible())
-            self.assertEqual(ball.ai_setup_panel.command.text(), f"ollama pull {ball.settings.VISION_CLASSIFIER_MODEL}")
-            self.assertIn("模型未安装", ball.ai_setup_panel.body.text())
+            self.assertTrue(ball.quick_menu.is_drawer_open())
+            self.assertEqual(ball.quick_menu.current_page(), "ai")
+            self.assertIn("模型未安装", ball.quick_menu.ai_status_label.text())
             self.assertIn(("先安装本地视觉模型", False), toasts)
         finally:
-            ball.ai_setup_panel.close()
             ball.close()
             self.app.processEvents()
             app_gui_module.HaypileFloatingBall.start_api_server = previous_start
@@ -1203,16 +1216,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         ball._ai_status_text = lambda: "AI 分拣已开启"
         try:
             ball.ai_enabled = False
-            ball.ai_setup_panel.show()
+            ball._show_ai_setup_panel("模型可用 qwen2.5vl:3b")
 
             ball._recheck_ai_setup()
 
             self.assertTrue(ball.ai_enabled)
-            self.assertFalse(ball.ai_setup_panel.isVisible())
             self.assertEqual(ball.quick_menu._ai_enabled, True)
             self.assertIn(("AI 分拣已开启", True), toasts)
         finally:
-            ball.ai_setup_panel.close()
             ball.close()
             self.app.processEvents()
             app_gui_module.HaypileFloatingBall.start_api_server = previous_start
@@ -1248,11 +1259,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         anchors = []
-        ball.toast.show_message = lambda _message, success, anchor, available: anchors.append(anchor)
+        ball.quick_menu.show_feedback = lambda _message, _success, anchor, available: anchors.append(anchor)
         try:
             ball.move(120, 140)
-            ball.material_panel.show()
-            ball.material_panel.move(240, 180)
+            ball._handle_quick_menu_action("assets")
 
             ball.show_toast("ok", success=True)
 
@@ -1311,7 +1321,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         anchors = []
-        ball.toast.reposition = lambda anchor, available: anchors.append(anchor)
+        ball.quick_menu.show()
+        ball.quick_menu.reposition = lambda anchor, available, allow_flip=False: anchors.append(anchor)
         try:
             ball.setGeometry(120, 140, ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE)
             ball.drag_offset = app_gui_module.QPoint(12, 14)
@@ -1335,19 +1346,17 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.app.processEvents()
             app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
-    def test_floating_ball_progress_window_shows_at_target_position(self) -> None:
+    def test_floating_ball_progress_is_attached_to_hub(self) -> None:
         previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
-        positions: list[app_gui_module.QPoint] = []
-        ball.progress_window.begin_at = lambda position: positions.append(position)
-        ball._progress_window_position = lambda: app_gui_module.QPoint(222, 111)
-        ball._reposition_progress_window = lambda: positions.append(app_gui_module.QPoint(-1, -1))
+        anchors: list[app_gui_module.QRect] = []
+        ball.quick_menu.begin_progress = lambda anchor, available, text: anchors.append(anchor)
         ball.show_toast = lambda message, success=True: None
         try:
             ball._start_worker([])
 
-            self.assertEqual(positions, [app_gui_module.QPoint(222, 111)])
+            self.assertEqual(anchors, [ball._toast_anchor()])
         finally:
             if ball.worker is not None and ball.worker.isRunning():
                 ball.worker.requestInterruption()
@@ -1372,7 +1381,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball._toggle_quick_menu()
 
             self.assertTrue(ball.quick_menu.isVisible())
-            self.assertEqual(ball.quick_menu._attention_action, "status")
+            self.assertEqual(ball.quick_menu._attention_action, "assets")
         finally:
             ball.close()
             self.app.processEvents()
@@ -1400,13 +1409,13 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                     ball.move(x, y)
                     ball_pos = ball.pos()
 
-                    ball._reposition_quick_menu()
+                    ball.quick_menu.show_attached(ball._ball_anchor_rect(), ball._available_geometry())
 
                     self.assertEqual(ball.pos(), ball_pos)
-                    self.assertGreaterEqual(ball.quick_menu.x(), 10)
-                    self.assertGreaterEqual(ball.quick_menu.y(), 10)
-                    self.assertLessEqual(ball.quick_menu.frameGeometry().right(), 349)
-                    self.assertLessEqual(ball.quick_menu.frameGeometry().bottom(), 349)
+                    self.assertGreaterEqual(ball.quick_menu.x(), 0)
+                    self.assertGreaterEqual(ball.quick_menu.y(), 0)
+                    self.assertLessEqual(ball.quick_menu.frameGeometry().right(), 359)
+                    self.assertLessEqual(ball.quick_menu.frameGeometry().bottom(), 359)
                     track_center, _radius = ball.quick_menu._track_geometry()
                     expected = ball.frameGeometry().center() - ball.quick_menu.frameGeometry().topLeft()
                     self.assertLessEqual(abs(track_center.x() - expected.x()), 1)
@@ -1414,6 +1423,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                     for action, _icon, _tooltip in ball.quick_menu.actions:
                         slot_rect = ball.quick_menu._slot_rect(action).toAlignedRect()
                         self.assertTrue(ball.quick_menu.rect().intersects(slot_rect))
+                        label_rect = ball.quick_menu._label_rect(action).toAlignedRect()
+                        self.assertTrue(ball.quick_menu.rect().contains(label_rect))
         finally:
             ball.close()
             self.app.processEvents()
@@ -1437,6 +1448,43 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                         self.assertGreaterEqual(rect.top(), 10)
                         self.assertLessEqual(rect.right(), 349)
                         self.assertLessEqual(rect.bottom(), 349)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_drop_expands_from_screen_edge_without_a_visible_jump(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
+        try:
+            for x, y in ((10, 10), (277, 10), (10, 277), (277, 277)):
+                with self.subTest(position=(x, y)):
+                    ball.setGeometry(x, y, ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE)
+                    ball._drag_hover = True
+                    anchor = ball.mapToGlobal(ball._get_collapsed_circle_rect().center())
+
+                    ball._open_drop_target()
+                    ball._drop_open_animation.stop()
+                    ball._set_drop_open_progress(0.0)
+
+                    self.assertEqual((ball.width(), ball.height()), (ball.EXPANDED_SIZE, ball.EXPANDED_SIZE))
+                    offset = ball._drop_visual_offset(0.0)
+                    center = app_gui_module.QRectF(ball.rect()).center()
+                    visible_center = app_gui_module.QPointF(ball.pos()) + center + offset
+                    self.assertLessEqual(abs(visible_center.x() - anchor.x()), 1)
+                    self.assertLessEqual(abs(visible_center.y() - anchor.y()), 1)
+
+                    half_offset = ball._drop_visual_offset(0.5)
+                    self.assertLess(abs(half_offset.x()), abs(offset.x()) + 0.01)
+                    self.assertLess(abs(half_offset.y()), abs(offset.y()) + 0.01)
+                    self.assertEqual(ball._drop_visual_offset(1.0), app_gui_module.QPointF())
+
+                    ball._set_drop_open_progress(0.0)
+                    ball._animate_size(ball.COLLAPSED_SIZE)
+                    self.assertEqual(ball.geometry().center(), anchor)
+                    self.assertIsNone(ball._drop_anchor_global)
         finally:
             ball.close()
             self.app.processEvents()
@@ -1498,6 +1546,242 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 "https://cdn.example.com/voice.wav",
             ],
         )
+
+    def test_floating_ball_uses_audio_intake_only_for_explicit_audio_drops(self) -> None:
+        audio_files = []
+        for suffix in (".mp3", ".wav", ".m4a", ".ogg", ".flac"):
+            path = self.tmpdir / f"sample{suffix}"
+            path.write_bytes(b"audio")
+            audio_files.append(path)
+
+        local_audio = QMimeData()
+        local_audio.setUrls([QUrl.fromLocalFile(str(path)) for path in audio_files])
+        self.assertEqual(
+            app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(local_audio),
+            "audio",
+        )
+
+        image = self.tmpdir / "cover.png"
+        image.write_bytes(b"image")
+        mixed = QMimeData()
+        mixed.setUrls([QUrl.fromLocalFile(str(audio_files[0])), QUrl.fromLocalFile(str(image))])
+        self.assertEqual(
+            app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(mixed),
+            "leaf",
+        )
+
+        for value in (
+            "https://cdn.example.com/voice.mp3?download=1",
+            '<audio src="https://cdn.example.com/live"></audio>',
+            '<source type="audio/mpeg" src="https://cdn.example.com/live">',
+        ):
+            with self.subTest(value=value):
+                remote_audio = QMimeData()
+                if value.startswith("http"):
+                    remote_audio.setUrls([QUrl(value)])
+                else:
+                    remote_audio.setHtml(value)
+                self.assertEqual(
+                    app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(remote_audio),
+                    "audio",
+                )
+
+        for value in (
+            "https://cdn.example.com/download?id=42",
+            '<audio src="https://cdn.example.com/live"></audio><img src="cover.webp">',
+        ):
+            with self.subTest(value=value):
+                unknown_or_mixed = QMimeData()
+                if value.startswith("http"):
+                    unknown_or_mixed.setUrls([QUrl(value)])
+                else:
+                    unknown_or_mixed.setHtml(value)
+                self.assertEqual(
+                    app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(unknown_or_mixed),
+                    "leaf",
+                )
+
+    def test_floating_ball_audio_intake_uses_distinct_leaf_nest_and_directional_suction(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
+            ball.is_expanded = True
+            ball._drag_hover = False
+            ball._drag_awareness_has_direction = True
+            ball._drag_awareness_angle = 0.0
+            ball._drag_awareness_target_angle = 0.0
+            ball._set_drop_open_progress(1.0)
+
+            def render_frame() -> QPixmap:
+                frame = QPixmap(ball.size())
+                frame.fill(Qt.GlobalColor.transparent)
+                ball.render(frame)
+                return frame
+
+            ball._drop_visual_kind = "leaf"
+            leaf_frame = render_frame()
+            leaf_image = leaf_frame.toImage()
+
+            ball._drop_visual_kind = "audio"
+            audio_frame = render_frame()
+            audio_image = audio_frame.toImage()
+            corners = (
+                (0, 0),
+                (ball.width() - 1, 0),
+                (0, ball.height() - 1),
+                (ball.width() - 1, ball.height() - 1),
+            )
+            self.assertTrue(all(audio_image.pixelColor(x, y).alpha() == 0 for x, y in corners))
+            center = (ball.width() // 2, ball.height() // 2)
+            self.assertLess(audio_image.pixelColor(*center).alpha(), 80)
+
+            leaf_mask = set()
+            audio_mask = set()
+            leaf_pixels = []
+            audio_pixels = []
+            for y in range(ball.height()):
+                for x in range(ball.width()):
+                    leaf_color = leaf_image.pixelColor(x, y)
+                    audio_color = audio_image.pixelColor(x, y)
+                    if leaf_color.alpha() > 40:
+                        leaf_mask.add((x, y))
+                        leaf_pixels.append(leaf_color)
+                    if audio_color.alpha() > 40:
+                        audio_mask.add((x, y))
+                        audio_pixels.append(audio_color)
+            silhouette_difference = len(leaf_mask ^ audio_mask) / len(leaf_mask | audio_mask)
+            self.assertGreater(silhouette_difference, 0.15)
+            self.assertGreater(
+                sum(color.red() for color in audio_pixels) / len(audio_pixels),
+                sum(color.red() for color in leaf_pixels) / len(leaf_pixels),
+            )
+
+            stable_frame = render_frame()
+            self.assertEqual(stable_frame.toImage(), audio_image)
+
+            panel_size = min(ball.width(), ball.height()) * 0.47
+            panel_rect = app_gui_module.QRectF(
+                (ball.width() - panel_size) / 2,
+                (ball.height() - panel_size) / 2,
+                panel_size,
+                panel_size,
+            )
+            aperture_center = ball._audio_center_path(panel_rect, 1.0).boundingRect().center()
+            self.assertLess(app_gui_module.math.hypot(
+                aperture_center.x() - panel_rect.center().x(),
+                aperture_center.y() - panel_rect.center().y(),
+            ), 2.0)
+
+            ball._set_audio_suction_progress(0.35)
+            suction_frame = render_frame()
+            suction_image = suction_frame.toImage()
+            source_change = 0
+            opposite_change = 0
+            for y in range(ball.height()):
+                for x in range(ball.width()):
+                    change = abs(
+                        suction_image.pixelColor(x, y).alpha()
+                        - audio_image.pixelColor(x, y).alpha()
+                    )
+                    if x >= center[0]:
+                        source_change += change
+                    else:
+                        opposite_change += change
+            self.assertGreater(source_change, opposite_change * 1.10)
+
+            ball._set_audio_suction_progress(1.0)
+            contracted_image = render_frame().toImage()
+            self.assertLess(
+                sum(contracted_image.pixelColor(x, y).alpha() for y in range(ball.height()) for x in range(ball.width())),
+                sum(audio_image.pixelColor(x, y).alpha() for y in range(ball.height()) for x in range(ball.width())) * 0.55,
+            )
+
+            ball._set_drop_open_progress(0.24)
+            closing_frame = render_frame()
+            self.assertLess(closing_frame.toImage().pixelColor(*center).alpha(), 80)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_audio_leaf_nest_tracks_four_directions_without_moving_aperture(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
+            ball.is_expanded = True
+            ball._drop_visual_kind = "audio"
+            ball._drag_awareness_has_direction = True
+            ball._set_drop_open_progress(1.0)
+
+            frames = []
+            for angle in (0.0, app_gui_module.math.pi / 2, app_gui_module.math.pi, -app_gui_module.math.pi / 2):
+                ball._drag_awareness_angle = angle
+                ball._drag_awareness_target_angle = angle
+                frame = QPixmap(ball.size())
+                frame.fill(Qt.GlobalColor.transparent)
+                ball.render(frame)
+                frames.append(frame.toImage())
+
+            self.assertTrue(all(frames[index] != frames[index - 1] for index in range(1, len(frames))))
+            self.assertNotEqual(frames[0], frames[-1])
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_audio_drop_sucks_once_before_collapse(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        received: list[list[Path]] = []
+        audio = self.tmpdir / "voice.mp3"
+        audio.write_bytes(b"audio")
+        ball._start_worker = lambda files: received.append(files)
+        try:
+            ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
+            ball.is_expanded = True
+            ball._drag_hover = True
+            ball._drop_visual_kind = "audio"
+            ball._set_drop_open_progress(1.0)
+            mime_data = QMimeData()
+            mime_data.setUrls([QUrl.fromLocalFile(str(audio))])
+            event = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime_data,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+
+            ball.dropEvent(event)
+
+            self.assertEqual(received, [[audio]])
+            self.assertIsNotNone(ball._audio_suction_animation)
+            self.assertEqual(ball._audio_suction_animation.endValue(), 1.0)
+            self.assertFalse(ball._collapse_timer.isActive())
+
+            ball._audio_suction_animation.stop()
+            ball._finish_audio_suction()
+            self.assertTrue(ball._collapse_timer.isActive())
+            self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+
+            ball._collapse_timer.stop()
+            ball._drop_open_animation.stop()
+            ball._set_drop_open_progress(1.0)
+            ball._drop_visual_kind = "audio"
+            ball._drag_hover = True
+            ball.dragLeaveEvent(QDragLeaveEvent())
+            self.assertIsNone(ball._audio_suction_animation)
+            self.assertEqual(ball._audio_suction_progress, 0.0)
+            self.assertTrue(ball._collapse_timer.isActive())
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drop_remote_url_starts_download_worker(self) -> None:
         previous_start = app_gui_module.HaypileFloatingBall.start_api_server
@@ -1792,6 +2076,329 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             self.assertFalse(ball._drag_prepare_active)
             self.assertEqual(ball._drop_open_animation.endValue(), 1.0)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_external_drag_candidate_activates_and_clears(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        previous_cursor = app_gui_module.QCursor
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        positions = iter([QPoint(300, 200), QPoint(320, 200), QPoint(320, 200)])
+        button_states = iter([True, True, False])
+
+        class FakeCursor:
+            @staticmethod
+            def pos() -> QPoint:
+                return next(positions)
+
+        app_gui_module.QCursor = FakeCursor
+        ball._global_left_button_down = lambda: next(button_states)
+        try:
+            ball.setGeometry(10, 10, ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE)
+            ball._poll_external_drag_candidate()
+            self.assertFalse(ball._external_drag_candidate)
+
+            ball._poll_external_drag_candidate()
+            self.assertTrue(ball._external_drag_candidate)
+            self.assertTrue(ball._drag_awareness_has_direction)
+            self.assertTrue(ball._visual_timer.isActive())
+
+            ball._poll_external_drag_candidate()
+            self.assertFalse(ball._external_drag_candidate)
+            self.assertIsNone(ball._global_drag_origin)
+            self.assertFalse(ball._drag_awareness_has_direction)
+            self.assertFalse(ball._visual_timer.isActive())
+        finally:
+            app_gui_module.QCursor = previous_cursor
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_own_window_drag_owns_cursor_and_never_activates_awareness(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        previous_cursor = app_gui_module.QCursor
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._gui_state_path = self.tmpdir / "gui_state.json"
+
+        class FakeCursor:
+            @staticmethod
+            def pos() -> QPoint:
+                return QPoint(170, 155)
+
+        app_gui_module.QCursor = FakeCursor
+        ball._global_left_button_down = lambda: True
+        try:
+            ball.setGeometry(100, 100, ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE)
+            ball._external_drag_candidate = True
+            ball._global_drag_origin = QPoint(300, 200)
+            ball._drag_awareness_has_direction = True
+            press = QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                QPointF(36, 36),
+                QPointF(36, 36),
+                QPointF(136, 136),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            ball.mousePressEvent(press)
+
+            self.assertTrue(ball._pointer_press_owned)
+            self.assertEqual(ball.cursor().shape(), Qt.CursorShape.ClosedHandCursor)
+            self.assertFalse(ball.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground))
+            ball._poll_external_drag_candidate()
+            self.assertFalse(ball._external_drag_candidate)
+            self.assertIsNone(ball._global_drag_origin)
+
+            original_position = ball.pos()
+            move = QMouseEvent(
+                QEvent.Type.MouseMove,
+                QPointF(36, 36),
+                QPointF(36, 36),
+                QPointF(170, 155),
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            ball.mouseMoveEvent(move)
+            self.assertNotEqual(ball.pos(), original_position)
+            self.assertTrue(ball._window_drag_active)
+            self.assertFalse(ball._external_drag_candidate)
+
+            release = QMouseEvent(
+                QEvent.Type.MouseButtonRelease,
+                QPointF(36, 36),
+                QPointF(36, 36),
+                QPointF(170, 155),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            ball.mouseReleaseEvent(release)
+            self.assertFalse(ball._pointer_press_owned)
+            self.assertFalse(ball._window_drag_active)
+            self.assertFalse(ball._drag_awareness_has_direction)
+            self.assertEqual(ball.cursor().shape(), Qt.CursorShape.PointingHandCursor)
+        finally:
+            app_gui_module.QCursor = previous_cursor
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_blocks_native_resize_between_its_own_size_changes(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball.show()
+            self.app.processEvents()
+            ball.resize(96, 96)
+            self.assertEqual((ball.width(), ball.height()), (ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE))
+
+            ball._drop_anchor_global = ball.mapToGlobal(ball._get_collapsed_circle_rect().center())
+            ball._animate_size(ball.EXPANDED_SIZE)
+            ball.resize(180, 180)
+
+            self.assertEqual((ball.width(), ball.height()), (ball.EXPANDED_SIZE, ball.EXPANDED_SIZE))
+            self.assertEqual(ball.minimumSize(), ball.maximumSize())
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_drag_awareness_uses_haypile_alpha_edge(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            rect = app_gui_module.QRectF(ball._get_collapsed_circle_rect()).adjusted(-1, -3, 1, 1)
+            center = app_gui_module.QPointF(rect.center().x(), rect.top() + rect.height() * 0.58)
+            for angle in (0.0, app_gui_module.math.pi / 2, app_gui_module.math.pi, -app_gui_module.math.pi / 2):
+                edge = ball._haypile_edge_point(rect, angle)
+                vector = edge - center
+                expected = app_gui_module.QPointF(app_gui_module.math.cos(angle), app_gui_module.math.sin(angle))
+                self.assertGreater(vector.x() * expected.x() + vector.y() * expected.y(), rect.width() * 0.25)
+                self.assertTrue(rect.adjusted(-3, -3, 3, 3).contains(edge))
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_drag_move_updates_awareness_direction(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        file_path = self.tmpdir / "hero.png"
+        file_path.write_bytes(b"not-real-image")
+        mime_data = QMimeData()
+        mime_data.setUrls([QUrl.fromLocalFile(str(file_path))])
+        try:
+            enter = QDragEnterEvent(
+                QPoint(10, 10),
+                Qt.DropAction.CopyAction,
+                mime_data,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            ball.dragEnterEvent(enter)
+            initial_angle = ball._drag_awareness_target_angle
+            move = QDragMoveEvent(
+                QPoint(62, 30),
+                Qt.DropAction.CopyAction,
+                mime_data,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+
+            ball.dragMoveEvent(move)
+
+            self.assertTrue(move.isAccepted())
+            self.assertNotEqual(ball._drag_awareness_target_angle, initial_angle)
+            angle_before_frame = ball._drag_awareness_angle
+            ball._advance_visual_state()
+            self.assertNotEqual(ball._drag_awareness_angle, angle_before_frame)
+            self.assertNotEqual(ball._drag_awareness_angle, ball._drag_awareness_target_angle)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_drag_awareness_fades_into_leaf_frame(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball._external_drag_candidate = True
+            ball._drag_awareness_has_direction = True
+            ball._drag_awareness_distance = 100
+            ball._set_drop_open_progress(0.0)
+            full = ball._drag_awareness_intensity()
+            ball._set_drop_open_progress(0.25)
+            self.assertAlmostEqual(ball._drag_awareness_intensity(), full * 0.5)
+            ball._set_drop_open_progress(0.5)
+            self.assertEqual(ball._drag_awareness_intensity(), 0.0)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_directional_aura_uses_a_broad_contour_segment(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._has_pending_assets = False
+        try:
+            ball._external_drag_candidate = True
+            ball._drag_awareness_distance = 100
+            ball._drag_awareness_angle = 0.0
+            ball._drag_awareness_target_angle = 0.0
+
+            baseline = QPixmap(ball.size())
+            baseline.fill(Qt.GlobalColor.transparent)
+            ball.render(baseline)
+
+            baseline_image = baseline.toImage()
+            ball._drag_awareness_has_direction = True
+            center = ball._get_collapsed_circle_rect().center()
+            for angle, axis, sign in (
+                (0.0, "x", 1),
+                (app_gui_module.math.pi / 2, "y", 1),
+                (app_gui_module.math.pi, "x", -1),
+                (-app_gui_module.math.pi / 2, "y", -1),
+            ):
+                ball._drag_awareness_angle = angle
+                directed = QPixmap(ball.size())
+                directed.fill(Qt.GlobalColor.transparent)
+                ball.render(directed)
+                directed_image = directed.toImage()
+                changed = []
+                for y in range(ball.height()):
+                    for x in range(ball.width()):
+                        before = baseline_image.pixelColor(x, y)
+                        after = directed_image.pixelColor(x, y)
+                        if after.red() + after.green() + after.blue() > before.red() + before.green() + before.blue() + 12:
+                            changed.append((x, y))
+
+                self.assertGreater(len(changed), 80)
+                self.assertGreater(max(x for x, _ in changed) - min(x for x, _ in changed), 22)
+                self.assertGreater(max(y for _, y in changed) - min(y for _, y in changed), 22)
+                average = sum(x if axis == "x" else y for x, y in changed) / len(changed)
+                midpoint = center.x() if axis == "x" else center.y()
+                self.assertGreater((average - midpoint) * sign, 2)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_drop_open_crossfades_without_a_blank_frame(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._has_pending_assets = False
+        try:
+            ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
+            ball.is_expanded = True
+            ball._drag_hover = True
+
+            gold_counts: list[int] = []
+            for progress in (0.0, 0.2):
+                ball._set_drop_open_progress(progress)
+                frame = QPixmap(ball.size())
+                frame.fill(Qt.GlobalColor.transparent)
+                ball.render(frame)
+                image = frame.toImage()
+                gold_counts.append(
+                    sum(
+                        image.pixelColor(x, y).alpha() > 20
+                        and image.pixelColor(x, y).red() > 175
+                        and image.pixelColor(x, y).green() > 105
+                        and image.pixelColor(x, y).blue() < 125
+                        for y in range(ball.height())
+                        for x in range(ball.width())
+                    )
+                )
+
+            self.assertGreater(gold_counts[0], 500)
+            self.assertGreater(gold_counts[1], 200)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_hover_aura_follows_top_contour_without_disc(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._has_pending_assets = False
+        try:
+            idle = QPixmap(ball.size())
+            idle.fill(Qt.GlobalColor.transparent)
+            ball.render(idle)
+            ball._hovered = True
+            hover = QPixmap(ball.size())
+            hover.fill(Qt.GlobalColor.transparent)
+            ball.render(hover)
+
+            idle_image = idle.toImage()
+            hover_image = hover.toImage()
+            corners = ((0, 0), (ball.width() - 1, 0), (0, ball.height() - 1), (ball.width() - 1, ball.height() - 1))
+            self.assertTrue(all(hover_image.pixelColor(x, y).alpha() == 0 for x, y in corners))
+            top_lit = sum(hover_image.pixelColor(x, 2).alpha() > 8 for x in range(ball.width()))
+            self.assertLess(top_lit, ball.width() // 2)
+            changed_pixels = sum(
+                hover_image.pixelColor(x, y).alpha() > idle_image.pixelColor(x, y).alpha() + 8
+                for y in range(ball.height())
+                for x in range(ball.width())
+            )
+            self.assertGreater(changed_pixels, 100)
+            self.assertEqual(
+                [hover_image.pixelColor(x, ball.height() - 4).alpha() for x in range(ball.width())],
+                [idle_image.pixelColor(x, ball.height() - 4).alpha() for x in range(ball.width())],
+            )
         finally:
             ball.close()
             self.app.processEvents()
@@ -2213,8 +2820,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         previous_refresh = ball.material_panel.refresh
         ball.material_panel.refresh = lambda: refreshes.append(True)
         try:
-            ball.material_panel.show()
+            ball._handle_quick_menu_action("assets")
             self.app.processEvents()
+            refreshes.clear()
 
             ball._on_ingest_finished("ok", True)
 

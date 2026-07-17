@@ -32,8 +32,8 @@ No Python required.
 
 | Platform | Download | Status |
 | --- | --- | --- |
-| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.6/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.6/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed, not notarized |
-| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.6/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.6/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned test build |
+| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed, not notarized |
+| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned test build |
 
 ### macOS
 
@@ -44,7 +44,7 @@ drag `Haypile.app` into **Applications**, then right-click it and choose
 
 ### Windows
 
-Unzip the portable build and run `Haypile\Haypile.exe`. This first x64 build is
+Unzip the portable build and run `Haypile\Haypile.exe`. This x64 test build is
 unsigned, so Windows may show a Microsoft Defender SmartScreen warning. Verify
 the SHA-256 before running it. Automated Windows tests, packaged MCP/backend
 smoke checks, and artifact validation pass; real-machine desktop testing is
@@ -80,6 +80,9 @@ scan or mutate `storage/assets` directly.
 
 ![Haypile agent workflow demo](docs/haypile-demo.gif)
 
+The desktop UI now unfolds from one fixed pile: a three-entry C-ring opens
+attached Assets, Agent, and Settings drawers without moving the drop target.
+
 ## Why
 
 Agents are much better when they can use the user's real images, audio, and
@@ -97,6 +100,7 @@ for later.
 ## What It Does Today
 
 - Provides a small desktop drop target for images and audio (`mp3`, `wav`, `ogg`, `m4a`, `flac`, `aac`).
+- Keeps Assets, Agent access, and Settings in one attached desktop component.
 - Hashes, dedupes, renames, and stores assets locally.
 - Builds a manifest and serves only registered files through `/static`.
 - Exposes ready bundles through a read-only HTTP API.

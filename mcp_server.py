@@ -3,15 +3,106 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+from app.core.config import get_settings
 
 BASE_URL = os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010").rstrip("/")
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_VERSION = "0.2.0"
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+SESSION_HEARTBEAT_SECONDS = 5.0
+SESSION_ONLINE_SECONDS = 12.0
+SESSION_CLEANUP_SECONDS = 60.0
+
+
+class McpSessionHeartbeat:
+    def __init__(self, index_dir: Path) -> None:
+        self.directory = Path(index_dir) / "mcp_sessions"
+        self.path = self.directory / f"{os.getpid()}.json"
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "McpSessionHeartbeat":
+        if self.directory.is_symlink():
+            raise OSError("MCP session directory cannot be a symlink")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        if self.directory.is_symlink():
+            raise OSError("MCP session directory cannot be a symlink")
+        if os.name != "nt":
+            self.directory.chmod(0o700)
+        payload = {
+            "pid": os.getpid(),
+            "server_version": SERVER_VERSION,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(self.path), flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+        if os.name != "nt":
+            self.path.chmod(0o600)
+        self._thread = threading.Thread(target=self._run, name="haypile-mcp-heartbeat", daemon=True)
+        self._thread.start()
+        return self
+
+    def touch(self) -> None:
+        try:
+            os.utime(self.path, None, follow_symlinks=False)
+        except OSError:
+            pass
+
+    def _run(self) -> None:
+        while not self._stop.wait(SESSION_HEARTBEAT_SECONDS):
+            self.touch()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.2)
+        try:
+            self.path.unlink()
+        except OSError:
+            pass
+
+
+def active_mcp_sessions(
+    index_dir: Path,
+    *,
+    now: float | None = None,
+    online_seconds: float = SESSION_ONLINE_SECONDS,
+    cleanup_seconds: float = SESSION_CLEANUP_SECONDS,
+) -> list[dict[str, Any]]:
+    directory = Path(index_dir) / "mcp_sessions"
+    if directory.is_symlink() or not directory.is_dir():
+        return []
+    current = time.time() if now is None else float(now)
+    sessions: list[dict[str, Any]] = []
+    for path in directory.glob("*.json"):
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            age = max(0.0, current - path.stat().st_mtime)
+            if age > cleanup_seconds:
+                path.unlink()
+                continue
+            if age > online_seconds:
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        payload["heartbeat_age_seconds"] = round(age, 3)
+        sessions.append(payload)
+    return sorted(sessions, key=lambda item: int(item.get("pid") or 0))
 
 
 def get_json(path: str) -> Any:
@@ -220,12 +311,22 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def main() -> None:
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        response = handle(json.loads(line))
-        if response is not None:
-            print(json.dumps(response, ensure_ascii=False), flush=True)
+    heartbeat: McpSessionHeartbeat | None = None
+    try:
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            message = json.loads(line)
+            if message.get("method") == "initialize" and heartbeat is None:
+                heartbeat = McpSessionHeartbeat(get_settings().INDEX_DIR).start()
+            elif heartbeat is not None:
+                heartbeat.touch()
+            response = handle(message)
+            if response is not None:
+                print(json.dumps(response, ensure_ascii=False), flush=True)
+    finally:
+        if heartbeat is not None:
+            heartbeat.stop()
 
 
 if __name__ == "__main__":

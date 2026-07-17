@@ -26,34 +26,38 @@ provenance
 
 ## Release Title
 
-Haypile Lite v0.1.0
+Haypile Lite v0.2.0-test.7 attached desktop container
 
 ## GitHub Release Body
 
 Haypile Lite is a local asset haypile for agent workflows.
 
 Drop images or audio onto the desktop pile. Haypile hashes, dedupes, registers,
-and serves ready assets through a small local HTTP API and MCP adapter. Agents
-use `resolved_url` and provenance from Haypile instead of scanning your local
-disk. Tiny pile, strict boundary.
+and serves ready assets through a small local HTTP API and MCP adapter. The pile,
+three-entry C-ring, and attached Assets, Agent, and Settings drawers now behave
+as one desktop component. Agents use `resolved_url` and provenance from Haypile
+instead of scanning your local disk. Tiny pile, strict boundary.
 
 ### Highlights
 
-- Desktop drop target for images and audio.
+- Fixed desktop drop target with attached Assets, Agent, and Settings drawers.
+- Distinct image and audio intake feedback with stable edge placement.
 - Local asset manifest with hash and dedupe.
 - Read-only HTTP API and MCP adapter.
+- Private MCP session heartbeat without asset paths or handoff content.
 - `asset-handoff.json` examples for downstream agents.
 - Optional local Ollama vision sorting.
 - Low-power mode without AI.
+- 208 automated tests plus packaged backend/MCP smoke checks.
 
 ### Install
 
-```bash
-git clone https://github.com/chenjinnan82-stack/Haypile-lite.git
-cd Haypile-lite
-python3 -m pip install -r requirements.txt
-python3 app_gui.py
-```
+Download the macOS Apple Silicon or Windows x64 test build from:
+
+https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.2.0-test.7
+
+Source users can still run `python3 app_gui.py` after installing
+`requirements-desktop.txt`.
 
 ### Agent Access
 
@@ -65,9 +69,9 @@ MCP hosts can run `mcp_server.py` with `HAYPILE_BASE_URL=http://127.0.0.1:8010`.
 
 ### Notes
 
-This is a v0.1 local-first release. macOS is the primary polished desktop target.
-Windows and Linux can run from source, but packaged installers are not included
-yet.
+This remains a test release. The macOS Apple Silicon app is ad-hoc signed and
+not notarized. The Windows x64 portable build is unsigned. Verify the published
+SHA-256 before running either package.
 
 ## Short Launch Post
 
