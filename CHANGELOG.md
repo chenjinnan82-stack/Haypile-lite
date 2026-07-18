@@ -8,10 +8,12 @@ Customer package hygiene release.
   IPC secrets.
 - Isolate packaged MCP smoke state under a temporary `LOCALAPPDATA` directory
   and fail the build if runtime data appears beside `Haypile.exe`.
+- Use Nuitka's official standalone runtime marker so frozen Windows builds
+  resolve resources and user data independently of the executable filename.
 - Emit portable LF-terminated checksum files.
 - Document the macOS extraction path required to preserve ad-hoc signature
   extended attributes.
-- Verify the source release with 209 tests and packaged backend/MCP smoke checks.
+- Verify the source release with 210 tests and packaged backend/MCP smoke checks.
 
 ## v0.2.0-test.7
 

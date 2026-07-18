@@ -3,8 +3,10 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import app.core.config as config_module
 from app.core.config import (
     Settings,
     default_env_file,
@@ -117,6 +119,38 @@ class PackagedRuntimeConfigTests(unittest.TestCase):
                     "C:/Python312/python.exe",
                     str(Path("C:/src/haypile") / "mcp_server.py"),
                 ],
+            )
+
+    def test_windows_nuitka_standalone_uses_compiled_container(self) -> None:
+        compiled = SimpleNamespace(
+            standalone=True,
+            containing_dir="C:/Apps/Haypile",
+        )
+        executable = "C:/Apps/Haypile/app_gui.exe"
+        with (
+            patch("app.core.config.sys.platform", "win32"),
+            patch("app.core.config.sys.executable", executable),
+            patch.object(config_module, "__compiled__", compiled, create=True),
+            patch.dict(
+                "os.environ",
+                {"LOCALAPPDATA": "C:/Users/tester/AppData/Local"},
+                clear=False,
+            ),
+        ):
+            self.assertEqual(windows_app_dir(), Path("C:/Apps/Haypile"))
+            self.assertEqual(default_resource_dir(), Path("C:/Apps/Haypile"))
+            self.assertEqual(
+                default_storage_dir(),
+                Path("C:/Users/tester/AppData/Local/Haypile/storage"),
+            )
+            self.assertEqual(
+                default_log_dir(),
+                Path("C:/Users/tester/AppData/Local/Haypile/logs"),
+            )
+            self.assertIsNone(default_env_file())
+            self.assertEqual(
+                runtime_mode_command("mcp"),
+                [executable, "--mcp"],
             )
 
     def test_storage_override_rebases_derived_paths(self) -> None:

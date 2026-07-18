@@ -49,7 +49,8 @@ instead of scanning your local disk. Tiny pile, strict boundary.
 - Optional local Ollama vision sorting.
 - Low-power mode without AI.
 - Windows package guard that rejects build-time storage, logs, and IPC secrets.
-- 209 automated tests plus packaged backend/MCP smoke checks.
+- Nuitka standalone detection that keeps packaged Windows data in Local AppData.
+- 210 automated tests plus packaged backend/MCP smoke checks.
 
 ### Install
 

@@ -20,6 +20,14 @@ SOURCE_BASE_DIR = Path(__file__).resolve().parents[2]
 _MODE_FILES = {"backend": "backend_host.py", "mcp": "mcp_server.py"}
 
 
+def _nuitka_standalone_dir() -> Path | None:
+    compiled = globals().get("__compiled__")
+    if not bool(getattr(compiled, "standalone", False)):
+        return None
+    containing_dir = getattr(compiled, "containing_dir", None)
+    return Path(containing_dir) if containing_dir else Path(sys.executable).parent
+
+
 def macos_app_bundle(executable: str | Path | None = None) -> Path | None:
     if sys.platform != "darwin":
         return None
@@ -33,6 +41,9 @@ def macos_app_bundle(executable: str | Path | None = None) -> Path | None:
 def windows_app_dir(executable: str | Path | None = None) -> Path | None:
     if not sys.platform.startswith("win"):
         return None
+    compiled_dir = _nuitka_standalone_dir()
+    if compiled_dir is not None:
+        return compiled_dir
     path = Path(executable or sys.executable)
     if path.name.lower() != "haypile.exe":
         return None
@@ -40,7 +51,11 @@ def windows_app_dir(executable: str | Path | None = None) -> Path | None:
 
 
 def is_packaged_app(executable: str | Path | None = None) -> bool:
-    return macos_app_bundle(executable) is not None or windows_app_dir(executable) is not None
+    return (
+        macos_app_bundle(executable) is not None
+        or windows_app_dir(executable) is not None
+        or _nuitka_standalone_dir() is not None
+    )
 
 
 def default_env_file(executable: str | Path | None = None) -> str | None:
