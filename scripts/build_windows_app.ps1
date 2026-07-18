@@ -78,6 +78,7 @@ try {
     Remove-Item $Checksum -Force -ErrorAction SilentlyContinue
     New-Item $BuildDir -ItemType Directory -Force | Out-Null
     New-Item $DistDir -ItemType Directory -Force | Out-Null
+    New-Item $SmokeRoot -ItemType Directory -Force | Out-Null
 
     $IconCode = "from PIL import Image; import sys; image=Image.open(sys.argv[1]).convert('RGBA'); image.save(sys.argv[2], format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
     & $VenvPython -c $IconCode $IconSource $Icon
@@ -93,6 +94,8 @@ try {
     New-Item $PortableDir -ItemType Directory -Force | Out-Null
     Copy-Item (Join-Path $BuiltExe.Directory.FullName "*") $PortableDir -Recurse -Force
     $Exe = Join-Path $PortableDir "Haypile.exe"
+    $PackagedRuntimeDir = Join-Path $PortableDir "storage"
+    Remove-Item $PackagedRuntimeDir -Recurse -Force -ErrorAction SilentlyContinue
 
     foreach ($RequiredPath in @(
         $Exe,
@@ -113,6 +116,7 @@ try {
     $McpInfo.Arguments = "--mcp"
     $McpInfo.UseShellExecute = $false
     $McpInfo.CreateNoWindow = $true
+    $McpInfo.Environment["LOCALAPPDATA"] = $SmokeRoot
     $McpInfo.RedirectStandardInput = $true
     $McpInfo.RedirectStandardOutput = $true
     $McpInfo.RedirectStandardError = $true
@@ -136,8 +140,14 @@ try {
     if ($McpOutput -notmatch '"version"\s*:\s*"0\.2\.0"') {
         throw "Haypile.exe --mcp did not return server version 0.2.0."
     }
+    $ExpectedMcpKey = Join-Path $SmokeRoot "Haypile/storage/ipc_authkey"
+    if (-not (Test-Path $ExpectedMcpKey -PathType Leaf)) {
+        throw "Packaged MCP did not place its IPC key under LOCALAPPDATA."
+    }
+    if (Test-Path $PackagedRuntimeDir) {
+        throw "Packaged MCP wrote runtime state beside Haypile.exe."
+    }
 
-    New-Item $SmokeRoot -ItemType Directory -Force | Out-Null
     $BackendInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $BackendInfo.FileName = $Exe
     $BackendInfo.Arguments = "--backend"
@@ -177,10 +187,26 @@ try {
     if (Test-TcpPort $SmokePort) {
         throw "Haypile backend left port $SmokePort open."
     }
+    if (Test-Path $PackagedRuntimeDir) {
+        throw "Packaged backend wrote runtime state beside Haypile.exe."
+    }
 
     Compress-Archive -Path $PortableDir -DestinationPath $Zip -CompressionLevel Optimal
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        $RuntimeEntry = $Archive.Entries |
+            Where-Object { $_.FullName -match '^Haypile/(storage(?:/|$)|\.env$)' } |
+            Select-Object -First 1
+        if ($null -ne $RuntimeEntry) {
+            throw "Windows archive contains runtime state: $($RuntimeEntry.FullName)"
+        }
+    }
+    finally {
+        $Archive.Dispose()
+    }
     $Hash = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLowerInvariant()
-    $ChecksumLine = "$Hash  $([System.IO.Path]::GetFileName($Zip))$([Environment]::NewLine)"
+    $ChecksumLine = "$Hash  $([System.IO.Path]::GetFileName($Zip))" + [char]10
     [System.IO.File]::WriteAllText($Checksum, $ChecksumLine, [System.Text.Encoding]::ASCII)
 
     Write-Host "Built: $PortableDir"

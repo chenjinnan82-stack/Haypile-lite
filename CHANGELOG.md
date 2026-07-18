@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.0-test.8
+
+Customer package hygiene release.
+
+- Prevent Windows portable archives from carrying build-time storage, logs, or
+  IPC secrets.
+- Isolate packaged MCP smoke state under a temporary `LOCALAPPDATA` directory
+  and fail the build if runtime data appears beside `Haypile.exe`.
+- Emit portable LF-terminated checksum files.
+- Document the macOS extraction path required to preserve ad-hoc signature
+  extended attributes.
+- Verify the source release with 209 tests and packaged backend/MCP smoke checks.
+
 ## v0.2.0-test.7
 
 Attached desktop container release.

@@ -32,8 +32,8 @@ No Python required.
 
 | Platform | Download | Status |
 | --- | --- | --- |
-| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed, not notarized |
-| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned test build |
+| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed, not notarized |
+| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned test build |
 
 ### macOS
 
@@ -41,6 +41,9 @@ This limited test build is ad-hoc signed and not notarized. After unzipping,
 drag `Haypile.app` into **Applications**, then right-click it and choose
 **Open**. Later, launch Haypile from Spotlight, Launchpad, or the Dock. If macOS still blocks it, use
 **System Settings -> Privacy & Security -> Open Anyway**.
+
+Use Finder's Archive Utility to extract the app so macOS extended attributes are
+preserved. Command-line users can use `ditto -x -k <zip> <destination>`.
 
 ### Windows
 

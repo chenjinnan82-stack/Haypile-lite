@@ -31,8 +31,8 @@ Haypile 副本仅用于兼容，不得作为公开发行包，也不得反向覆
 
 | 平台 | 下载 | 状态 |
 | --- | --- | --- |
-| macOS Apple Silicon | [应用 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc 签名，未公证 |
-| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.7/Haypile-v0.2.0-windows-x64.zip.sha256) | 未签名测试版 |
+| macOS Apple Silicon | [应用 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc 签名，未公证 |
+| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip.sha256) | 未签名测试版 |
 
 ### macOS
 
@@ -40,6 +40,9 @@ Haypile 副本仅用于兼容，不得作为公开发行包，也不得反向覆
 `Haypile.app` 前先将它拖入“应用程序”，再右键选择“打开”。以后可从 Spotlight、
 启动台或 Dock 打开 Haypile（冬藏）；如果仍被拦截，请到“系统设置 -> 隐私与安全性”点击
 “仍要打开”。
+
+请使用 Finder 的“归档实用工具”解压，以保留 macOS 扩展属性；命令行用户可使用
+`ditto -x -k <zip> <目标目录>`。
 
 ### Windows
 

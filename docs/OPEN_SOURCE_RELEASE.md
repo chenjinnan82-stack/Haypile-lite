@@ -26,7 +26,7 @@ provenance
 
 ## Release Title
 
-Haypile Lite v0.2.0-test.7 attached desktop container
+Haypile Lite v0.2.0-test.8 customer package hygiene
 
 ## GitHub Release Body
 
@@ -48,13 +48,14 @@ instead of scanning your local disk. Tiny pile, strict boundary.
 - `asset-handoff.json` examples for downstream agents.
 - Optional local Ollama vision sorting.
 - Low-power mode without AI.
-- 208 automated tests plus packaged backend/MCP smoke checks.
+- Windows package guard that rejects build-time storage, logs, and IPC secrets.
+- 209 automated tests plus packaged backend/MCP smoke checks.
 
 ### Install
 
 Download the macOS Apple Silicon or Windows x64 test build from:
 
-https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.2.0-test.7
+https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.2.0-test.8
 
 Source users can still run `python3 app_gui.py` after installing
 `requirements-desktop.txt`.
