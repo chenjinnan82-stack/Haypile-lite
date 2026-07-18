@@ -132,7 +132,7 @@ already-running local Sophon gateway:
 ```bash
 VISION_CLASSIFIER_TRANSPORT=sophon \
 SOPHON_BASE_URL=http://127.0.0.1:8030 \
-PIMOS_ADMIN_API_KEY_FILE=/path/to/admin_api_key \
+HAYPILE_SOPHON_API_KEY_FILE=/path/to/admin_api_key \
 python3 app_gui.py
 ```
 

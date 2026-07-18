@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -115,6 +116,22 @@ class StyleClassifierPowerTests(unittest.TestCase):
         self.assertEqual(headers["X-PimOS-Admin-Key"], "local-secret")
         self.assertEqual(headers["X-Sophon-Client-Id"], "haypile-vision")
         self.assertTrue(headers["X-Request-ID"].startswith("haypile-vision-"))
+
+    def test_sophon_key_prefers_haypile_environment_name(self) -> None:
+        classifier = StyleClassifier.__new__(StyleClassifier)
+        with tempfile.TemporaryDirectory() as tmp:
+            key_file = Path(tmp) / "key"
+            key_file.write_text("haypile-secret", encoding="utf-8")
+            with patch.dict(
+                "os.environ",
+                {
+                    "ADMIN_API_KEY": "",
+                    "HAYPILE_SOPHON_API_KEY_FILE": str(key_file),
+                    "PIMOS_ADMIN_API_KEY_FILE": "/missing/legacy-key",
+                },
+                clear=False,
+            ):
+                self.assertEqual(classifier._sophon_api_key(), "haypile-secret")
 
 
 if __name__ == "__main__":

@@ -413,7 +413,10 @@ class StyleClassifier:
         configured = os.environ.get("ADMIN_API_KEY", "").strip()
         if configured:
             return configured
-        key_file = os.environ.get("PIMOS_ADMIN_API_KEY_FILE", "").strip()
+        key_file = os.environ.get("HAYPILE_SOPHON_API_KEY_FILE", "").strip()
+        if not key_file:
+            # ponytail: keep the old PimOS name as a read-only compatibility alias.
+            key_file = os.environ.get("PIMOS_ADMIN_API_KEY_FILE", "").strip()
         if not key_file:
             return ""
         try:
