@@ -23,6 +23,12 @@ from tenacity import (
 from app.core.config import get_settings
 from app.core.exceptions import ResourceExhaustedError
 from app.core.limiter import ConcurrencyLimiter
+from app.services.ai_provider import (
+    AIProviderConfig,
+    api_authority,
+    chat_completions_url,
+    normalize_api_base_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +51,7 @@ class StyleClassificationResult:
     reason: str
     tags: list[str] = field(default_factory=list)
     quality: str = "unknown"
+    quality_reason: str = ""
     agent_summary: str = ""
     runtime_receipt: dict[str, Any] = field(default_factory=dict)
 
@@ -59,6 +66,7 @@ class StyleClassificationResult:
             "tags": self.tags,
             "usage": self.role,
             "quality": self.quality,
+            "quality_reason": self.quality_reason,
             "agent_summary": self.agent_summary,
             "confidence": {
                 "theme": self.theme_confidence,
@@ -84,13 +92,33 @@ class StyleClassifier:
     ALLOWED_IMAGE_SUFFIXES: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
     HTTP_TIMEOUT = httpx.Timeout(120.0, connect=2.0, read=115.0, pool=2.0)
 
-    def __init__(self) -> None:
+    def __init__(self, provider: AIProviderConfig | None = None) -> None:
         settings = get_settings()
         self.low_power_mode: bool = bool(settings.HAYPILE_LOW_POWER_MODE)
-        self.enabled: bool = bool(settings.VISION_CLASSIFIER_ENABLED) and not self.low_power_mode
-        self.transport: str = settings.VISION_CLASSIFIER_TRANSPORT
-        self.model: str = settings.VISION_CLASSIFIER_MODEL
-        self.base_url: str = settings.VISION_CLASSIFIER_BASE_URL.rstrip("/")
+        configured_enabled = bool(settings.VISION_CLASSIFIER_ENABLED) and not self.low_power_mode
+        default_mode = "local" if configured_enabled else "off"
+        if settings.VISION_CLASSIFIER_TRANSPORT == "sophon" and configured_enabled:
+            default_mode = "sophon"
+        provider = provider or AIProviderConfig(
+            mode=default_mode,
+            base_url=settings.VISION_CLASSIFIER_BASE_URL,
+            model=settings.VISION_CLASSIFIER_MODEL,
+        )
+        self.provider_mode = provider.mode if provider.mode in {"local", "api", "off", "sophon"} else "off"
+        self.enabled = self.provider_mode != "off" and not self.low_power_mode
+        self.transport = {
+            "local": "ollama",
+            "api": "openai",
+            "sophon": "sophon",
+        }.get(self.provider_mode, "off")
+        self.model = str(provider.model or settings.VISION_CLASSIFIER_MODEL).strip()
+        self.base_url = str(provider.base_url or settings.VISION_CLASSIFIER_BASE_URL).strip().rstrip("/")
+        self.api_authorized_host = str(provider.authorized_host or "").strip().lower()
+        if self.transport == "openai":
+            self.base_url = normalize_api_base_url(self.base_url)
+            if not self.api_authorized_host or api_authority(self.base_url) != self.api_authorized_host:
+                raise ValueError("api_host_not_authorized")
+        self.api_key = str(provider.api_key or "")
         self.sophon_base_url: str = settings.SOPHON_BASE_URL.rstrip("/")
         self.timeout_seconds: float = float(settings.VISION_CLASSIFIER_TIMEOUT_SECONDS)
         self.max_image_bytes: int = int(settings.VISION_CLASSIFIER_MAX_IMAGE_BYTES)
@@ -170,7 +198,11 @@ class StyleClassifier:
 
         metadata = self._collect_image_metadata(image_path)
         prompt = self._build_prompt(normalized_candidates, metadata)
-        payload = self._build_request_payload(prompt=prompt, image_b64=image_b64)
+        payload = self._build_request_payload(
+            prompt=prompt,
+            image_b64=image_b64,
+            media_type=self._image_media_type(image_path),
+        )
 
         raw, runtime_receipt = await self._call_model(payload)
         if not raw:
@@ -193,6 +225,7 @@ class StyleClassifier:
             return result
 
         result = self._normalize_result(parsed, normalized_candidates)
+        result.quality, result.quality_reason = self.technical_quality(image_path, result.role)
         result.runtime_receipt = runtime_receipt
         if result.theme_confidence < self.confidence_threshold:
             return StyleClassificationResult(
@@ -204,6 +237,7 @@ class StyleClassifier:
                 reason=f"low_theme_confidence:{result.theme_confidence:.3f}",
                 tags=result.tags,
                 quality=result.quality,
+                quality_reason=result.quality_reason,
                 agent_summary=result.agent_summary,
                 runtime_receipt=runtime_receipt,
             )
@@ -249,17 +283,18 @@ class StyleClassifier:
             "硬性规则：\n"
             "1) theme_id 只能从候选主题里选；禁止创造新主题名。\n"
             "2) 若无法稳定判断主题，theme_id 必须返回 fallback 主题。\n"
-            "3) role 只能是：main_background | hero_image | icon | texture | unknown。\n"
+            "3) role 只能是：main_background | hero_image | logo | icon | content_image | texture | unknown。\n"
             "4) theme_confidence 与 role_confidence 都必须是 0.0~1.0 的浮点数。\n"
             "5) reason 必须是简短中文短语，说明判定依据，不超过20字。\n"
             "6) tags 给 2~6 个短标签，描述内容/风格/色彩/用途。\n"
-            "7) quality 只能是：high | medium | low | unknown。\n"
-            "8) agent_summary 用一句中文告诉 agent 这个素材适合怎么用，不超过60字。\n"
+            "7) agent_summary 用一句中文告诉 agent 这个素材适合怎么用，不超过60字。\n"
             "\n"
             "角色判定边界：\n"
             "- main_background：大面积环境底图/场景背景，适合铺底。\n"
             "- hero_image：视觉主体，通常是单个核心对象或主角元素。\n"
+            "- logo：品牌标识或字标，应完整展示且不裁切。\n"
             "- icon：小尺寸符号化图形，轮廓清晰，用于功能标识。\n"
+            "- content_image：文章、卡片或页面区块中的一般内容图片。\n"
             "- texture：重复纹理/材质细节，常用于叠加或填充。\n"
             "- unknown：当类别冲突、信息不足或质量太差时使用。\n"
             "\n"
@@ -269,10 +304,9 @@ class StyleClassifier:
             '  "theme_id": "<candidate_theme_id>",\n'
             '  "theme_confidence": 0.0,\n'
             '  "role_confidence": 0.0,\n'
-            '  "role": "main_background|hero_image|icon|texture|unknown",\n'
+            '  "role": "main_background|hero_image|logo|icon|content_image|texture|unknown",\n'
             '  "reason": "short rationale",\n'
             '  "tags": ["tag"],\n'
-            '  "quality": "high|medium|low|unknown",\n'
             '  "agent_summary": "short usage suggestion for agents"\n'
             "}\n"
             "图片元数据:\n"
@@ -281,7 +315,33 @@ class StyleClassifier:
             f"fallback 主题: {self.fallback_theme}\n"
         )
 
-    def _build_request_payload(self, prompt: str, image_b64: str) -> dict[str, Any]:
+    def _build_request_payload(
+        self,
+        prompt: str,
+        image_b64: str,
+        media_type: str = "image/png",
+    ) -> dict[str, Any]:
+        if getattr(self, "transport", "ollama") == "openai":
+            return {
+                "model": self.model,
+                "temperature": 0.0,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Return exactly one JSON object with no markdown or extra text.",
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{media_type};base64,{image_b64}"},
+                            },
+                        ],
+                    },
+                ],
+            }
         # Ollama-compatible chat payload with image in user message.
         payload = {
             "model": self.model,
@@ -322,8 +382,20 @@ class StyleClassifier:
         payload: dict[str, Any],
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
+        return await self._post_model_once(endpoint, payload, headers=headers)
+
+    async def _post_model_once(
+        self,
+        endpoint: str,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
         async with self._limiter:
-            async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT, trust_env=False) as client:
+            async with httpx.AsyncClient(
+                timeout=self.HTTP_TIMEOUT,
+                trust_env=False,
+                follow_redirects=False,
+            ) as client:
                 return await client.post(endpoint, json=payload, headers=headers)
 
     async def _call_model(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -343,45 +415,47 @@ class StyleClassifier:
                 "X-Sophon-Project-Id": "haypile",
                 "X-Request-ID": request_id,
             }
+        elif self.transport == "openai":
+            if not self.api_key:
+                logger.error("OpenAI-compatible vision transport requires an API key.")
+                return "", {}
+            endpoint = chat_completions_url(self.base_url)
+            headers = {"Authorization": f"Bearer {self.api_key}"}
         else:
             endpoint = f"{self.base_url}/api/chat"
         try:
-            response = await self._post_ollama_with_retry(endpoint, payload, headers=headers)
+            post = self._post_model_once if self.transport == "openai" else self._post_ollama_with_retry
+            response = await post(endpoint, payload, headers=headers)
             receipt = await self._fetch_sophon_receipt(request_id) if request_id else {}
             if response.status_code != 200:
                 logger.error(
-                    "Style classifier model call failed: status=%s endpoint=%s model=%s body=%s",
+                    "Style classifier model call failed: status=%s model=%s",
                     response.status_code,
-                    endpoint,
                     self.model,
-                    response.text[:500],
                 )
                 return "", receipt
             data = response.json()
         except httpx.ReadTimeout as exc:
             logger.error(
-                "Style classifier model call timeout after retries: endpoint=%s model=%s error=%r",
-                endpoint,
+                "Style classifier model call timeout after retries: model=%s error_type=%s",
                 self.model,
-                exc,
+                type(exc).__name__,
             )
             raise
         except ResourceExhaustedError:
             raise
         except httpx.TimeoutException as exc:
             logger.error(
-                "Style classifier timeout exception: endpoint=%s model=%s error=%r",
-                endpoint,
+                "Style classifier timeout exception: model=%s error_type=%s",
                 self.model,
-                exc,
+                type(exc).__name__,
             )
             raise
         except (httpx.RequestError, ValueError) as exc:
             logger.error(
-                "Style classifier model call exception: endpoint=%s model=%s error=%r",
-                endpoint,
+                "Style classifier model call exception: model=%s error_type=%s",
                 self.model,
-                exc,
+                type(exc).__name__,
             )
             receipt = await self._fetch_sophon_receipt(request_id) if request_id else {}
             return "", receipt
@@ -389,7 +463,7 @@ class StyleClassifier:
         if not isinstance(data, dict):
             return "", receipt
 
-        if self.transport == "sophon":
+        if self.transport in {"sophon", "openai"}:
             choices = data.get("choices") if isinstance(data.get("choices"), list) else []
             choice = choices[0] if choices and isinstance(choices[0], dict) else {}
             message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
@@ -408,6 +482,15 @@ class StyleClassifier:
             return content.strip(), receipt
 
         return "", receipt
+
+    @staticmethod
+    def _image_media_type(image_path: Path) -> str:
+        return {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+        }.get(image_path.suffix.lower(), "image/png")
 
     def _sophon_api_key(self) -> str:
         configured = os.environ.get("ADMIN_API_KEY", "").strip()
@@ -501,7 +584,7 @@ class StyleClassifier:
             source="model",
             reason=reason,
             tags=self._normalize_tags(payload.get("tags")),
-            quality=self._normalize_quality(payload.get("quality")),
+            quality="unknown",
             agent_summary=self._short_text(payload.get("agent_summary"), 120),
         )
 
@@ -520,8 +603,56 @@ class StyleClassifier:
     @staticmethod
     def _normalize_role(value: Any) -> str:
         role = str(value or "").strip().lower()
-        allowed = {"main_background", "hero_image", "icon", "texture", "unknown"}
+        allowed = {
+            "main_background",
+            "hero_image",
+            "logo",
+            "icon",
+            "content_image",
+            "texture",
+            "unknown",
+        }
         return role if role in allowed else "unknown"
+
+    @staticmethod
+    def is_auto_ready(result: StyleClassificationResult) -> bool:
+        return (
+            result.source in {"model", "threshold_theme_fallback"}
+            and result.role != "unknown"
+            and result.role_confidence >= 0.85
+            and result.quality in {"high", "medium"}
+        )
+
+    def technical_quality(self, image_path: Path, role: str) -> tuple[str, str]:
+        if image_path.suffix.lower() == ".svg":
+            try:
+                ElementTree.parse(image_path)
+            except (ElementTree.ParseError, OSError):
+                return "low", "invalid_svg"
+            return "high", "scalable_vector"
+
+        width, height, _ = self._read_dimensions_and_alpha(image_path)
+        if width is None or height is None or width <= 0 or height <= 0:
+            return "low", "dimensions_unavailable"
+        short_side, long_side = sorted((width, height))
+        normalized_role = self._normalize_role(role)
+        if normalized_role in {"logo", "icon"}:
+            if short_side >= 128:
+                return "high", "small_asset_128_plus"
+            if short_side >= 64:
+                return "medium", "small_asset_64_plus"
+            return "low", "small_asset_below_64"
+        if normalized_role == "texture":
+            if short_side >= 512:
+                return "high", "texture_512_plus"
+            if short_side >= 256:
+                return "medium", "texture_256_plus"
+            return "low", "texture_below_256"
+        if long_side >= 1600 and short_side >= 800:
+            return "high", "large_visual_1600x800_plus"
+        if long_side >= 800 and short_side >= 400:
+            return "medium", "large_visual_800x400_plus"
+        return "low", "large_visual_below_800x400"
 
     @staticmethod
     def _normalize_tags(value: Any) -> list[str]:
@@ -567,7 +698,6 @@ class StyleClassifier:
             round(width / height, 4) if width is not None and height not in {None, 0} else None
         )
         return {
-            "filename": image_path.name,
             "suffix": image_path.suffix.lower(),
             "file_size_kb": file_size_kb,
             "width": width,
@@ -578,7 +708,6 @@ class StyleClassifier:
 
     def _format_metadata_text(self, metadata: dict[str, Any]) -> str:
         lines = [
-            f"- filename: {metadata.get('filename', 'unknown')}",
             f"- suffix: {metadata.get('suffix', 'unknown')}",
             f"- file_size_kb: {metadata.get('file_size_kb', 'unknown')}",
             f"- width: {metadata.get('width', 'unknown')}",

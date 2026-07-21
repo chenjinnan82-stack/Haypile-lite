@@ -78,7 +78,7 @@ class McpServerTests(unittest.TestCase):
         )
 
         response = json.loads(process.stdout)
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.2.0")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.1")
         self.assertNotIn("PySide6", process.stderr)
 
     def test_lists_haypile_tools(self) -> None:
@@ -173,7 +173,7 @@ class McpServerTests(unittest.TestCase):
             )
 
         list_bundles.assert_called_once_with(
-            status="ready", asset_type="image", role=None, theme_id=None, audio_usage=None, limit=None, cursor=None
+            status="ready", asset_type="image", role=None, theme_id=None, audio_usage=None, batch_id=None, limit=None, cursor=None
         )
         payload = json.loads(response["result"]["content"][0]["text"])
         self.assertEqual(payload["source"], "haypile")
@@ -184,6 +184,44 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(payload["assets"][0]["provenance"]["source_key"], "generic/images/hero.png")
         self.assertEqual(payload["assets"][0]["provenance"]["sha256"], "sha")
         self.assertNotIn("storage/assets", json.dumps(payload))
+
+    def test_copy_handoff_resolves_latest_batch(self) -> None:
+        with patch.object(mcp_server, "get_json", return_value={"id": "batch-1"}) as get_json, patch.object(
+            mcp_server, "list_bundles", return_value=[]
+        ) as list_bundles:
+            payload = mcp_server.call_tool("haypile_copy_handoff", {"batch_id": "latest"})
+
+        get_json.assert_called_once_with("/api/v1/batches/latest")
+        list_bundles.assert_called_once_with(
+            status="ready",
+            asset_type=None,
+            role=None,
+            theme_id=None,
+            audio_usage=None,
+            batch_id="batch-1",
+            limit=None,
+            cursor=None,
+        )
+        self.assertEqual(payload["batch_id"], "batch-1")
+
+    def test_list_bundles_passes_batch_id_through(self) -> None:
+        with patch.object(mcp_server, "list_bundles", return_value=[]) as list_bundles:
+            payload = mcp_server.call_tool(
+                "haypile_list_bundles",
+                {"status": "pending", "batch_id": "batch-2"},
+            )
+
+        self.assertEqual(payload, [])
+        list_bundles.assert_called_once_with(
+            status="pending",
+            asset_type=None,
+            role=None,
+            theme_id=None,
+            audio_usage=None,
+            batch_id="batch-2",
+            limit=None,
+            cursor=None,
+        )
 
     def test_handoff_preserves_audio_metadata(self) -> None:
         asset = mcp_server._handoff_asset(
@@ -225,7 +263,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "haypile")
-        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.2.0")
+        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.1")
         names = [tool["name"] for tool in responses[1]["result"]["tools"]]
         self.assertIn("haypile_copy_handoff", names)
 

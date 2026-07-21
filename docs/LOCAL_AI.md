@@ -1,54 +1,61 @@
-# Local AI Setup
+# AI Sorting
 
-Haypile can run without AI. In that mode it still stores assets, builds the
-manifest, exposes bundles, and works with HTTP/MCP agents.
+Haypile stores and registers assets before AI runs. AI is optional: model
+timeouts, rate limits, and offline services leave images pending but never undo
+intake.
 
-AI sorting is optional and local-first. The v0.1 release expects an Ollama
-vision model when AI sorting is enabled.
+Open **Settings -> AI sorting** and choose one mode.
 
-## Install Ollama
+## Local Model
 
-Install Ollama from:
-
-```text
-https://ollama.com
-```
-
-Then pull the default vision model:
+Install [Ollama](https://ollama.com), then pull the default vision model:
 
 ```bash
 ollama pull qwen2.5vl:3b
 ```
 
-Start Haypile:
+Choose **Local model** and use **Check again**. Images stay on the machine.
 
-```bash
-python3 app_gui.py
-```
+## API
 
-Open the C-ring menu and click the AI entry. If the model is missing, Haypile
-shows the exact pull command and a recheck button.
+Haypile supports an OpenAI-compatible `/v1/chat/completions` vision endpoint
+through its existing HTTP client. No provider SDK is required.
+
+Enter a base URL, model name, and API key, then click **Save and authorize
+domain**. Security rules are deliberately strict:
+
+- Non-local services require HTTPS.
+- URL credentials, query parameters, fragments, parent paths, and redirects are rejected.
+- Changing the service hostname or port requires explicit authorization again.
+- Keys are stored in macOS Keychain or Windows Credential Manager. If the
+  system store fails, the key is usable only until Haypile exits.
+- Requests omit original filenames and local absolute paths.
+- Keys, image request data, and request bodies do not enter logs, provenance,
+  handoffs, or `gui_state.json`.
+
+The selected API receives the image itself plus format, dimensions, byte size,
+aspect ratio, and transparency metadata. Choose **Off** if this is not
+acceptable for the current material.
+
+## Readiness Rules
+
+The model suggests a role, confidence, tags, and a short Agent summary. Local
+deterministic rules calculate technical quality. An image becomes ready
+automatically only when all are true:
+
+- the model returned a valid result;
+- role is not `unknown`;
+- role confidence is at least `0.85`;
+- technical quality is `medium` or `high`.
+
+Everything else remains pending with the suggestion and quality reason visible
+for review. Manual role selection always wins.
 
 ## Low-Power Mode
 
-To force Haypile to skip AI sorting:
+Low-power mode pauses AI sorting and global drag pre-awareness while preserving
+normal intake, drawers, HTTP, MCP, and manual confirmation.
 
 ```bash
 HAYPILE_LOW_POWER_MODE=1 python3 app_gui.py
 ```
-
-This is useful on battery or on machines without a local vision model.
-
-## What AI Does
-
-AI suggestions are advisory. Haypile may suggest tags, role, quality, and a
-short agent-facing summary. Users can still confirm or change asset roles in
-the desktop panel.
-
-Agents should treat `ai_suggestions` as metadata, not as ground truth.
-
-## Privacy
-
-The current AI path is local Ollama only. Haypile does not require a cloud API
-key for sorting, and non-loopback model endpoints are rejected so imported
-images are not silently sent to a remote classifier.

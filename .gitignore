@@ -13,6 +13,7 @@ dist/
 *.build/
 *.dist/
 *.onefile-build/
+private-eval/
 
 storage/*
 !storage/.gitkeep

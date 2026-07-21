@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.services.asset_provenance import write_asset_provenance
+from app.api.v1.batches import get_bundle_service as get_batch_bundle_service, router as batches_router
 from app.api.v1.bundles import get_bundle_service, router
 from app.services.bundle_service import BundleService
 from app.services.storage_runtime import StorageRuntimeDB
@@ -102,12 +103,43 @@ class BundleServiceTests(unittest.TestCase):
             self.assertIsNotNone(bundle)
             self.assertEqual(bundle["sha256"], hashlib.sha256(b"changed hero").hexdigest())
 
+    def test_bundle_service_filters_latest_batch_and_includes_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            service = _bundle_service(root)
+            runtime = StorageRuntimeDB(service.runtime_db_path)
+            unknown_hash = hashlib.sha256(b"unknown").hexdigest()
+            batch_id = runtime.begin_batch()
+            runtime.record_batch_asset(batch_id, unknown_hash, 0)
+            runtime.record_batch_asset(batch_id, "db-sha", 1)
+            runtime.complete_batch(batch_id, accepted_count=1, duplicate_count=1, rejected_count=0)
+
+            latest = service.get_latest_batch()
+            bundles = service.list_bundles(batch_id="latest")
+            first_page = service.list_bundles(batch_id="latest", limit=1)
+            second_page = service.list_bundles(
+                batch_id="latest",
+                limit=1,
+                cursor=first_page[0]["source_key"],
+            )
+
+            self.assertEqual(latest["id"], batch_id)
+            self.assertEqual(
+                [bundle["id"] for bundle in bundles],
+                ["generic_img_unknown_eeee", "generic_img_hero_image_abcd"],
+            )
+            self.assertEqual(first_page[0]["id"], "generic_img_unknown_eeee")
+            self.assertEqual(second_page[0]["id"], "generic_img_hero_image_abcd")
+            self.assertEqual(service.list_bundles(batch_id="missing"), [])
+
     def test_bundles_api_lists_and_gets_bundles(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             service = _bundle_service(Path(raw))
             app = FastAPI()
             app.include_router(router, prefix="/api/v1")
+            app.include_router(batches_router, prefix="/api/v1")
             app.dependency_overrides[get_bundle_service] = lambda: service
+            app.dependency_overrides[get_batch_bundle_service] = lambda: service
             client = TestClient(app)
 
             listed = client.get("/api/v1/bundles")
@@ -126,6 +158,7 @@ class BundleServiceTests(unittest.TestCase):
             )
             one = client.get("/api/v1/bundles/generic_img_hero_image_abcd")
             missing = client.get("/api/v1/bundles/nope")
+            no_batch = client.get("/api/v1/batches/latest")
 
             self.assertEqual(listed.status_code, 200)
             self.assertTrue(any(item["id"] == "generic_img_hero_image_abcd" for item in listed.json()))
@@ -140,6 +173,33 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(one.json()["access"], "manifest_static")
             self.assertEqual(one.json()["origin_url"], "https://cdn.example.com/hero.png")
             self.assertEqual(missing.status_code, 404)
+            self.assertEqual(no_batch.status_code, 404)
+
+    def test_bundles_api_supports_latest_and_concrete_batch_without_changing_default(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            service = _bundle_service(Path(raw))
+            runtime = StorageRuntimeDB(service.runtime_db_path)
+            batch_id = runtime.begin_batch()
+            runtime.record_batch_asset(batch_id, "db-sha", 0)
+            runtime.complete_batch(batch_id, accepted_count=0, duplicate_count=1, rejected_count=0)
+            app = FastAPI()
+            app.include_router(router, prefix="/api/v1")
+            app.include_router(batches_router, prefix="/api/v1")
+            app.dependency_overrides[get_bundle_service] = lambda: service
+            app.dependency_overrides[get_batch_bundle_service] = lambda: service
+            client = TestClient(app)
+
+            unfiltered = client.get("/api/v1/bundles").json()
+            latest = client.get("/api/v1/bundles", params={"batch_id": "latest"}).json()
+            concrete = client.get("/api/v1/bundles", params={"batch_id": batch_id}).json()
+            batch = client.get("/api/v1/batches/latest")
+
+            self.assertGreater(len(unfiltered), len(latest))
+            self.assertEqual([item["id"] for item in latest], ["generic_img_hero_image_abcd"])
+            self.assertEqual(concrete, latest)
+            self.assertEqual(batch.status_code, 200)
+            self.assertEqual(batch.json()["id"], batch_id)
+            self.assertEqual(batch.json()["asset_count"], 1)
 
 
 def _bundle_service(tmp_path: Path) -> BundleService:

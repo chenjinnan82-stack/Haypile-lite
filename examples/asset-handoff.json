@@ -1,6 +1,7 @@
 {
   "handoff_version": "haypile.asset-handoff.v1",
   "source": "haypile",
+  "batch_id": "example-batch-uuid",
   "base_url": "http://127.0.0.1:8010",
   "assets": [
     {

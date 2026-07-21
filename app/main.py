@@ -15,6 +15,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.v1.health import router as health_router
 from app.api.v1.bundles import router as bundles_router
+from app.api.v1.batches import router as batches_router
 from app.api.v1.theme import router as theme_router
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
@@ -74,9 +75,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     scanner = AssetScanner()
     try:
         await scanner.scan_assets_directory()
-        logger.info("Assets manifest has been generated: %s", settings.MANIFEST_PATH)
-    except Exception:
-        logger.exception("Initial asset scan failed.")
+        logger.info("Assets manifest has been generated.")
+    except Exception as exc:
+        logger.error("Initial asset scan failed: error_type=%s", type(exc).__name__)
         if not settings.MANIFEST_PATH.exists():
             atomic_write_json(settings.MANIFEST_PATH, {})
     yield
@@ -115,6 +116,7 @@ register_exception_handlers(app)
 app.include_router(health_router)
 app.include_router(theme_router, prefix="/api/v1")
 app.include_router(bundles_router, prefix="/api/v1")
+app.include_router(batches_router, prefix="/api/v1")
 app.mount(
     "/static",
     ManifestStaticFiles(directory=str(settings.ASSETS_DIR), manifest_path=settings.MANIFEST_PATH),

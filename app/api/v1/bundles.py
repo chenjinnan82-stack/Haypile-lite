@@ -19,6 +19,7 @@ async def list_bundles(
     role: str | None = None,
     theme_id: str | None = None,
     audio_usage: str | None = None,
+    batch_id: str | None = Query(default=None, max_length=64),
     limit: int | None = Query(default=None, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=512),
     bundle_service: BundleService = Depends(get_bundle_service),
@@ -29,6 +30,7 @@ async def list_bundles(
         role=role,
         theme_id=theme_id,
         audio_usage=audio_usage,
+        batch_id=batch_id,
         limit=limit,
         cursor=cursor,
     )

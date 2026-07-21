@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.0-alpha.1 (candidate)
+
+- Store and manifest assets before optional AI classification.
+- Group every valid drop into a stable ingest batch, including duplicates.
+- Add latest-batch filtering to HTTP, MCP, the Assets drawer, and handoff output.
+- Add deterministic image quality gates and conservative automatic readiness.
+- Add Local model, OpenAI-compatible API, and Off modes without a new SDK.
+- Store remote API credentials in Keychain or Credential Manager; redact
+  secrets, request data, and absolute paths from public metadata and logs.
+- Make the Agent drawer hand off the latest ready batch by default.
+- Keep audio intake, metadata, and manual usage confirmation unchanged.
+
 ## v0.2.0-test.8
 
 Customer package hygiene release.

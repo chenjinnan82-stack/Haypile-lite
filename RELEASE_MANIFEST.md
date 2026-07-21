@@ -22,6 +22,7 @@ pyproject.toml
 pytest.ini
 assets/logo.png
 assets/haypile-app-icon.png
+assets/haypile-social-preview.png
 app/
 app_gui.py
 backend_host.py
@@ -33,6 +34,7 @@ pysidedeploy.spec
 pysidedeploy.windows.spec
 docs/AGENT_HTTP_CONTRACT.md
 docs/AGENT_RECIPES.md
+docs/AI_EVALUATION.md
 docs/LOCAL_AI.md
 docs/MACOS_INTERNAL_BUILD.md
 docs/OPEN_SOURCE_RELEASE.md

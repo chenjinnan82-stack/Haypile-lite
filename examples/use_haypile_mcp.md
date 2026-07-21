@@ -31,7 +31,8 @@ Add this MCP server to the agent host:
 Minimal agent flow:
 
 1. Call `haypile_health`.
-2. Call `haypile_list_bundles` with `{"status":"ready","type":"image"}`.
+2. Call `haypile_list_bundles` with
+   `{"status":"ready","type":"image","batch_id":"latest"}`.
 3. Use `base_url + bundle.url`.
 4. Preserve `id`, `role`, `status`, `sha256`, `source_key`, `url`, and `provenance` in `asset-handoff.json`.
 
@@ -39,7 +40,7 @@ Do not read `storage/assets` directly.
 
 Handoff flow:
 
-1. Call `haypile_copy_handoff` with `{"status":"ready"}`.
+1. Call `haypile_copy_handoff` with `{"status":"ready","batch_id":"latest"}`.
 2. Use `resolved_url` to fetch files.
 3. Preserve `id`, `role`, `status`, `sha256`, `source_key`, `url`, `resolved_url`, and `provenance` in downstream agent output.
 

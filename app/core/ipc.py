@@ -59,7 +59,7 @@ def send_ipc_request(
         response = conn.recv()
         return response if isinstance(response, dict) else None
     except Exception as exc:
-        logger.debug("Haypile IPC request failed address=%s family=%s error=%s", ipc_address, family, exc)
+        logger.debug("Haypile IPC request failed family=%s error_type=%s", family, type(exc).__name__)
         return None
     finally:
         socket.setdefaulttimeout(previous_timeout)

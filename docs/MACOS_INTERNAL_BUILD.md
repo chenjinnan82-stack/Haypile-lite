@@ -1,6 +1,6 @@
 # macOS Test Build
 
-Haypile v0.2 can be built as a standalone Apple Silicon utility app. This is
+Haypile v0.3 can be built as a standalone Apple Silicon utility app. This is
 an unsigned limited-test artifact, not a notarized public installer.
 
 ## Requirements
@@ -26,8 +26,8 @@ Outputs:
 
 ```text
 dist/Haypile.app
-dist/Haypile-v0.2.0-macos-arm64.app.zip
-dist/Haypile-v0.2.0-macos-arm64.app.zip.sha256
+dist/Haypile-v0.3.0-alpha.1-macos-arm64.app.zip
+dist/Haypile-v0.3.0-alpha.1-macos-arm64.app.zip.sha256
 ```
 
 Build outputs are intentionally ignored by Git.

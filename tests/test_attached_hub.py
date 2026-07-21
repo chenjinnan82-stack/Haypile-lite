@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -65,6 +66,8 @@ class AttachedHubTests(unittest.TestCase):
         self.assertGreaterEqual(geometries[0].width(), 408)
         self.assertTrue(self.ball.material_panel._embedded)
         self.assertIsNone(self.ball.material_panel.confirmation_preview)
+        self.assertTrue(self.ball.material_panel.copy_ready_button.isHidden())
+        self.assertFalse(self.ball.material_panel.scope_buttons["latest"].isHidden())
 
         self.ball.quick_menu.leaveEvent(QEvent(QEvent.Type.Leave))
         QTest.qWait(50)
@@ -134,6 +137,59 @@ class AttachedHubTests(unittest.TestCase):
             self.assertEqual(payload["language"], "en")
             self.assertFalse(payload["low_power_enabled"])
             self.assertTrue(payload["ai_enabled"])
+
+    def test_api_key_never_enters_gui_state_when_credential_store_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.ball._gui_state_path = Path(tmp) / "gui_state.json"
+            self.ball.quick_menu.ai_api_base_input.setText("https://vision.example/v1")
+            self.ball.quick_menu.ai_api_model_input.setText("vision-model")
+            self.ball.quick_menu.ai_api_key_input.setText("session-secret")
+            toasts: list[tuple[str, bool]] = []
+            self.ball.show_toast = lambda message, success=True: toasts.append((message, success))
+
+            with patch.object(app_gui.SystemCredentialStore, "set", return_value=False):
+                self.ball._save_api_provider()
+
+            payload = json.loads(self.ball._gui_state_path.read_text(encoding="utf-8"))
+            serialized = json.dumps(payload)
+            self.assertNotIn("session-secret", serialized)
+            self.assertEqual(payload["ai_provider"], "api")
+            self.assertEqual(payload["ai_api_authorized_host"], "vision.example")
+            self.assertFalse(payload["ai_api_key_present"])
+            self.assertEqual(self.ball._session_api_key, "session-secret")
+            self.assertTrue(
+                any(success and ("本次" in message or "session" in message) for message, success in toasts)
+            )
+
+    def test_agent_primary_handoff_uses_resolved_latest_batch(self) -> None:
+        bundle = {
+            "id": "hero",
+            "theme_id": "generic",
+            "type": "image",
+            "role": "hero_image",
+            "status": "ready",
+            "sha256": "a" * 64,
+            "url": "/static/generic/images/hero.png",
+            "access": "manifest_static",
+            "source_key": "generic/images/hero.png",
+        }
+
+        class FakeBundleService:
+            def get_latest_batch(self):
+                return {"id": "batch-latest"}
+
+            def list_bundles(self, **kwargs):
+                self.kwargs = kwargs
+                return [bundle]
+
+        QApplication.clipboard().clear()
+        with patch.object(app_gui, "BundleService", return_value=FakeBundleService()):
+            self.ball._handle_quick_menu_action("latest_handoff")
+
+        payload = json.loads(QApplication.clipboard().text())
+        self.assertEqual(payload["batch_id"], "batch-latest")
+        self.assertEqual(payload["assets"][0]["id"], "hero")
+        self.assertIn('batch_id="latest"', self.ball.material_panel._agent_recipe_text())
 
     def test_grass_click_closes_drawer_and_ring_together(self) -> None:
         for page in ("assets", "agent", "settings"):

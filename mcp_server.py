@@ -16,7 +16,7 @@ from app.core.config import get_settings
 
 BASE_URL = os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010").rstrip("/")
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0-alpha.1"
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 SESSION_HEARTBEAT_SECONDS = 5.0
 SESSION_ONLINE_SECONDS = 12.0
@@ -125,6 +125,7 @@ def list_bundles(
     role: str | None = None,
     theme_id: str | None = None,
     audio_usage: str | None = None,
+    batch_id: str | None = None,
     limit: int | None = None,
     cursor: str | None = None,
 ) -> Any:
@@ -134,6 +135,7 @@ def list_bundles(
         "role": role,
         "theme_id": theme_id,
         "audio_usage": audio_usage,
+        "batch_id": batch_id,
         "limit": limit,
         "cursor": cursor,
     }
@@ -141,13 +143,16 @@ def list_bundles(
     return get_json("/api/v1/bundles" + (f"?{encoded}" if encoded else ""))
 
 
-def build_handoff(bundles: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+def build_handoff(bundles: list[dict[str, Any]], *, batch_id: str | None = None) -> dict[str, Any]:
+    handoff = {
         "handoff_version": "haypile.asset-handoff.v1",
         "source": "haypile",
         "base_url": BASE_URL,
         "assets": [_handoff_asset(bundle) for bundle in bundles],
     }
+    if batch_id:
+        handoff["batch_id"] = batch_id
+    return handoff
 
 
 def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
@@ -190,20 +195,27 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             role=arguments.get("role"),
             theme_id=arguments.get("theme_id"),
             audio_usage=arguments.get("audio_usage"),
+            batch_id=arguments.get("batch_id"),
             limit=arguments.get("limit"),
             cursor=arguments.get("cursor"),
         )
     if name == "haypile_copy_handoff":
+        requested_batch_id = str(arguments.get("batch_id") or "").strip() or None
+        resolved_batch_id = requested_batch_id
+        if requested_batch_id == "latest":
+            latest = get_json("/api/v1/batches/latest")
+            resolved_batch_id = str(latest.get("id") or "").strip() if isinstance(latest, dict) else None
         bundles = list_bundles(
             status=arguments.get("status", "ready"),
             asset_type=arguments.get("type"),
             role=arguments.get("role"),
             theme_id=arguments.get("theme_id"),
             audio_usage=arguments.get("audio_usage"),
+            batch_id=resolved_batch_id,
             limit=arguments.get("limit"),
             cursor=arguments.get("cursor"),
         )
-        return build_handoff(bundles)
+        return build_handoff(bundles, batch_id=resolved_batch_id)
     if name == "haypile_get_bundle":
         bundle_id = str(arguments.get("bundle_id") or "").strip()
         if not bundle_id:
@@ -236,6 +248,7 @@ TOOLS = [
                 "role": {"type": "string"},
                 "theme_id": {"type": "string"},
                 "audio_usage": {"type": "string"},
+                "batch_id": {"type": "string", "description": "Use latest or a completed ingest batch id."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 "cursor": {"type": "string"},
             },
@@ -252,6 +265,7 @@ TOOLS = [
                 "role": {"type": "string"},
                 "theme_id": {"type": "string"},
                 "audio_usage": {"type": "string"},
+                "batch_id": {"type": "string", "description": "Use latest or a completed ingest batch id."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 "cursor": {"type": "string"},
             },

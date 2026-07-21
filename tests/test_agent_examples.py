@@ -76,6 +76,7 @@ class AgentExampleTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(payload["batch_id"], "batch-latest")
         self.assertEqual(payload["assets"][0]["provenance"]["source"], "haypile")
         self.assertNotIn("storage/assets", json.dumps(payload))
 
@@ -84,8 +85,8 @@ class AgentExampleTests(unittest.TestCase):
         previous_get_json = module.get_json
         previous_ready_images = module.ready_images
         try:
-            module.get_json = lambda _path: {"status": "ok"}
-            module.ready_images = lambda role=None: []
+            module.get_json = lambda path: {"id": "batch-latest"} if path.endswith("/batches/latest") else {"status": "ok"}
+            module.ready_images = lambda role=None, batch_id="latest": []
 
             stdout = io.StringIO()
             stderr = io.StringIO()
@@ -94,7 +95,34 @@ class AgentExampleTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 1)
             self.assertIn('"assets": []', stdout.getvalue())
-            self.assertIn("no ready image bundles", stderr.getvalue())
+            self.assertIn("latest batch has no ready images", stderr.getvalue())
+        finally:
+            module.get_json = previous_get_json
+            module.ready_images = previous_ready_images
+
+    def test_http_example_treats_missing_latest_batch_as_empty(self) -> None:
+        module = _load_http_example()
+        previous_get_json = module.get_json
+        previous_ready_images = module.ready_images
+        calls: list[str] = []
+
+        def fake_get_json(path: str):
+            if path.endswith("/batches/latest"):
+                raise module.HTTPError(path, 404, "Not Found", {}, None)
+            return {"status": "ok"}
+
+        try:
+            module.get_json = fake_get_json
+            module.ready_images = lambda **_kwargs: calls.append("ready") or []
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = module.main()
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(calls, [])
+            self.assertIn('"assets": []', stdout.getvalue())
+            self.assertIn("latest batch has no ready images", stderr.getvalue())
         finally:
             module.get_json = previous_get_json
             module.ready_images = previous_ready_images
@@ -196,6 +224,9 @@ class _HaypileExampleHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path in {"/healthz", "/readyz"}:
             self._send({"status": "ok"})
+            return
+        if self.path == "/api/v1/batches/latest":
+            self._send({"id": "batch-latest"})
             return
         if self.path.startswith("/api/v1/bundles?"):
             self._send(

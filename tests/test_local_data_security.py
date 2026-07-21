@@ -20,15 +20,46 @@ from app.core.config import Settings, _ensure_private_directory
 from app.core.exceptions import register_exception_handlers
 from app.core.ipc import cleanup_unix_socket, start_ipc_listener
 from app.main import ManifestStaticFiles, app
-from app.services.asset_provenance import public_origin_url
+from app.services.asset_provenance import public_origin_url, sanitize_provenance
 from app.services.bundle_service import BundleService
 from app.services.json_io import atomic_write_json
 from app.services.scanner import AssetScanner
 from app.services.vfs_storage import VFSStorage
 from app_gui import RemoteDownloadWorker
+from backend_host import ControlChannelServer
 
 
 class LocalDataSecurityTests(unittest.TestCase):
+    def test_provenance_removes_secrets_request_data_and_absolute_paths(self) -> None:
+        payload = sanitize_provenance(
+            {
+                "origin_url": "https://cdn.example.com/hero.png",
+                "source_key": "generic/images/hero.png",
+                "temp_file": "/tmp/hero.png",
+                "api_key": "secret",
+                "request_body": {"image_bytes": "encoded"},
+                "nested": {"local_path": "C:\\Users\\tester\\hero.png"},
+            }
+        )
+
+        self.assertEqual(payload["origin_url"], "https://cdn.example.com/hero.png")
+        self.assertEqual(payload["source_key"], "generic/images/hero.png")
+        self.assertNotIn("temp_file", payload)
+        self.assertNotIn("api_key", payload)
+        self.assertNotIn("request_body", payload)
+        self.assertEqual(payload["nested"], {})
+
+    def test_ipc_start_failure_does_not_log_local_socket_path(self) -> None:
+        private_path = "/Users/tester/Library/Application Support/Haypile/storage/ipc.sock"
+        channel = ControlChannelServer(object(), "127.0.0.1", 8010)
+        with patch("backend_host.start_ipc_listener", side_effect=OSError(private_path)), self.assertLogs(
+            "backend_host", level="ERROR"
+        ) as captured:
+            started = channel.start()
+
+        self.assertFalse(started)
+        self.assertNotIn(private_path, "\n".join(captured.output))
+
     def test_network_defaults_remain_local_only(self) -> None:
         settings = Settings(
             _env_file=None,
@@ -136,11 +167,13 @@ class LocalDataSecurityTests(unittest.TestCase):
         async def boom() -> None:
             raise RuntimeError(private_path)
 
-        response = TestClient(local_app, raise_server_exceptions=False).get("/boom")
+        with self.assertLogs("app.core.exceptions", level="ERROR") as captured:
+            response = TestClient(local_app, raise_server_exceptions=False).get("/boom")
 
         self.assertEqual(response.status_code, 500)
         self.assertNotIn(private_path, response.text)
         self.assertIsNone(response.json()["detail"])
+        self.assertNotIn(private_path, "\n".join(captured.output))
 
     def test_scanner_rejects_decompression_bomb_images(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

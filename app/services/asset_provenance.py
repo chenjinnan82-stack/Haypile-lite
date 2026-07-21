@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -17,11 +17,45 @@ def read_asset_provenance(asset_path: Path) -> dict[str, Any]:
         parsed = json.loads(provenance_path_for(asset_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return sanitize_provenance(parsed) if isinstance(parsed, dict) else {}
 
 
 def write_asset_provenance(asset_path: Path, payload: dict[str, Any]) -> None:
-    atomic_write_json(provenance_path_for(asset_path), payload)
+    atomic_write_json(provenance_path_for(asset_path), sanitize_provenance(payload))
+
+
+def sanitize_provenance(payload: dict[str, Any]) -> dict[str, Any]:
+    blocked_keys = {
+        "api_key",
+        "authorization",
+        "credential",
+        "image_bytes",
+        "local_path",
+        "request_body",
+        "source_path",
+        "temp_file",
+    }
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): cleaned
+                for key, item in value.items()
+                if str(key).strip().lower() not in blocked_keys
+                and (cleaned := clean(item)) is not None
+            }
+        if isinstance(value, list):
+            return [cleaned for item in value if (cleaned := clean(item)) is not None]
+        if isinstance(value, str):
+            text = value.strip()
+            if text and "://" not in text and (
+                Path(text).is_absolute() or PureWindowsPath(text).is_absolute()
+            ):
+                return None
+        return value
+
+    cleaned = clean(payload)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def public_origin_url(value: str) -> str:
