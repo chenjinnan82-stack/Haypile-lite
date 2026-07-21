@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
-  echo "Haypile v0.2 internal build requires Apple Silicon macOS." >&2
+  echo "Haypile v0.3 internal build requires Apple Silicon macOS." >&2
   exit 1
 fi
 
@@ -16,7 +16,7 @@ DIST_DIR="$ROOT/dist"
 ICONSET="$BUILD_DIR/Haypile.iconset"
 APP="$DIST_DIR/Haypile.app"
 BIN="$APP/Contents/MacOS/Haypile"
-ZIP="$DIST_DIR/Haypile-v0.2.0-macos-arm64.app.zip"
+ZIP="$DIST_DIR/Haypile-v0.3.0-alpha.1-macos-arm64.app.zip"
 SPEC="$ROOT/pysidedeploy.spec"
 ICON_SOURCE="$ROOT/assets/haypile-app-icon.png"
 SPEC_BACKUP=""
@@ -81,6 +81,9 @@ test -f "$APP/Contents/Resources/Haypile.icns"
 test -f "$APP/Contents/MacOS/ui_assets/haypile-icon.png"
 test -f "$APP/Contents/MacOS/ui_assets/drop-leaf-frame.svg"
 test -f "$APP/Contents/MacOS/assets/haypile-app-icon.png"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.github.chenjinnan82-stack.haypile' "$APP/Contents/Info.plist"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = \
+  "io.github.chenjinnan82-stack.haypile"
 if /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$APP/Contents/Info.plist" >/dev/null 2>&1; then
   echo "Haypile.app unexpectedly hides its Dock icon." >&2
   exit 1
@@ -93,14 +96,14 @@ MCP_SMOKE_OUTPUT="$(printf '%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   | "$BIN" --mcp)"
-grep -q '"version": "0.2.0"' <<<"$MCP_SMOKE_OUTPUT"
+grep -q '"version": "0.3.0-alpha.1"' <<<"$MCP_SMOKE_OUTPUT"
 
 SMOKE_ROOT="$(mktemp -d)"
 SMOKE_PORT="${HAYPILE_SMOKE_PORT:-18010}"
 
 STORAGE_DIR="$SMOKE_ROOT/storage" \
 PORT="$SMOKE_PORT" \
-IPC_CHANNEL="haypile_v020_packaged_smoke_$$" \
+IPC_CHANNEL="haypile_v030_packaged_smoke_$$" \
 HAYPILE_IPC_AUTHKEY_FILE="$SMOKE_ROOT/ipc_authkey" \
   "$BIN" --backend >"$SMOKE_ROOT/backend.log" 2>&1 &
 backend_pid=$!

@@ -11,7 +11,16 @@ from app.services.json_io import atomic_write_json
 from app.services.storage_runtime import StorageRuntimeDB
 
 
-ALLOWED_BUNDLE_ROLES = {"main_background", "hero_image", "icon", "texture", "audio", "unknown"}
+ALLOWED_IMAGE_ROLES = {
+    "main_background",
+    "hero_image",
+    "logo",
+    "icon",
+    "content_image",
+    "texture",
+    "unknown",
+}
+ALLOWED_BUNDLE_ROLES = {*ALLOWED_IMAGE_ROLES, "audio"}
 ALLOWED_AUDIO_USAGES = {"music", "voice", "ambience", "sound_effect", "loop", "unknown"}
 MAX_BUNDLE_PAGE_SIZE = 100
 
@@ -39,9 +48,10 @@ class BundleService:
         role: str | None = None,
         theme_id: str | None = None,
         audio_usage: str | None = None,
+        batch_id: str | None = None,
         limit: int | None = None,
         cursor: str | None = None,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         manifest = self._read_json(self.manifest_path)
         theme_assets = self._theme_assets_by_url()
         sha_by_path = self._sha_by_dst_path()
@@ -119,6 +129,19 @@ class BundleService:
                 }
             )
 
+        resolved_batch_id = StorageRuntimeDB(self.runtime_db_path).resolve_batch_id(batch_id)
+        batch_order: dict[str, int] = {}
+        if batch_id is not None:
+            if not resolved_batch_id:
+                return []
+            batch_order = {
+                sha256: index
+                for index, sha256 in enumerate(
+                    StorageRuntimeDB(self.runtime_db_path).batch_hashes(resolved_batch_id)
+                )
+            }
+            bundles = [bundle for bundle in bundles if bundle["sha256"] in batch_order]
+
         filters = {
             "status": status,
             "type": asset_type,
@@ -131,13 +154,34 @@ class BundleService:
             for bundle in bundles
             if all(value is None or bundle[key] == value for key, value in filters.items())
         ]
-        # ponytail: source_key is already public and stable; use opaque cursors only if ordering changes.
-        ordered = sorted(filtered, key=lambda bundle: (bundle["source_key"], bundle["id"]))
+        ordered = sorted(
+            filtered,
+            key=(
+                (lambda bundle: (batch_order.get(bundle["sha256"], len(batch_order)), bundle["id"]))
+                if batch_order
+                else (lambda bundle: (bundle["source_key"], bundle["id"]))
+            ),
+        )
         if cursor:
-            ordered = [bundle for bundle in ordered if bundle["source_key"] > cursor]
+            if batch_order:
+                cursor_index = next(
+                    (
+                        index
+                        for index, bundle in enumerate(ordered)
+                        if bundle["source_key"] == cursor
+                    ),
+                    -1,
+                )
+                ordered = ordered[cursor_index + 1 :] if cursor_index >= 0 else []
+            else:
+                # ponytail: source_key is the stable cursor for the default lexical order.
+                ordered = [bundle for bundle in ordered if bundle["source_key"] > cursor]
         if limit is None:
             return ordered
         return ordered[: max(1, min(int(limit), MAX_BUNDLE_PAGE_SIZE))]
+
+    def get_latest_batch(self) -> dict[str, object] | None:
+        return StorageRuntimeDB(self.runtime_db_path).latest_batch()
 
     def get_bundle(self, bundle_id: str) -> dict[str, str] | None:
         wanted = str(bundle_id or "").strip()
@@ -308,7 +352,16 @@ class BundleService:
     def _role_from(*, source_key: str, theme_asset: dict[str, Any]) -> str:
         for candidate in (theme_asset.get("role"), theme_asset.get("source_key"), source_key):
             text = str(candidate or "").strip().lower()
-            for role in ("main_background", "hero_image", "icon", "texture", "audio", "unknown"):
+            for role in (
+                "main_background",
+                "hero_image",
+                "content_image",
+                "logo",
+                "icon",
+                "texture",
+                "audio",
+                "unknown",
+            ):
                 if role in text:
                     return role
         return "unknown"
@@ -326,6 +379,8 @@ class BundleService:
         return {
             "main_background": "bg-cover bg-center bg-fixed",
             "hero_image": "object-cover object-center",
+            "content_image": "w-full h-auto object-cover",
+            "logo": "max-w-full h-auto object-contain",
             "icon": "w-6 h-6 object-contain",
             "texture": "bg-repeat opacity-80",
             "audio": "audio",
@@ -336,6 +391,8 @@ class BundleService:
         return {
             "main_background": "Use as the full-screen base background image.",
             "hero_image": "Use as the primary hero visual.",
+            "content_image": "Use as responsive section or article media.",
+            "logo": "Use as a brand mark without cropping.",
             "icon": "Use as a functional icon or status marker.",
             "texture": "Use as a repeated or layered page texture.",
             "audio": "Use as an audio asset.",

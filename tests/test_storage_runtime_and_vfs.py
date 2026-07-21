@@ -88,6 +88,33 @@ class StorageRuntimeDBTests(unittest.TestCase):
             time.sleep(0.05)
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+    def test_ingest_batches_keep_order_and_resolve_latest(self) -> None:
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            db = StorageRuntimeDB(db_path=tmpdir / "index/runtime.db")
+            batch_id = db.begin_batch()
+            db.record_batch_asset(batch_id, "sha-b", 2)
+            db.record_batch_asset(batch_id, "sha-a", 1)
+            db.record_batch_asset(batch_id, "sha-a", 3)
+            db.complete_batch(batch_id, accepted_count=1, duplicate_count=2, rejected_count=1)
+            interrupted_batch = db.begin_batch()
+            db.record_batch_asset(interrupted_batch, "sha-c", 0)
+            empty_batch = db.begin_batch()
+            db.complete_batch(empty_batch, accepted_count=0, duplicate_count=0, rejected_count=2)
+
+            latest = db.latest_batch()
+
+            self.assertEqual(latest["id"], batch_id)
+            self.assertEqual(latest["asset_count"], 2)
+            self.assertEqual(latest["duplicate_count"], 2)
+            self.assertEqual(db.resolve_batch_id("latest"), batch_id)
+            self.assertEqual(db.resolve_batch_id(batch_id), batch_id)
+            self.assertEqual(db.resolve_batch_id("missing"), "")
+            self.assertEqual(db.batch_hashes(batch_id), ["sha-a", "sha-b"])
+        finally:
+            time.sleep(0.05)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     def test_storage_format_marker_rejects_newer_data(self) -> None:
         tmpdir = Path(tempfile.mkdtemp())
         try:

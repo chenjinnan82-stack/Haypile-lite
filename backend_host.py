@@ -30,11 +30,11 @@ class ControlChannelServer:
     def start(self) -> bool:
         try:
             self._listener = start_ipc_listener(address=self._address)
-        except OSError:
-            logger.error("Failed to start IPC listener at %s", self._address, exc_info=True)
+        except OSError as exc:
+            logger.error("Failed to start IPC listener: error_type=%s", type(exc).__name__)
             return False
-        except Exception:
-            logger.error("Unexpected error while starting IPC listener at %s", self._address, exc_info=True)
+        except Exception as exc:
+            logger.error("Unexpected IPC listener start error: error_type=%s", type(exc).__name__)
             return False
         self._thread = threading.Thread(target=self._serve_loop, daemon=True)
         self._thread.start()
@@ -46,9 +46,9 @@ class ControlChannelServer:
             try:
                 self._listener.close()
             except OSError:
-                logger.debug("Failed to close IPC listener cleanly at %s", self._address, exc_info=True)
-            except Exception:
-                logger.warning("Unexpected error while closing IPC listener at %s", self._address, exc_info=True)
+                logger.debug("Failed to close IPC listener cleanly")
+            except Exception as exc:
+                logger.warning("Unexpected IPC listener close error: error_type=%s", type(exc).__name__)
             self._listener = None
         if self._thread is not None:
             self._thread.join(timeout=0.8)
@@ -61,9 +61,9 @@ class ControlChannelServer:
             listener_socket = self._listener._listener._socket  # type: ignore[attr-defined]
             listener_socket.settimeout(0.4)
         except OSError:
-            logger.debug("Failed to set timeout on IPC listener socket", exc_info=True)
-        except Exception:
-            logger.warning("Unexpected error while setting IPC listener timeout", exc_info=True)
+            logger.debug("Failed to set timeout on IPC listener socket")
+        except Exception as exc:
+            logger.warning("Unexpected IPC listener timeout error: error_type=%s", type(exc).__name__)
 
         while not self._stop_event.is_set():
             try:
@@ -81,16 +81,16 @@ class ControlChannelServer:
                 conn.send(response)
             except (OSError, EOFError):
                 continue
-            except Exception:
-                logger.warning("Unexpected IPC handling error", exc_info=True)
+            except Exception as exc:
+                logger.warning("Unexpected IPC handling error: error_type=%s", type(exc).__name__)
                 continue
             finally:
                 try:
                     conn.close()
                 except OSError:
-                    logger.debug("Failed to close IPC connection cleanly", exc_info=True)
-                except Exception:
-                    logger.warning("Unexpected error while closing IPC connection", exc_info=True)
+                    logger.debug("Failed to close IPC connection cleanly")
+                except Exception as exc:
+                    logger.warning("Unexpected IPC connection close error: error_type=%s", type(exc).__name__)
 
     def _handle_payload(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):

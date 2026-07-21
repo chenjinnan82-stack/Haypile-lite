@@ -20,7 +20,9 @@ enabled for the repository. Include:
 
 ## Supported Version
 
-The current public test release line is `v0.2.x`.
+The downloadable desktop test builds are currently `v0.2.x`. The repository may
+contain a `v0.3.x` prerelease candidate before matching packages are published;
+include the exact commit when reporting candidate-source issues.
 
 ## Notes
 
@@ -36,6 +38,10 @@ MCP, and example HTTP calls bypass ambient proxy settings so local asset
 payloads do not leave the machine through an inherited proxy. Invalid or
 decompression-bomb images are rejected, and API 500 responses do not echo
 local filesystem paths.
+
+Optional remote vision providers require an explicitly authorized host. Remote
+endpoints must use HTTPS, redirects are disabled, and API keys are stored in
+macOS Keychain or Windows Credential Manager rather than Haypile JSON state.
 
 Haypile does not defend against malware or another process already running as
 the same operating-system user. Such a process has the user's own local access.

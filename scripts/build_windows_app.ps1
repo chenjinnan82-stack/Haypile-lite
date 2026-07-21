@@ -11,7 +11,7 @@ if ($env:OS -ne "Windows_NT") {
     throw "Haypile Windows builds must run on Windows."
 }
 if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne "X64") {
-    throw "Haypile v0.2 Windows builds require x64 Windows."
+    throw "Haypile v0.3 Windows builds require x64 Windows."
 }
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -22,7 +22,7 @@ $BuildDir = Join-Path $Root "build"
 $WindowsDeployDir = Join-Path $BuildDir "windows-deploy"
 $DistDir = Join-Path $Root "dist"
 $PortableDir = Join-Path $DistDir "Haypile"
-$Zip = Join-Path $DistDir "Haypile-v0.2.0-windows-x64.zip"
+$Zip = Join-Path $DistDir "Haypile-v0.3.0-alpha.1-windows-x64.zip"
 $Checksum = "$Zip.sha256"
 $IconSource = Join-Path $Root "assets/haypile-app-icon.png"
 $Icon = Join-Path $BuildDir "Haypile.ico"
@@ -137,8 +137,8 @@ try {
     if ($McpProcess.ExitCode -ne 0) {
         throw "Haypile.exe --mcp failed: $McpError"
     }
-    if ($McpOutput -notmatch '"version"\s*:\s*"0\.2\.0"') {
-        throw "Haypile.exe --mcp did not return server version 0.2.0."
+    if ($McpOutput -notmatch '"version"\s*:\s*"0\.3\.0-alpha\.1"') {
+        throw "Haypile.exe --mcp did not return server version 0.3.0-alpha.1."
     }
     $ExpectedMcpKey = Join-Path $SmokeRoot "Haypile/storage/ipc_authkey"
     if (-not (Test-Path $ExpectedMcpKey -PathType Leaf)) {
@@ -155,7 +155,7 @@ try {
     $BackendInfo.CreateNoWindow = $true
     $BackendInfo.Environment["STORAGE_DIR"] = (Join-Path $SmokeRoot "storage")
     $BackendInfo.Environment["PORT"] = [string]$SmokePort
-    $BackendInfo.Environment["IPC_CHANNEL"] = "haypile_v020_windows_smoke_$PID"
+    $BackendInfo.Environment["IPC_CHANNEL"] = "haypile_v030_windows_smoke_$PID"
     $BackendInfo.Environment["HAYPILE_IPC_AUTHKEY_FILE"] = (Join-Path $SmokeRoot "ipc_authkey")
     $BackendProcess = [System.Diagnostics.Process]::Start($BackendInfo)
 

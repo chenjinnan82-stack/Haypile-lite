@@ -17,20 +17,33 @@ def get_json(path: str) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def ready_images(role: str | None = None) -> list[dict[str, Any]]:
-    query = {"status": "ready", "type": "image"}
+def latest_batch_id() -> str:
+    try:
+        payload = get_json("/api/v1/batches/latest")
+    except HTTPError as exc:
+        if exc.code == 404:
+            return ""
+        raise
+    return str(payload.get("id") or "") if isinstance(payload, dict) else ""
+
+
+def ready_images(role: str | None = None, *, batch_id: str = "latest") -> list[dict[str, Any]]:
+    query = {"status": "ready", "type": "image", "batch_id": batch_id}
     if role:
         query["role"] = role
     return get_json("/api/v1/bundles?" + urllib.parse.urlencode(query))
 
 
-def build_handoff(bundles: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+def build_handoff(bundles: list[dict[str, Any]], *, batch_id: str | None = None) -> dict[str, Any]:
+    handoff = {
         "handoff_version": "haypile.asset-handoff.v1",
         "source": "haypile",
         "base_url": BASE_URL,
         "assets": [_handoff_asset(bundle) for bundle in bundles],
     }
+    if batch_id:
+        handoff["batch_id"] = batch_id
+    return handoff
 
 
 def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
@@ -67,7 +80,11 @@ def main() -> int:
     try:
         get_json("/healthz")
         get_json("/readyz")
-        handoff = build_handoff(ready_images(role=os.environ.get("HAYPILE_ROLE")))
+        batch_id = latest_batch_id()
+        handoff = build_handoff(
+            ready_images(role=os.environ.get("HAYPILE_ROLE"), batch_id=batch_id) if batch_id else [],
+            batch_id=batch_id or None,
+        )
     except HTTPError as exc:
         print(f"Haypile request failed: HTTP {exc.code} {exc.reason}. Check readiness and try again.", file=sys.stderr)
         return 2
@@ -76,7 +93,7 @@ def main() -> int:
         return 2
     print(json.dumps(handoff, ensure_ascii=False, indent=2))
     if not handoff["assets"]:
-        print("Haypile is reachable, but no ready image bundles were found. Drop images into Haypile first.", file=sys.stderr)
+        print("Haypile is reachable, but the latest batch has no ready images. Review the batch first.", file=sys.stderr)
         return 1
     return 0
 

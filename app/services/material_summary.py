@@ -16,8 +16,10 @@ from app.services.real_project_binding import resolve_haypile_real_project_root
 ROLE_LABELS: dict[str, str] = {
     "main_background": "背景",
     "hero_image": "主视觉",
+    "logo": "Logo",
     "icon": "图标",
-    "texture": "装饰",
+    "content_image": "内容图",
+    "texture": "纹理",
     "background": "背景",
     "image": "参考图",
     "audio": "音频",
@@ -1148,7 +1150,7 @@ def _usage_label(*, role: str, asset_type: str) -> str:
 
 def _role_from_asset_key(key: str) -> str:
     text = str(key or "").strip().lower()
-    for role in ("main_background", "hero_image", "icon", "texture"):
+    for role in ("main_background", "hero_image", "logo", "icon", "content_image", "texture"):
         if role in text:
             return role
     if "unknown" in text:

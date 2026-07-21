@@ -1,208 +1,93 @@
 <div align="center">
 
-<img src="assets/logo.png" alt="Haypile Lite" width="260">
+<img src="assets/logo.png" alt="Haypile" width="220">
 
-# Haypile Lite
+# Haypile
 
-**Feed your agents local assets without letting them rummage through your disk.**
+**Drop it in the pile. Organize it, then hand it to your agent.**
 
-Scattered files -> Haypile -> Ready bundles -> HTTP/MCP -> Agents
+A local-first asset intake for AI creators and independent developers.
 
 [简体中文](README.zh-CN.md)
 
 ![Local first](https://img.shields.io/badge/local--first-yes-2f855a)
+![MCP](https://img.shields.io/badge/MCP-read--only-6F7F5A)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
-![MCP](https://img.shields.io/badge/MCP-ready-6F7F5A)
-![Agent writes](https://img.shields.io/badge/agent%20writes-off-1f2937)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Desktop](https://img.shields.io/badge/app-desktop-334155)
 [![CI](https://github.com/chenjinnan82-stack/Haypile-lite/actions/workflows/ci.yml/badge.svg)](https://github.com/chenjinnan82-stack/Haypile-lite/actions/workflows/ci.yml)
 
 </div>
 
-## Source of Truth
+## Download
 
-This repository and its tagged releases are the only public Haypile source.
-Copies embedded in larger integration workspaces are compatibility snapshots;
-do not publish them or copy them back into this repository.
+No Python is required for the desktop test builds.
 
-## Desktop Test Builds
-
-No Python required.
-
-| Platform | Download | Status |
+| Platform | Download | Notes |
 | --- | --- | --- |
-| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed, not notarized |
-| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned test build |
+| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed; right-click **Open** |
+| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned preview; SmartScreen may warn |
 
-### macOS
+The repository currently contains the `v0.3.0-alpha.1` source candidate. New
+desktop packages will replace the links above only after macOS and Windows
+validation passes.
 
-This limited test build is ad-hoc signed and not notarized. After unzipping,
-drag `Haypile.app` into **Applications**, then right-click it and choose
-**Open**. Later, launch Haypile from Spotlight, Launchpad, or the Dock. If macOS still blocks it, use
-**System Settings -> Privacy & Security -> Open Anyway**.
+## See It Work
 
-Use Finder's Archive Utility to extract the app so macOS extended attributes are
-preserved. Command-line users can use `ditto -x -k <zip> <destination>`.
+![Haypile desktop workflow](docs/haypile-demo.gif)
 
-### Windows
+The pile stays fixed on the desktop. Click it for attached **Assets**, **Agent**,
+and **Settings** drawers; drag a file onto it for intake.
+The demo is rendered from the current Qt interface with repository-owned sample assets.
 
-Unzip the portable build and run `Haypile\Haypile.exe`. This x64 test build is
-unsigned, so Windows may show a Microsoft Defender SmartScreen warning. Verify
-the SHA-256 before running it. Automated Windows tests, packaged MCP/backend
-smoke checks, and artifact validation pass; real-machine desktop testing is
-still in progress.
+## Three Steps
 
-## 30-Second Demo
+1. **Drop** images from Finder, Explorer, or a browser. Audio remains supported.
+2. **Review** the latest batch. Haypile hashes, deduplicates, registers, and can
+   suggest image roles with a local model or an authorized API.
+3. **Hand off** the latest ready batch to Codex or another agent through HTTP,
+   MCP, or `asset-handoff.v1` JSON.
 
-Run the headless demo:
-
-```bash
-python3 -m pip install -r requirements-core.txt
-python3 examples/public_smoke_demo.py --out /tmp/haypile-demo
+```text
+Browser / desktop -> Haypile -> latest ready batch -> HTTP / MCP -> Agent
 ```
 
-It creates a sample asset registry and prints `asset-handoff` JSON with stable
-`id`, `sha256`, `source_key`, `url`, `resolved_url`, and provenance fields.
+## Safety Boundary
 
-Then try the desktop pile:
+Haypile is local-first by design:
 
-```bash
-python3 -m pip install -r requirements-desktop.txt
-python3 app_gui.py
-```
+- The service binds to `127.0.0.1` and static files are manifest-gated.
+- Agents receive registered URLs and provenance, not filesystem access.
+- HTTP and MCP are read-only; agent writes and deletes are not exposed.
+- Remote AI requires explicit domain authorization and HTTPS outside localhost.
+- API keys use macOS Keychain or Windows Credential Manager and never enter
+  `gui_state.json`, logs, provenance, or handoff data.
+- Cloud vision requests omit original filenames and local absolute paths.
 
-Drop images or audio onto it, then ask the running backend what is ready:
+See [Security Policy](SECURITY.md) for reporting security boundary failures.
 
-```bash
-python3 examples/use_haypile_http.py
-```
+## What v0.3 Adds
 
-**Boundary:** agents read registered assets through HTTP or MCP. They should not
-scan or mutate `storage/assets` directly.
-
-![Haypile agent workflow demo](docs/haypile-demo.gif)
-
-The desktop UI now unfolds from one fixed pile: a three-entry C-ring opens
-attached Assets, Agent, and Settings drawers without moving the drop target.
-
-## Why
-
-Agents are much better when they can use the user's real images, audio, and
-theme fragments. Raw folders are the problem: assets are scattered, names are
-unreliable, duplicates pile up, and filesystem access is too much power for a
-simple generation task.
-
-Haypile is a local asset pile with a gate. Drop files in; Haypile hashes,
-dedupes, registers, and serves only manifest-approved assets. Agents get clean
-ready bundles instead of a shovel and a disk path.
-
-The metaphor is a pika haypile: gathered local material, stored safely, ready
-for later.
-
-## What It Does Today
-
-- Provides a small desktop drop target for images and audio (`mp3`, `wav`, `ogg`, `m4a`, `flac`, `aac`).
-- Keeps Assets, Agent access, and Settings in one attached desktop component.
-- Hashes, dedupes, renames, and stores assets locally.
-- Builds a manifest and serves only registered files through `/static`.
-- Exposes ready bundles through a read-only HTTP API.
-- Provides a thin MCP adapter over the same HTTP API.
-- Emits agent handoff data with provenance.
-- Preserves audio duration, basic technical metadata, and existing title/artist/album tags; users can confirm music, voice, ambience, sound effect, or loop usage.
-- Optionally uses a local Ollama vision model directly or through a local Sophon gateway.
-- Keeps low-power mode available when AI sorting is not wanted.
-
-## Quick Start
-
-Install from source:
-
-```bash
-git clone https://github.com/chenjinnan82-stack/Haypile-lite.git
-cd Haypile-lite
-python3 -m pip install -r requirements-desktop.txt
-```
-
-Run Haypile:
-
-```bash
-python3 app_gui.py
-```
-
-Direct Ollama remains the default. To route vision classification through an
-already-running local Sophon gateway:
-
-```bash
-VISION_CLASSIFIER_TRANSPORT=sophon \
-SOPHON_BASE_URL=http://127.0.0.1:8030 \
-HAYPILE_SOPHON_API_KEY_FILE=/path/to/admin_api_key \
-python3 app_gui.py
-```
-
-Manual backend smoke test:
-
-```bash
-HAYPILE_BACKEND_HOST_ALLOW_START=1 python3 backend_host.py
-```
-
-Run public checks:
-
-```bash
-python3 -m unittest tests/test_agent_examples.py tests/test_mcp_server.py
-```
-
-Run the headless public demo:
-
-```bash
-python3 examples/public_smoke_demo.py --out /tmp/haypile-demo
-```
-
-Run the full suite:
-
-```bash
-python3 -m unittest discover -s tests
-```
-
-### Building the macOS app
-
-Haypile can now be frozen into a standalone Apple Silicon app that does not
-require Python at runtime:
-
-```bash
-./scripts/build_macos_app.sh
-open dist/Haypile.app
-```
-
-The packaged app keeps its assets under
-`~/Library/Application Support/Haypile/storage` and logs under
-`~/Library/Logs/Haypile`. It does not migrate or modify the source checkout's
-`storage/` directory.
-
-The GitHub test build is ad-hoc signed for limited testing and is not
-notarized. Broad public distribution still requires Developer ID signing and
-Apple notarization. See [macOS Test Build](docs/MACOS_INTERNAL_BUILD.md).
+- Intake finishes before AI sorting, so an offline or slow model never blocks storage.
+- Every drop has a stable batch ID; duplicates still belong to the new batch.
+- Image roles include background, hero, logo, icon, content image, and texture.
+- Local technical quality gates decide readiness; the model does not judge aesthetics.
+- The Agent drawer can copy the latest batch instead of the whole asset library.
+- AI modes are **Local model**, **API**, or **Off**. Audio metadata and manual
+  usage confirmation continue to work without AI.
 
 ## Agent Access
 
-Default backend:
-
-```text
-http://127.0.0.1:8010
-```
-
-Useful endpoints:
+The local backend defaults to `http://127.0.0.1:8010`.
 
 ```text
 GET /healthz
 GET /readyz
-GET /api/v1/bundles
-GET /api/v1/bundles?status=ready
-GET /api/v1/bundles?status=ready&type=image&role=hero_image
+GET /api/v1/batches/latest
+GET /api/v1/bundles?status=ready&batch_id=latest
 GET /api/v1/bundles/{bundle_id}
-GET /api/v1/vault
 ```
 
-MCP host config:
+Source-mode MCP configuration:
 
 ```json
 {
@@ -210,92 +95,66 @@ MCP host config:
     "haypile": {
       "command": "python3",
       "args": ["/absolute/path/to/Haypile-lite/mcp_server.py"],
-      "env": {
-        "HAYPILE_BASE_URL": "http://127.0.0.1:8010"
-      }
+      "env": {"HAYPILE_BASE_URL": "http://127.0.0.1:8010"}
     }
   }
 }
 ```
 
-For a packaged app, use its bundled executable instead of Python:
+Packaged apps use the Haypile executable with `--mcp`:
 
 ```json
 {
   "mcpServers": {
     "haypile": {
-      "command": "/absolute/path/to/Haypile.app/Contents/MacOS/Haypile",
+      "command": "/Applications/Haypile.app/Contents/MacOS/Haypile",
       "args": ["--mcp"]
     }
   }
 }
 ```
 
-See [Agent HTTP Contract](docs/AGENT_HTTP_CONTRACT.md) and
-[Agent Recipes](docs/AGENT_RECIPES.md) for the full handoff shape.
+On Windows, set `command` to the absolute path of `Haypile.exe` and keep the
+same `--mcp` argument. The Agent drawer can copy the correct configuration.
 
-## Local AI
+Read the [HTTP contract](docs/AGENT_HTTP_CONTRACT.md) and
+[Agent recipes](docs/AGENT_RECIPES.md) for the complete handoff shape.
 
-AI sorting is optional. Haypile still works as a local registry without it.
-
-To force no-AI mode:
+## Run From Source
 
 ```bash
-HAYPILE_LOW_POWER_MODE=1 python3 app_gui.py
+git clone https://github.com/chenjinnan82-stack/Haypile-lite.git
+cd Haypile-lite
+python3 -m pip install -r requirements-desktop.txt
+python3 app_gui.py
 ```
 
-For local model setup, see [Local AI Setup](docs/LOCAL_AI.md).
+Headless smoke demo:
 
-## Boundaries
-
-Haypile Lite is not a cloud asset manager or a full DAM.
-
-It does **not** currently publish a signed/notarized installer or promise
-multi-user sync, remote hosting, destructive asset mutation through agents, or
-production-grade asset approval workflows.
-
-The public v0.1 surface is intentionally small: local intake, local registry,
-manifest-gated static access, read-only HTTP, read-only MCP, and explicit
-handoff data for agents.
-
-Experimental real-project apply/rollback helpers are disabled by default and
-are not part of the public agent-access surface.
-
-## Project Shape
-
-```text
-Desktop drop target                 app_gui.py
-FastAPI backend                     app/main.py
-Backend launcher                    backend_host.py
-HTTP bundle API                     app/api/v1/bundles.py
-Theme vault API                     app/api/v1/theme.py
-Manifest scanner                    app/services/scanner.py
-Bundle service                      app/services/bundle_service.py
-Theme registry                      app/services/theme_registry.py
-Optional vision sorting             app/services/style_classifier.py
-MCP adapter                         mcp_server.py
-Agent examples                      examples/
-Public docs                         docs/
-Tests                               tests/
-Runtime storage                     storage/
+```bash
+python3 -m pip install -r requirements-core.txt
+python3 examples/public_smoke_demo.py --out /tmp/haypile-demo
 ```
 
-## Roadmap
+Tests:
 
-- Developer ID signing, notarization, and a public macOS DMG.
-- More public agent recipes.
-- Clearer desktop onboarding.
-- Cross-platform startup notes.
-- More stable optional AI sorting.
+```bash
+python3 -m unittest discover -s tests
+```
 
-## Contributing
+Build notes live in [macOS internal build](docs/MACOS_INTERNAL_BUILD.md) and the
+platform scripts under `scripts/`. The private release gate is documented in
+[AI evaluation](docs/AI_EVALUATION.md).
 
-Small, focused changes are welcome. See [Contributing](CONTRIBUTING.md).
+## Project Notes
 
-For vulnerability reports, see [Security Policy](SECURITY.md).
+- This repository and its tagged releases are the only public Haypile source.
+- Haypile is not a cloud DAM, multi-user sync service, or agent-write platform.
+- Experimental real-project apply/rollback helpers remain disabled and outside
+  the public agent surface.
 
-## License
+Questions and reproducible product feedback belong in
+[GitHub Issues](https://github.com/chenjinnan82-stack/Haypile-lite/issues).
+Small, focused contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-MIT. See [LICENSE](LICENSE).
-
-Third-party notices are listed in [NOTICE](NOTICE).
+MIT licensed. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

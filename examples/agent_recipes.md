@@ -6,7 +6,7 @@ These recipes prove that agents can use Haypile without reading the local asset 
 
 Goal: turn ready images into page visual direction.
 
-1. Read ready images with `GET /api/v1/bundles?status=ready&type=image` or MCP `haypile_list_bundles`.
+1. Read the current drop with `GET /api/v1/bundles?status=ready&type=image&batch_id=latest` or MCP `haypile_list_bundles` using `batch_id: "latest"`.
 2. For each bundle, use `resolved_url` from `asset-handoff.json`, or build it from `base_url + url`.
 3. Produce layout/color/hero/image-use suggestions.
 4. Keep `id`, `role`, `status`, `sha256`, `source_key`, `url`, `ai_suggestions`, `duration_seconds`, `audio_metadata`, `audio_tags`, `audio_usage`, and `provenance` beside every suggestion.

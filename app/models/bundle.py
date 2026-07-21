@@ -23,3 +23,13 @@ class BundlePayload(BaseModel):
     audio_metadata: dict[str, int] = Field(default_factory=dict)
     audio_tags: dict[str, str] = Field(default_factory=dict)
     audio_usage: str = "unknown"
+
+
+class IngestBatchPayload(BaseModel):
+    id: str
+    created_at: str
+    completed_at: str
+    accepted_count: int
+    duplicate_count: int
+    rejected_count: int
+    asset_count: int

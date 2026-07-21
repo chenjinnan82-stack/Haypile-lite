@@ -69,7 +69,18 @@ GET /api/v1/bundles?status=ready&type=image&role=hero_image
 GET /api/v1/bundles?status=pending&type=audio
 GET /api/v1/bundles?status=ready&type=audio&audio_usage=voice
 GET /api/v1/bundles?theme_id=generic
+GET /api/v1/bundles?status=ready&batch_id=latest
 ```
+
+Resolve the latest completed, non-empty ingest batch:
+
+```text
+GET /api/v1/batches/latest
+```
+
+`batch_id` accepts `latest` or a concrete batch UUID. Omitting it preserves the
+original all-assets behavior. A drop containing only invalid files never
+becomes latest; an interrupted batch is never exposed to agents.
 
 Page a large result without changing the response shape:
 
@@ -119,7 +130,8 @@ Fields:
 - `id`: stable bundle id derived from the registered asset filename.
 - `theme_id`: theme bucket.
 - `type`: currently `image` or `audio`.
-- `role`: `main_background`, `hero_image`, `icon`, `texture`, `audio`, or `unknown`.
+- `role`: `main_background`, `hero_image`, `logo`, `icon`, `content_image`,
+  `texture`, `audio`, or `unknown`.
 - `status`: `ready`, `pending`, or `missing`.
 - `sha256`: content hash when available.
 - `url`: static URL path. Resolve it against the same backend base URL.
@@ -206,6 +218,7 @@ Set `HAYPILE_BASE_URL` when the backend is not using
 ```json
 {
   "source": "haypile",
+  "batch_id": "resolved-batch-uuid",
   "base_url": "http://127.0.0.1:8010",
   "assets": [
     {
@@ -223,6 +236,9 @@ Set `HAYPILE_BASE_URL` when the backend is not using
   ]
 }
 ```
+
+`haypile_list_bundles` and `haypile_copy_handoff` accept the same optional
+`batch_id` value as HTTP. Agent recipes should default to `"latest"`.
 
 ## Agent Rules
 

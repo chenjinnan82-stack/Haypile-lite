@@ -30,7 +30,7 @@ plugins =
 
 macos.permissions =
 mode = standalone
-extra_args = --quiet --assume-yes-for-downloads --noinclude-qt-translations --include-data-dir=ui_assets=ui_assets --include-data-dir=assets=assets --output-filename=Haypile.exe --windows-console-mode=hide --company-name=Haypile --product-name=Haypile --file-description=Haypile --file-version=0.2.0.0 --product-version=0.2.0.0
+extra_args = --quiet --assume-yes-for-downloads --noinclude-qt-translations --include-data-dir=ui_assets=ui_assets --include-data-dir=assets=assets --output-filename=Haypile.exe --windows-console-mode=hide --company-name=Haypile --product-name=Haypile --file-description=Haypile --file-version=0.3.0.0 --product-version=0.3.0.0
 
 [buildozer]
 

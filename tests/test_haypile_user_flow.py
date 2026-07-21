@@ -14,7 +14,7 @@ from app.services.bundle_service import BundleService
 from app.services.scanner import AssetScanner
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.style_classifier import StyleClassificationResult
-from app_gui import IngestWorker
+from app_gui import AIBatchWorker, IngestWorker
 from examples.use_haypile_http import build_handoff
 
 
@@ -73,9 +73,10 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         self._write_wav(audio)
 
         worker = IngestWorker([image, audio, duplicate, invalid], self.assets_dir, ai_enabled=True)
-        worker.style_classifier = _HeroClassifier()
         finished: list[tuple[str, bool]] = []
+        completed_batches: list[str] = []
         worker.finished_signal.connect(lambda message, ok: finished.append((message, ok)))
+        worker.batch_signal.connect(lambda batch_id, _summary: completed_batches.append(batch_id))
 
         worker.run()
 
@@ -98,6 +99,25 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             runtime_db_path=self.runtime_db_path,
         )
         bundles = service.list_bundles()
+        self.assertEqual(len(completed_batches), 1)
+        batch_id = completed_batches[0]
+        batch_bundles = service.list_bundles(batch_id=batch_id)
+        self.assertEqual(len(batch_bundles), 2)
+        self.assertEqual(service.get_latest_batch()["id"], batch_id)
+        self.assertFalse(service.list_bundles(status="ready"))
+
+        image_bundle = next(item for item in batch_bundles if item["type"] == "image")
+        ai_worker = AIBatchWorker(batch_id, [image_bundle], self.assets_dir)
+        ai_worker.style_classifier = _HeroClassifier()
+        ai_worker.bundle_service = service
+        ai_finished: list[tuple[str, str, bool]] = []
+        ai_worker.finished_signal.connect(
+            lambda completed_id, message, ok: ai_finished.append((completed_id, message, ok))
+        )
+        ai_worker.run()
+
+        self.assertEqual(ai_finished[-1][0], batch_id)
+        self.assertTrue(ai_finished[-1][2])
         ready = service.list_bundles(status="ready")
         handoff = build_handoff(ready)
         payload_text = json.dumps(handoff)
@@ -190,6 +210,35 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         self.assertTrue(finished[-1][1])
         self.assertIn("新增 1", finished[-1][0])
 
+    def test_ai_failure_does_not_undo_ingest_or_mark_asset_ready(self) -> None:
+        image = self.tmpdir / "pending.svg"
+        image.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"></svg>',
+            encoding="utf-8",
+        )
+        batches: list[str] = []
+        worker = IngestWorker([image], self.assets_dir, ai_enabled=True)
+        worker.batch_signal.connect(lambda batch_id, _summary: batches.append(batch_id))
+        worker.run()
+
+        service = BundleService(
+            assets_dir=self.assets_dir,
+            manifest_path=self.manifest_path,
+            themes_dir=self.themes_dir,
+            runtime_db_path=self.runtime_db_path,
+        )
+        bundle = service.list_bundles(batch_id=batches[0])[0]
+        ai_worker = AIBatchWorker(batches[0], [bundle], self.assets_dir)
+        ai_worker.style_classifier = _FailingClassifier()
+        ai_worker.bundle_service = service
+        ai_worker.run()
+
+        after = service.get_bundle(bundle["id"])
+        self.assertIsNotNone(after)
+        self.assertEqual(after["status"], "pending")
+        self.assertEqual(after["role"], "unknown")
+        self.assertEqual(after["ai_suggestions"]["reason"], "model_call_failed")
+
     @staticmethod
     def _write_wav(path: Path) -> None:
         with wave.open(str(path), "wb") as handle:
@@ -206,14 +255,21 @@ class _HeroClassifier:
             theme_confidence=1.0,
             role_confidence=1.0,
             role="hero_image",
-            source="test",
+            source="model",
             reason="user_flow_smoke",
+            quality="high",
+            quality_reason="scalable_vector",
         )
 
 
 class _ExplodingClassifier:
     async def classify_image(self, _image_path: Path, candidate_themes: list[str] | None = None) -> StyleClassificationResult:
         raise AssertionError("AI classifier should not be called")
+
+
+class _FailingClassifier:
+    async def classify_image(self, _image_path: Path, candidate_themes: list[str] | None = None):
+        raise RuntimeError("offline")
 
 
 if __name__ == "__main__":

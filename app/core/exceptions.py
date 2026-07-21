@@ -79,10 +79,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request,
         exc: Exception,
     ) -> JSONResponse:
-        logger.exception(
-            "Unhandled Haypile request request_id=%s path=%s",
+        logger.error(
+            "Unhandled Haypile request request_id=%s path=%s error_type=%s",
             _request_id_from(request),
             request.url.path,
+            type(exc).__name__,
         )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

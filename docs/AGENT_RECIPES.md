@@ -49,7 +49,8 @@ Goal: build a page or app using local approved assets.
 Flow:
 
 1. Call `haypile_health`.
-2. Call `haypile_list_bundles` with `{"status":"ready","type":"image"}`.
+2. Call `haypile_list_bundles` with
+   `{"status":"ready","type":"image","batch_id":"latest"}`.
 3. Prefer `hero_image`, then `main_background`, then `texture`.
 4. Use `HAYPILE_BASE_URL + bundle.url` as the image source.
 5. Record `bundle.id`, `bundle.role`, `bundle.status`, `bundle.sha256`, and `source_key` in the handoff.
@@ -62,7 +63,8 @@ Goal: copy selected assets into a generated project with traceability.
 
 Flow:
 
-1. Call `haypile_list_bundles` with the needed `type` and `role`.
+1. Call `haypile_list_bundles` with `batch_id: "latest"` plus the needed
+   `type` and `role`.
 2. Download through the returned `url`, not from `storage/assets`.
 3. Write a small `asset-handoff.json` in the target project.
 
@@ -71,6 +73,7 @@ Handoff shape:
 ```json
 {
   "source": "haypile",
+  "batch_id": "resolved-batch-uuid",
   "base_url": "http://127.0.0.1:8010",
   "assets": [
     {

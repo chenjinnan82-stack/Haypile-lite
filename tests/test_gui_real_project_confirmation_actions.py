@@ -285,7 +285,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         worker.run()
 
         provenance = read_asset_provenance(asset_path)
-        self.assertEqual(finished, [("hero", "AI 分拣已更新", True)])
+        self.assertEqual(finished, [("hero", "AI 分拣已更新 · 等待确认", True)])
         self.assertEqual(provenance["source_key"], "generic/images/hero.png")
         self.assertEqual(provenance["sha256"], "d" * 64)
         self.assertEqual(provenance["ai_suggestions"]["quality"], "high")
@@ -724,6 +724,79 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             panel.search_input.setText("不存在")
             self.assertEqual(panel.detail_label.text(), "没有匹配资源")
             self.assertTrue(panel.item_labels[0].isHidden())
+        finally:
+            app_gui_module.build_material_panel_summary = previous_builder
+            app_gui_module.BundleService = previous_bundle_service
+            panel.close()
+
+    def test_material_panel_pages_filtered_items_without_losing_selection_mapping(self) -> None:
+        items = [
+            MaterialSummaryItem(
+                title=f"asset-{index}.png",
+                usage_label="内容图",
+                confidence_label="中等把握",
+                status_label="已识别",
+                preview_url=f"/static/generic/images/asset-{index}.png",
+                theme_id="generic",
+                asset_type="image",
+                source_key=f"generic/images/asset-{index}.png",
+            )
+            for index in range(4)
+        ]
+        summary = MaterialPanelSummary(
+            total_count=4,
+            recognized_count=4,
+            pending_count=0,
+            service_status="Haypile：运行中",
+            recognition_status="分类：已完成",
+            recent_items=items,
+        )
+
+        class FakeBundleService:
+            def get_bundle(self, bundle_id):
+                return {
+                    "id": bundle_id,
+                    "theme_id": "generic",
+                    "type": "image",
+                    "role": "content_image",
+                    "status": "ready",
+                    "sha256": "a" * 64,
+                    "url": f"/static/generic/images/{bundle_id}.png",
+                    "access": "manifest_static",
+                    "source_key": f"generic/images/{bundle_id}.png",
+                }
+
+        previous_builder = app_gui_module.build_material_panel_summary
+        previous_bundle_service = app_gui_module.BundleService
+        app_gui_module.build_material_panel_summary = lambda: summary
+        app_gui_module.BundleService = FakeBundleService
+        panel = MaterialPanelWindow()
+        try:
+            panel.refresh()
+            self.assertFalse(panel.page_row.isHidden())
+            self.assertIn("asset-0.png", panel.item_labels[0].text())
+
+            panel._change_page(1)
+            self.assertEqual(panel._page_index, 1)
+            self.assertIn("asset-3.png", panel.item_labels[0].text())
+            self.assertTrue(panel.item_labels[1].isHidden())
+
+            point = panel.item_labels[0].rect().center()
+            event = QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                point,
+                point,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            panel._select_recent_item(0, event)
+            self.assertEqual(panel._selected_bundle_id, "asset-3")
+
+            panel.search_input.setText("asset-1")
+            self.assertEqual(panel._page_index, 0)
+            self.assertTrue(panel.page_row.isHidden())
+            self.assertIn("asset-1.png", panel.item_labels[0].text())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -1354,7 +1427,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         ball.quick_menu.begin_progress = lambda anchor, available, text: anchors.append(anchor)
         ball.show_toast = lambda message, success=True: None
         try:
-            ball._start_worker([])
+            source = self.tmpdir / "queued.svg"
+            source.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"/>', encoding="utf-8")
+            ball._start_worker([source])
 
             self.assertEqual(anchors, [ball._toast_anchor()])
         finally:
@@ -1843,7 +1918,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             provenance = read_asset_provenance(finished[-1][0][0])
             self.assertEqual(provenance["origin_url"], "https://cdn.example.com/path/hero.webp")
             self.assertEqual(provenance["content_type"], "image/webp")
-            self.assertEqual(provenance["temp_file"], str(finished[-1][0][0]))
+            self.assertNotIn("temp_file", provenance)
             self.assertIn("downloaded_at", provenance)
         finally:
             app_gui_module.httpx.stream = previous_stream
@@ -2027,6 +2102,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         self.assertEqual(provenance["origin_url"], "https://cdn.example.com/hero.webp")
         self.assertEqual(provenance["source_key"], "generic/images/generic_img_unknown_deadbeef.webp")
         self.assertEqual(provenance["sha256"], "abc123")
+        self.assertNotIn("temp_file", provenance)
 
     def test_ingest_worker_persists_ai_suggestions_without_browser_provenance(self) -> None:
         assets_dir = self.tmpdir / "assets"

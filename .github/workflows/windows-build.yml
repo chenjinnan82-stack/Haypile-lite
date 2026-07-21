@@ -3,7 +3,7 @@ name: Windows portable build
 on:
   push:
     tags:
-      - "v0.2.0-test.*"
+      - "v0.3.0-alpha.1"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -42,10 +42,10 @@ jobs:
         run: .\scripts\build_windows_app.ps1 -SkipInstall
       - uses: actions/upload-artifact@v7
         with:
-          name: Haypile-v0.2.0-windows-x64
+          name: Haypile-v0.3.0-alpha.1-windows-x64
           path: |
-            dist/Haypile-v0.2.0-windows-x64.zip
-            dist/Haypile-v0.2.0-windows-x64.zip.sha256
+            dist/Haypile-v0.3.0-alpha.1-windows-x64.zip
+            dist/Haypile-v0.3.0-alpha.1-windows-x64.zip.sha256
           if-no-files-found: error
       - name: Upload draft release assets
         if: github.ref_type == 'tag' || inputs.release_tag != ''
@@ -55,6 +55,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           gh release upload "$env:RELEASE_TAG" `
-            dist/Haypile-v0.2.0-windows-x64.zip `
-            dist/Haypile-v0.2.0-windows-x64.zip.sha256 `
+            dist/Haypile-v0.3.0-alpha.1-windows-x64.zip `
+            dist/Haypile-v0.3.0-alpha.1-windows-x64.zip.sha256 `
             --clobber

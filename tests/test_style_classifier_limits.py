@@ -7,9 +7,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
+from PIL import Image
 
 from app.core.config import get_settings
-from app.services.style_classifier import StyleClassifier
+from app.services.style_classifier import StyleClassificationResult, StyleClassifier
 
 
 def test_style_classifier_rejects_large_image_before_base64(tmp_path) -> None:
@@ -27,15 +28,13 @@ def test_style_classifier_rejects_large_image_before_base64(tmp_path) -> None:
     assert result.source == "guard"
 
 
-def test_ingest_worker_timeout_queues_retry_without_fallback_write() -> None:
+def test_ingest_worker_does_not_run_visual_classification() -> None:
     source = (Path(__file__).resolve().parents[1] / "app_gui.py").read_text(encoding="utf-8")
-    timeout_block = source.split("except (ResourceExhaustedError, httpx.TimeoutException)", 1)[1].split(
-        "except (ValueError, RuntimeError, OSError)",
-        1,
+    ingest_worker = source.split("class IngestWorker", 1)[1].split(
+        "async def _classify_registered_bundle", 1
     )[0]
 
-    assert "self.pending_retry_list.append(file_path)" in timeout_block
-    assert "continue" in timeout_block
+    assert "classify_image" not in ingest_worker
 
 
 class StyleClassifierPowerTests(unittest.TestCase):
@@ -70,7 +69,7 @@ class StyleClassifierPowerTests(unittest.TestCase):
         )
 
         self.assertEqual(result.tags, ["自然", "绿色", "hero", "extra", "six", "seven"])
-        self.assertEqual(result.quality, "high")
+        self.assertEqual(result.quality, "unknown")
         self.assertEqual(result.ai_suggestions()["usage"], "hero_image")
         self.assertEqual(result.ai_suggestions()["agent_summary"], "适合作为自然风格主视觉。")
 
@@ -132,6 +131,44 @@ class StyleClassifierPowerTests(unittest.TestCase):
                 clear=False,
             ):
                 self.assertEqual(classifier._sophon_api_key(), "haypile-secret")
+
+    def test_technical_quality_uses_role_specific_thresholds(self) -> None:
+        classifier = StyleClassifier.__new__(StyleClassifier)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            svg = root / "mark.svg"
+            svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>', encoding="utf-8")
+            icon = root / "icon.png"
+            texture = root / "texture.png"
+            hero = root / "hero.png"
+            small = root / "small.png"
+            Image.new("RGBA", (64, 80)).save(icon)
+            Image.new("RGB", (256, 300)).save(texture)
+            Image.new("RGB", (800, 400)).save(hero)
+            Image.new("RGB", (799, 399)).save(small)
+
+            self.assertEqual(classifier.technical_quality(svg, "logo"), ("high", "scalable_vector"))
+            self.assertEqual(classifier.technical_quality(icon, "icon")[0], "medium")
+            self.assertEqual(classifier.technical_quality(texture, "texture")[0], "medium")
+            self.assertEqual(classifier.technical_quality(hero, "hero_image")[0], "medium")
+            self.assertEqual(classifier.technical_quality(small, "content_image")[0], "low")
+
+    def test_auto_ready_requires_role_confidence_quality_and_known_role(self) -> None:
+        accepted = StyleClassificationResult(
+            theme_id="generic",
+            theme_confidence=0.9,
+            role_confidence=0.85,
+            role="content_image",
+            source="model",
+            reason="clear",
+            quality="medium",
+        )
+        self.assertTrue(StyleClassifier.is_auto_ready(accepted))
+        accepted.role = "unknown"
+        self.assertFalse(StyleClassifier.is_auto_ready(accepted))
+        accepted.role = "content_image"
+        accepted.role_confidence = 0.849
+        self.assertFalse(StyleClassifier.is_auto_ready(accepted))
 
 
 if __name__ == "__main__":

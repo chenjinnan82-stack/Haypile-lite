@@ -37,7 +37,11 @@ def _run_early_mode() -> None:
         os.environ["HAYPILE_BACKEND_HOST_ALLOW_START"] = "1"
         from backend_host import main as backend_main
 
-        raise SystemExit(backend_main())
+        try:
+            exit_code = backend_main()
+        except KeyboardInterrupt:
+            exit_code = 0
+        raise SystemExit(exit_code)
 
 
 _run_early_mode()
@@ -48,6 +52,12 @@ from app.core.config import configure_packaged_logging, get_settings, runtime_mo
 from app.core.exceptions import ResourceExhaustedError
 from app.core.ipc import send_ipc_request
 from app.services.asset_provenance import public_origin_url, read_asset_provenance, write_asset_provenance
+from app.services.ai_provider import (
+    AIProviderConfig,
+    SystemCredentialStore,
+    api_authority,
+    normalize_api_base_url,
+)
 from app.services.bundle_service import BundleService
 from app.services.json_io import atomic_write_json
 from app.services.scanner import AssetScanner
@@ -262,7 +272,11 @@ class RemoteDownloadWorker(QThread):
                     break
                 path, reason = self._download_one(url, index, max_bytes=min(self.MAX_FILE_SIZE_BYTES, remaining))
             except (httpx.HTTPError, OSError, ValueError) as exc:
-                logger.warning("网页素材下载失败 url=%s error=%s", public_origin_url(url), exc)
+                logger.warning(
+                    "网页素材下载失败 url=%s error_type=%s",
+                    public_origin_url(url),
+                    type(exc).__name__,
+                )
                 failed += 1
                 continue
             if path is None:
@@ -332,11 +346,10 @@ class RemoteDownloadWorker(QThread):
                         "origin_url": public_origin_url(url),
                         "content_type": content_type,
                         "downloaded_at": datetime.now(timezone.utc).isoformat(),
-                        "temp_file": str(destination),
                     },
                 )
             except OSError:
-                logger.debug("Failed to write browser asset provenance", exc_info=True)
+                logger.debug("Failed to write browser asset provenance")
             return destination, ""
 
     def _destination_for(self, url: str, content_type: str, default_extension: str, index: int) -> Path:
@@ -413,6 +426,7 @@ class IngestWorker(QThread):
     finished_signal = Signal(str, bool)
     progress_signal = Signal(int, str)
     degraded_signal = Signal(str, str, int)
+    batch_signal = Signal(str, object)
 
     SUPPORTED_IMAGE_EXTENSIONS: set[str] = {".png", ".webp", ".svg", ".jpg", ".jpeg"}
     SUPPORTED_AUDIO_EXTENSIONS: set[str] = set(SUPPORTED_AUDIO_EXTENSIONS)
@@ -432,22 +446,9 @@ class IngestWorker(QThread):
         self.assets_dir = assets_dir
         self.settings = get_settings()
         self.theme_registry = ThemeRegistry()
-        self.style_classifier = StyleClassifier()
-        self.ai_enabled = (
-            bool(self.settings.VISION_CLASSIFIER_ENABLED)
-            and not bool(self.settings.HAYPILE_LOW_POWER_MODE)
-            if ai_enabled is None
-            else bool(ai_enabled)
-        )
-        if ai_enabled is not None:
-            self.style_classifier.low_power_mode = False
-            self.style_classifier.enabled = self.ai_enabled
+        self.ai_enabled = bool(ai_enabled)
         self.storage_runtime = StorageRuntimeDB()
         self.vfs_storage = VFSStorage(copy_max_retries=3, copy_base_delay=1.0)
-        self.pending_retry_list: list[Path] = []
-        self.theme_candidates = self.theme_registry.list_theme_ids()
-        if self.settings.VISION_FALLBACK_THEME not in self.theme_candidates:
-            self.theme_candidates.append(self.settings.VISION_FALLBACK_THEME)
         self.storage_runtime.ensure_ready()
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -472,6 +473,7 @@ class IngestWorker(QThread):
         duplicate_count = 0
         renamed_count = 0
         rejected_count = 0
+        batch_id = self.storage_runtime.begin_batch()
         total_files = max(len(self.files), 1)
         self.progress_signal.emit(3, ui_text("正在构建去重索引...", "Building duplicate index..."))
         hash_index = self._build_hash_index()
@@ -506,47 +508,11 @@ class IngestWorker(QThread):
 
             if file_hash in hash_index:
                 duplicate_count += 1
+                self.storage_runtime.record_batch_asset(batch_id, file_hash, idx)
                 continue
 
             theme_id = self.settings.VISION_FALLBACK_THEME
             role = "unknown"
-            ai_suggestions: dict[str, object] = {}
-            if media_kind == "image" and self.ai_enabled:
-                self.progress_signal.emit(
-                    progress_base + 42, f"识别风格 {idx}/{total_files}"
-                )
-                try:
-                    classification = self._run_coro(
-                        self.style_classifier.classify_image(
-                            file_path,
-                            candidate_themes=self.theme_candidates,
-                        )
-                    )
-                    theme_id = classification.theme_id
-                    role = classification.role
-                    ai_suggestions = classification.ai_suggestions()
-                except (ResourceExhaustedError, httpx.TimeoutException) as exc:
-                    logger.warning(
-                        "风格识别触发降级，加入稍后重试队列: file=%s error=%s",
-                        file_path,
-                        exc,
-                    )
-                    self.pending_retry_list.append(file_path)
-                    self.degraded_signal.emit(
-                        str(file_path),
-                        exc.__class__.__name__,
-                        len(self.pending_retry_list),
-                    )
-                    continue
-                except (ValueError, RuntimeError, OSError) as exc:
-                    logger.warning(
-                        "风格识别失败，回退到默认主题 file=%s error=%s",
-                        file_path,
-                        exc,
-                        exc_info=True,
-                    )
-                    theme_id = self.settings.VISION_FALLBACK_THEME
-                    role = "unknown"
 
             destination = self._resolve_themed_destination(
                 original_name=file_path.name,
@@ -573,7 +539,6 @@ class IngestWorker(QThread):
                     source_path=file_path,
                     destination=destination,
                     sha256_hex=file_hash,
-                    ai_suggestions=ai_suggestions,
                 )
             except OSError:
                 rejected_count += 1
@@ -581,6 +546,7 @@ class IngestWorker(QThread):
 
             hash_index[file_hash] = destination
             accepted_count += 1
+            self.storage_runtime.record_batch_asset(batch_id, file_hash, idx)
 
             if media_kind == "image":
                 self._upsert_theme_contract_for_image(
@@ -599,6 +565,13 @@ class IngestWorker(QThread):
             scanner = AssetScanner()
             self._run_coro(scanner.scan_assets_directory())
 
+        self.storage_runtime.complete_batch(
+            batch_id,
+            accepted_count=accepted_count,
+            duplicate_count=duplicate_count,
+            rejected_count=rejected_count,
+        )
+
         if accepted_count == 0 and duplicate_count == 0:
             self.finished_signal.emit(
                 ui_text(
@@ -609,6 +582,15 @@ class IngestWorker(QThread):
             )
             self._close_loop()
             return
+
+        self.batch_signal.emit(
+            batch_id,
+            {
+                "accepted_count": accepted_count,
+                "duplicate_count": duplicate_count,
+                "rejected_count": rejected_count,
+            },
+        )
 
         message = ui_text(
             f"收纳完成：新增 {accepted_count}，去重 {duplicate_count}",
@@ -780,7 +762,7 @@ class IngestWorker(QThread):
         try:
             write_asset_provenance(destination, provenance)
         except OSError:
-            logger.debug("Failed to persist asset provenance", exc_info=True)
+            logger.debug("Failed to persist asset provenance")
 
     @staticmethod
     def _safe_identifier(text: str) -> str:
@@ -815,15 +797,85 @@ class IngestWorker(QThread):
         )
 
 
+async def _classify_registered_bundle(
+    bundle: dict[str, object],
+    assets_dir: Path,
+    classifier: StyleClassifier,
+    theme_candidates: list[str],
+    bundle_service: BundleService,
+):
+    source_key = str(bundle.get("source_key") or "").strip()
+    if str(bundle.get("type") or "").lower() != "image" or not source_key:
+        raise ValueError("unsupported_bundle")
+    assets_root = assets_dir.resolve(strict=False)
+    asset_path = (assets_root / source_key).resolve(strict=False)
+    asset_path.relative_to(assets_root)
+    if not asset_path.is_file() or asset_path.is_symlink():
+        raise OSError("asset_missing")
+
+    classification = await classifier.classify_image(asset_path, candidate_themes=theme_candidates)
+    provenance = read_asset_provenance(asset_path)
+    provenance.update(
+        {
+            "source_key": source_key,
+            "sha256": str(bundle.get("sha256") or ""),
+            "ai_suggestions": classification.ai_suggestions(),
+        }
+    )
+    write_asset_provenance(asset_path, provenance)
+    auto_ready = StyleClassifier.is_auto_ready(classification)
+    if auto_ready:
+        auto_ready = bundle_service.set_bundle_role(str(bundle.get("id") or ""), classification.role) is not None
+    return classification, auto_ready
+
+
+def _persist_ai_failure(bundle: dict[str, object], assets_dir: Path, reason: str) -> None:
+    source_key = str(bundle.get("source_key") or "").strip()
+    if not source_key:
+        return
+    try:
+        assets_root = assets_dir.resolve(strict=False)
+        asset_path = (assets_root / source_key).resolve(strict=False)
+        asset_path.relative_to(assets_root)
+        if not asset_path.is_file() or asset_path.is_symlink():
+            return
+        provenance = read_asset_provenance(asset_path)
+        provenance.update(
+            {
+                "source_key": source_key,
+                "sha256": str(bundle.get("sha256") or ""),
+                "ai_suggestions": {
+                    "source": "model_fallback",
+                    "usage": "unknown",
+                    "quality": "unknown",
+                    "quality_reason": "classification_unavailable",
+                    "confidence": {"theme": 0.0, "role": 0.0},
+                    "reason": reason,
+                    "tags": [],
+                    "agent_summary": "",
+                },
+            }
+        )
+        write_asset_provenance(asset_path, provenance)
+    except (OSError, ValueError):
+        logger.debug("Failed to persist AI failure state")
+
+
 class AIRefreshWorker(QThread):
     finished_signal = Signal(str, str, bool)
 
-    def __init__(self, bundle: dict[str, object], assets_dir: Path) -> None:
+    def __init__(
+        self,
+        bundle: dict[str, object],
+        assets_dir: Path,
+        provider: AIProviderConfig | None = None,
+    ) -> None:
         super().__init__()
         self.bundle = dict(bundle)
         self.assets_dir = assets_dir
         self.theme_registry = ThemeRegistry()
-        self.style_classifier = StyleClassifier()
+        self.style_classifier = StyleClassifier(provider)
+        self.bundle_service = BundleService()
         self.theme_candidates = self.theme_registry.list_theme_ids()
         fallback = get_settings().VISION_FALLBACK_THEME
         if fallback not in self.theme_candidates:
@@ -831,52 +883,108 @@ class AIRefreshWorker(QThread):
 
     def run(self) -> None:
         bundle_id = str(self.bundle.get("id") or "")
-        source_key = str(self.bundle.get("source_key") or "").strip()
-        if str(self.bundle.get("type") or "").lower() != "image" or not source_key:
-            self.finished_signal.emit(bundle_id, ui_text("只支持图片 AI 分拣", "AI sorting supports images only"), False)
-            return
-
-        assets_root = self.assets_dir.resolve(strict=False)
-        asset_path = (assets_root / source_key).resolve(strict=False)
-        try:
-            asset_path.relative_to(assets_root)
-        except ValueError:
-            self.finished_signal.emit(bundle_id, ui_text("资源路径无效", "Invalid asset path"), False)
-            return
-        if not asset_path.is_file():
-            self.finished_signal.emit(bundle_id, ui_text("资源文件缺失", "Asset file is missing"), False)
-            return
-
         loop = asyncio.new_event_loop()
         try:
             classification = loop.run_until_complete(
-                self.style_classifier.classify_image(asset_path, candidate_themes=self.theme_candidates)
+                _classify_registered_bundle(
+                    self.bundle,
+                    self.assets_dir,
+                    self.style_classifier,
+                    self.theme_candidates,
+                    self.bundle_service,
+                )
             )
-            provenance = read_asset_provenance(asset_path)
-            provenance.update(
-                {
-                    "source_key": source_key,
-                    "sha256": str(self.bundle.get("sha256") or ""),
-                    "ai_suggestions": classification.ai_suggestions(),
-                }
-            )
-            write_asset_provenance(asset_path, provenance)
         except (ResourceExhaustedError, httpx.TimeoutException, OSError, RuntimeError, ValueError) as exc:
-            logger.warning("AI 分拣刷新失败: source_key=%s error=%s", source_key, exc, exc_info=True)
+            logger.warning("AI 分拣刷新失败: bundle_id=%s error_type=%s", bundle_id, type(exc).__name__)
             self.finished_signal.emit(bundle_id, ui_text("AI 分拣失败", "AI sorting failed"), False)
             return
         finally:
             loop.close()
+        classification, auto_ready = classification
         suggestions = classification.ai_suggestions()
         source = str(suggestions.get("source") or "").strip()
         reason = str(suggestions.get("reason") or source or "unknown").strip()
         success = source not in {"model_fallback", "disabled", "guard", ""}
         message = (
-            ui_text("AI 分拣已更新", "AI sorting updated")
+            ui_text("AI 分拣完成 · 已自动可用", "AI sorting complete · ready")
+            if auto_ready
+            else ui_text("AI 分拣已更新 · 等待确认", "AI sorting updated · review needed")
             if success
             else ui_text(f"AI 分拣未得到模型结果：{reason}", f"AI sorting did not get a model result: {reason}")
         )
         self.finished_signal.emit(bundle_id, message, success)
+
+
+class AIBatchWorker(QThread):
+    finished_signal = Signal(str, str, bool)
+    progress_signal = Signal(int, str)
+
+    def __init__(
+        self,
+        batch_id: str,
+        bundles: list[dict[str, object]],
+        assets_dir: Path,
+        provider: AIProviderConfig | None = None,
+    ) -> None:
+        super().__init__()
+        self.batch_id = batch_id
+        self.bundles = [dict(bundle) for bundle in bundles]
+        self.assets_dir = assets_dir
+        self.style_classifier = StyleClassifier(provider)
+        self.bundle_service = BundleService()
+        registry = ThemeRegistry()
+        self.theme_candidates = registry.list_theme_ids()
+        fallback = get_settings().VISION_FALLBACK_THEME
+        if fallback not in self.theme_candidates:
+            self.theme_candidates.append(fallback)
+
+    def run(self) -> None:
+        ready_count = 0
+        pending_count = 0
+        total = max(len(self.bundles), 1)
+        loop = asyncio.new_event_loop()
+        try:
+            for index, bundle in enumerate(self.bundles, start=1):
+                if self.isInterruptionRequested():
+                    return
+                self.progress_signal.emit(
+                    int((index - 1) / total * 100),
+                    ui_text(f"AI 整理 {index}/{total}", f"AI sorting {index}/{total}"),
+                )
+                try:
+                    _classification, auto_ready = loop.run_until_complete(
+                        _classify_registered_bundle(
+                            bundle,
+                            self.assets_dir,
+                            self.style_classifier,
+                            self.theme_candidates,
+                            self.bundle_service,
+                        )
+                    )
+                except (ResourceExhaustedError, httpx.TimeoutException, OSError, RuntimeError, ValueError) as exc:
+                    logger.warning(
+                        "批次 AI 整理失败: batch=%s bundle=%s error_type=%s",
+                        self.batch_id,
+                        bundle.get("id"),
+                        type(exc).__name__,
+                    )
+                    _persist_ai_failure(bundle, self.assets_dir, "model_call_failed")
+                    auto_ready = False
+                if auto_ready:
+                    ready_count += 1
+                else:
+                    pending_count += 1
+        finally:
+            loop.close()
+        self.progress_signal.emit(100, ui_text("AI 整理完成", "AI sorting complete"))
+        self.finished_signal.emit(
+            self.batch_id,
+            ui_text(
+                f"AI 整理完成：可用 {ready_count}，待确认 {pending_count}",
+                f"AI sorting complete: {ready_count} ready, {pending_count} pending",
+            ),
+            True,
+        )
 
 
 class ToastLabel(QLabel):
@@ -1365,10 +1473,16 @@ class MaterialPanelWindow(QWidget):
         self._confirmation_available = False
         self._recent_items = []
         self._all_recent_items = []
+        self._visible_items = []
+        self._page_index = 0
         self._filter_mode = "all"
+        self._batch_scope = "latest" if self._embedded else "all"
         self._selected_bundle_id = ""
         self._suggested_ai_role = ""
         self._toast_callback = None
+        self._retry_batch_callback = None
+        self._ai_provider_factory = None
+        self._ai_enabled_callback = None
         self.ai_refresh_worker: AIRefreshWorker | None = None
         self.confirmation_preview: ConfirmationPreviewWindow | None = None
         if not self._embedded:
@@ -1430,6 +1544,28 @@ class MaterialPanelWindow(QWidget):
         )
         layout.addWidget(self.pending_label)
 
+        self.scope_row = QWidget(self.container)
+        self.scope_row.setStyleSheet("QWidget { background: transparent; border: none; }")
+        scope_layout = QHBoxLayout(self.scope_row)
+        scope_layout.setContentsMargins(0, 0, 0, 0)
+        scope_layout.setSpacing(5)
+        self.scope_buttons: dict[str, QPushButton] = {}
+        for scope, label in (
+            ("latest", ui_text("最新批次", "Latest batch")),
+            ("all", ui_text("全部素材", "All assets")),
+        ):
+            button = QPushButton(label, self.scope_row)
+            button.setFixedHeight(24)
+            button.clicked.connect(lambda _checked=False, selected_scope=scope: self.set_batch_scope(selected_scope))
+            self.scope_buttons[scope] = button
+            scope_layout.addWidget(button)
+        self.retry_batch_button = QPushButton(ui_text("重试整理", "Retry sorting"), self.scope_row)
+        self.retry_batch_button.setFixedHeight(24)
+        self.retry_batch_button.clicked.connect(self._retry_latest_batch)
+        scope_layout.addWidget(self.retry_batch_button)
+        self.scope_row.setVisible(self._embedded)
+        self._refresh_scope_buttons()
+
         self.filter_row = QWidget(self.container)
         self.filter_row.setStyleSheet("QWidget { background: transparent; border: none; }")
         filter_layout = QHBoxLayout(self.filter_row)
@@ -1459,7 +1595,7 @@ class MaterialPanelWindow(QWidget):
             "QLineEdit { color: #4A463A; background: #FFF9EA; "
             "border: 1px solid #E5D8B9; border-radius: 7px; padding: 0 8px; font-size: 11px; }"
         )
-        self.search_input.textChanged.connect(lambda _text: self.refresh())
+        self.search_input.textChanged.connect(self._on_search_changed)
         layout.addWidget(self.search_input)
 
         self.item_labels: list[QLabel] = []
@@ -1472,6 +1608,32 @@ class MaterialPanelWindow(QWidget):
             item.mousePressEvent = lambda event, index=len(self.item_labels): self._select_recent_item(index, event)
             self.item_labels.append(item)
             layout.addWidget(item)
+
+        self.page_row = QWidget(self.container)
+        self.page_row.setStyleSheet("QWidget { background: transparent; border: none; }")
+        page_layout = QHBoxLayout(self.page_row)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(6)
+        self.previous_page_button = QPushButton("‹", self.page_row)
+        self.next_page_button = QPushButton("›", self.page_row)
+        for button in (self.previous_page_button, self.next_page_button):
+            button.setFixedSize(28, 24)
+            button.setStyleSheet(
+                "QPushButton { color: #4E5F3D; background: #F6F1E4; border: 1px solid #DDD3BB; "
+                "border-radius: 6px; font-size: 15px; }"
+                "QPushButton:hover { background: #EFE3C7; }"
+                "QPushButton:disabled { color: #B7B09D; background: #F3EFE5; }"
+            )
+        self.page_label = QLabel("", self.page_row)
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_label.setStyleSheet("QLabel { color: #756F61; font-size: 10px; }")
+        self.previous_page_button.clicked.connect(lambda: self._change_page(-1))
+        self.next_page_button.clicked.connect(lambda: self._change_page(1))
+        page_layout.addWidget(self.previous_page_button)
+        page_layout.addWidget(self.page_label, 1)
+        page_layout.addWidget(self.next_page_button)
+        self.page_row.hide()
+        layout.addWidget(self.page_row)
 
         self.detail_label = QLabel("", self.container)
         self.detail_label.setWordWrap(True)
@@ -1494,7 +1656,9 @@ class MaterialPanelWindow(QWidget):
         for role, label in (
             ("main_background", ui_text("背景", "Background")),
             ("hero_image", ui_text("主视觉", "Hero")),
+            ("logo", "Logo"),
             ("icon", ui_text("图标", "Icon")),
+            ("content_image", ui_text("内容图", "Content")),
             ("texture", ui_text("纹理", "Texture")),
         ):
             button = QPushButton(label, self.role_row)
@@ -1639,6 +1803,7 @@ class MaterialPanelWindow(QWidget):
         toolbar_layout.setSpacing(8)
         toolbar_layout.addWidget(self.search_input, 1)
         toolbar_layout.addWidget(self.filter_row, 0)
+        layout.addWidget(self.scope_row)
         layout.addWidget(toolbar)
 
         body = QWidget(self.container)
@@ -1656,6 +1821,7 @@ class MaterialPanelWindow(QWidget):
         self.pending_label.hide()
         for label in self.item_labels:
             list_layout.addWidget(label)
+        list_layout.addWidget(self.page_row)
         list_layout.addStretch(1)
 
         detail_pane = QWidget(body)
@@ -1679,6 +1845,11 @@ class MaterialPanelWindow(QWidget):
     def set_toast_handler(self, callback) -> None:
         self._toast_callback = callback
 
+    def set_ai_handlers(self, *, provider_factory, enabled_callback, retry_batch_callback) -> None:
+        self._ai_provider_factory = provider_factory
+        self._ai_enabled_callback = enabled_callback
+        self._retry_batch_callback = retry_batch_callback
+
     def retranslate(self) -> None:
         labels = {
             "all": ui_text("全部", "All"),
@@ -1693,7 +1864,9 @@ class MaterialPanelWindow(QWidget):
         role_labels = {
             "main_background": ui_text("背景", "Background"),
             "hero_image": ui_text("主视觉", "Hero"),
+            "logo": "Logo",
             "icon": ui_text("图标", "Icon"),
+            "content_image": ui_text("内容图", "Content"),
             "texture": ui_text("纹理", "Texture"),
         }
         for role, button in self.role_buttons.items():
@@ -1712,6 +1885,9 @@ class MaterialPanelWindow(QWidget):
         self.copy_selected_button.setText(ui_text("复制 handoff", "Copy handoff"))
         self.copy_ready_button.setText(ui_text("复制可用 handoff", "Copy ready handoff"))
         self.copy_recipe_button.setText(ui_text("复制 Agent 配方", "Copy Agent recipe"))
+        self.scope_buttons["latest"].setText(ui_text("最新批次", "Latest batch"))
+        self.scope_buttons["all"].setText(ui_text("全部素材", "All assets"))
+        self.retry_batch_button.setText(ui_text("重试整理", "Retry sorting"))
         self.refresh()
 
     def show_panel(self) -> None:
@@ -1757,8 +1933,32 @@ class MaterialPanelWindow(QWidget):
 
     def refresh(self) -> None:
         summary = build_material_panel_summary()
-        self._all_recent_items = summary.recent_items
-        self._recent_items = self._filter_recent_items(summary.recent_items)
+        service = BundleService()
+        if self._batch_scope == "latest":
+            scoped_bundles = service.list_bundles(batch_id="latest")
+            scoped_ids = {str(bundle.get("id") or "") for bundle in scoped_bundles}
+            scoped_items = [
+                item for item in summary.recent_items if self._bundle_for_item(item)["id"] in scoped_ids
+            ]
+        else:
+            scoped_items = list(summary.recent_items)
+            scoped_bundles = [self._bundle_for_item(item) for item in scoped_items]
+        self._all_recent_items = scoped_items
+        self._recent_items = self._filter_recent_items(scoped_items)
+        page_size = len(self.item_labels)
+        page_count = max(1, math.ceil(len(self._recent_items) / page_size))
+        self._page_index = min(self._page_index, page_count - 1)
+        page_start = self._page_index * page_size
+        self._visible_items = self._recent_items[page_start : page_start + page_size]
+        self.page_row.setVisible(len(self._recent_items) > page_size)
+        self.previous_page_button.setEnabled(self._page_index > 0)
+        self.next_page_button.setEnabled(self._page_index + 1 < page_count)
+        self.page_label.setText(
+            ui_text(
+                f"第 {self._page_index + 1}/{page_count} 页",
+                f"Page {self._page_index + 1}/{page_count}",
+            )
+        )
         selected_id = self._selected_bundle_id
         self.detail_label.hide()
         self.role_row.hide()
@@ -1768,8 +1968,8 @@ class MaterialPanelWindow(QWidget):
         self._suggested_ai_role = ""
         self.preview_label.hide()
         self.copy_selected_button.setEnabled(False)
-        self.copy_ready_button.setVisible(bool(summary.recent_items))
-        if not summary.recent_items:
+        self.copy_ready_button.setVisible(bool(scoped_items) and not self._embedded)
+        if not scoped_items:
             self.detail_label.setText(ui_text("拖入图片或音频开始收纳", "Drop images or audio to start storing"))
             self.detail_label.show()
         elif not self._recent_items:
@@ -1788,10 +1988,13 @@ class MaterialPanelWindow(QWidget):
             self.project_label.setToolTip("")
         self.project_label.hide()
 
+        total_count = len(scoped_bundles)
+        recognized_count = sum(1 for bundle in scoped_bundles if bundle.get("status") == "ready")
+        pending_count = sum(1 for bundle in scoped_bundles if bundle.get("status") == "pending")
         if self._embedded:
             summary_text = ui_text(
-                f"{summary.total_count} 个素材 · 可用 {summary.recognized_count}\n待确认 {summary.pending_count}",
-                f"{summary.total_count} assets · ready {summary.recognized_count}\npending {summary.pending_count}",
+                f"{total_count} 个素材 · 可用 {recognized_count}\n待确认 {pending_count}",
+                f"{total_count} assets · ready {recognized_count}\npending {pending_count}",
             )
         else:
             summary_text = ui_text(
@@ -1808,10 +2011,10 @@ class MaterialPanelWindow(QWidget):
 
         selected_item = None
         for idx, label in enumerate(self.item_labels):
-            if idx >= len(self._recent_items):
+            if idx >= len(self._visible_items):
                 label.hide()
                 continue
-            item = self._recent_items[idx]
+            item = self._visible_items[idx]
             bundle = self._bundle_for_item(item)
             selected = bool(selected_id and bundle["id"] == selected_id)
             if selected:
@@ -1843,6 +2046,10 @@ class MaterialPanelWindow(QWidget):
         self.rehearsal_label.hide()
         self.service_label.hide()
         self._confirmation_available = summary.confirmation_available
+        latest = service.get_latest_batch() if hasattr(service, "get_latest_batch") else None
+        self.retry_batch_button.setEnabled(
+            self._batch_scope == "latest" and latest is not None and bool(scoped_bundles)
+        )
         if self.confirmation_preview is not None:
             self.confirmation_preview.update_prompt(
                 title=summary.confirmation_title,
@@ -1859,8 +2066,51 @@ class MaterialPanelWindow(QWidget):
     def _set_filter_mode(self, mode: str) -> None:
         self._leave_search_input_mode()
         self._filter_mode = mode
+        self._page_index = 0
         self._refresh_filter_buttons()
         self.refresh()
+
+    def set_batch_scope(self, scope: str) -> None:
+        normalized = scope if scope in {"latest", "all"} else "latest"
+        if normalized == self._batch_scope:
+            self.refresh()
+            return
+        self._batch_scope = normalized
+        self._selected_bundle_id = ""
+        self._page_index = 0
+        self._refresh_scope_buttons()
+        self.refresh()
+
+    def _on_search_changed(self, _text: str) -> None:
+        self._page_index = 0
+        self.refresh()
+
+    def _change_page(self, delta: int) -> None:
+        page_size = len(self.item_labels)
+        page_count = max(1, math.ceil(len(self._recent_items) / page_size))
+        target = max(0, min(self._page_index + int(delta), page_count - 1))
+        if target == self._page_index:
+            return
+        self._page_index = target
+        self.refresh()
+
+    def _refresh_scope_buttons(self) -> None:
+        for scope, button in self.scope_buttons.items():
+            active = scope == self._batch_scope
+            button.setStyleSheet(
+                "QPushButton { "
+                f"color: {'#FFF9EA' if active else '#4E5F3D'}; "
+                f"background: {'#6F7F5A' if active else '#F6F1E4'}; "
+                "border: 1px solid #DDD3BB; border-radius: 6px; font-size: 10px; }"
+            )
+        self.retry_batch_button.setStyleSheet(
+            "QPushButton { color: #4E5F3D; background: #FFF9EA; "
+            "border: 1px solid #E5D8B9; border-radius: 6px; font-size: 10px; }"
+        )
+
+    def _retry_latest_batch(self) -> None:
+        if self._retry_batch_callback is not None:
+            self._retry_batch_callback()
 
     def _refresh_filter_buttons(self) -> None:
         for mode, button in self.filter_buttons.items():
@@ -1923,11 +2173,11 @@ class MaterialPanelWindow(QWidget):
         return query in haystack
 
     def _select_recent_item(self, index: int, event: QMouseEvent) -> None:
-        if index >= len(self._recent_items):
+        if index >= len(self._visible_items):
             event.ignore()
             return
         self._leave_search_input_mode()
-        item = self._recent_items[index]
+        item = self._visible_items[index]
         bundle = self._bundle_for_item(item)
         self._selected_bundle_id = bundle["id"]
         self._refresh_item_selection_styles()
@@ -2002,7 +2252,7 @@ class MaterialPanelWindow(QWidget):
         if not self._selected_bundle_id:
             return
         if not self._panel_ai_enabled():
-            self.detail_label.setText(ui_text("AI 分拣未开启\n请先在 C 环打开 AI", "AI sorting is off\nTurn it on from the C menu"))
+            self.detail_label.setText(ui_text("AI 分拣未开启\n请先在设置中开启 AI", "AI sorting is off\nEnable it in Settings"))
             self.detail_label.show()
             if self._toast_callback is not None:
                 self._toast_callback(ui_text("AI 分拣未开启", "AI sorting is off"), False)
@@ -2014,7 +2264,14 @@ class MaterialPanelWindow(QWidget):
             return
         self.retry_ai_button.setEnabled(False)
         self.retry_ai_button.setText(ui_text("AI 分拣中...", "AI sorting..."))
-        self.ai_refresh_worker = AIRefreshWorker(bundle, get_settings().ASSETS_DIR)
+        if self._ai_provider_factory is None:
+            self.ai_refresh_worker = AIRefreshWorker(bundle, get_settings().ASSETS_DIR)
+        else:
+            self.ai_refresh_worker = AIRefreshWorker(
+                bundle,
+                get_settings().ASSETS_DIR,
+                self._ai_provider_factory(),
+            )
         self.ai_refresh_worker.finished_signal.connect(self._on_ai_refresh_finished)
         self.ai_refresh_worker.start()
 
@@ -2040,8 +2297,9 @@ class MaterialPanelWindow(QWidget):
             self.detail_label.show()
             self.retry_ai_button.hide()
 
-    @staticmethod
-    def _panel_ai_enabled() -> bool:
+    def _panel_ai_enabled(self) -> bool:
+        if self._ai_enabled_callback is not None:
+            return bool(self._ai_enabled_callback())
         settings = get_settings()
         if settings.HAYPILE_LOW_POWER_MODE or not settings.VISION_CLASSIFIER_ENABLED:
             return False
@@ -2103,7 +2361,14 @@ class MaterialPanelWindow(QWidget):
         if not isinstance(value, dict):
             return ""
         role = str(value.get("usage") or "").strip()
-        return role if role in {"main_background", "hero_image", "icon", "texture"} else ""
+        return role if role in {
+            "main_background",
+            "hero_image",
+            "logo",
+            "icon",
+            "content_image",
+            "texture",
+        } else ""
 
     def _accept_ai_suggestion(self) -> None:
         if self._suggested_ai_role:
@@ -2244,9 +2509,9 @@ class MaterialPanelWindow(QWidget):
 
     def _refresh_item_selection_styles(self) -> None:
         for idx, label in enumerate(self.item_labels):
-            if idx >= len(self._recent_items) or label.isHidden():
+            if idx >= len(self._visible_items) or label.isHidden():
                 continue
-            bundle = self._bundle_for_item(self._recent_items[idx])
+            bundle = self._bundle_for_item(self._visible_items[idx])
             label.setStyleSheet(self._item_label_style(bundle["id"] == self._selected_bundle_id))
 
     @staticmethod
@@ -2262,7 +2527,9 @@ class MaterialPanelWindow(QWidget):
         return {
             "main_background": ui_text("背景", "Background"),
             "hero_image": ui_text("主视觉", "Hero"),
+            "logo": "Logo",
             "icon": ui_text("图标", "Icon"),
+            "content_image": ui_text("内容图", "Content image"),
             "texture": ui_text("纹理", "Texture"),
             "audio": ui_text("音频", "Audio"),
             "unknown": ui_text("未确定", "Unknown"),
@@ -2305,7 +2572,8 @@ class MaterialPanelWindow(QWidget):
             [
                 "Haypile agent recipe",
                 f"Base URL: {base_url}",
-                f"List ready assets: GET {base_url}/api/v1/bundles?status=ready",
+                f"List latest ready assets: GET {base_url}/api/v1/bundles?status=ready&batch_id=latest",
+                'Default batch selector: batch_id="latest".',
                 "Use each bundle's id, sha256, source_key, url, resolved_url, and provenance.",
                 "Fetch files through resolved_url or the MCP haypile_list_bundles tool.",
                 "Do not read Haypile's local asset directory directly.",
@@ -2337,14 +2605,22 @@ class MaterialPanelWindow(QWidget):
             "audio_usage": "unknown",
         }
 
-    def _handoff_for_bundles(self, bundles: list[dict[str, object]]) -> dict[str, object]:
+    def _handoff_for_bundles(
+        self,
+        bundles: list[dict[str, object]],
+        *,
+        batch_id: str = "",
+    ) -> dict[str, object]:
         base_url = self._base_url()
-        return {
+        payload = {
             "handoff_version": "haypile.asset-handoff.v1",
             "source": "haypile",
             "base_url": base_url,
             "assets": [self._handoff_asset(item, base_url) for item in bundles],
         }
+        if batch_id:
+            payload["batch_id"] = batch_id
+        return payload
 
     @staticmethod
     def _handoff_asset(item: dict[str, object], base_url: str) -> dict[str, object]:
@@ -2868,6 +3144,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._page_shift_direction = 1
         self._detail_buttons: dict[str, QPushButton] = {}
         self._low_power_enabled = False
+        self._ai_provider_mode = "off"
         self._language_mode = "auto"
         self._drawer_transition_id = 0
         self._build_drawer()
@@ -2958,7 +3235,8 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         layout.addSpacing(6)
         self.delivery_section = self._section_label(ui_text("交付", "Delivery"), page)
         layout.addWidget(self.delivery_section)
-        layout.addWidget(self._action_button(ui_text("复制可用 handoff", "Copy ready handoff"), "ready_handoff", page))
+        layout.addWidget(self._action_button(ui_text("复制最新批次 handoff", "Copy latest batch handoff"), "latest_handoff", page))
+        layout.addWidget(self._action_button(ui_text("复制全部可用素材", "Copy all ready assets"), "ready_handoff", page))
         layout.addWidget(self._action_button(ui_text("复制 Agent 配方", "Copy Agent recipe"), "agent_recipe", page))
         layout.addStretch(1)
         return page
@@ -3016,10 +3294,48 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             "QLabel { color: #4A463A; font-size: 12px; padding: 10px; background: #F6F1E4; border-radius: 8px; }"
         )
         layout.addWidget(self.ai_status_label)
-        self.ai_toggle_button = self._action_button(ui_text("开启 AI", "Enable AI"), "ai_toggle", page)
+
+        provider_row = QWidget(page)
+        provider_row.setStyleSheet("QWidget { background: transparent; border: none; }")
+        provider_layout = QHBoxLayout(provider_row)
+        provider_layout.setContentsMargins(0, 0, 0, 0)
+        provider_layout.setSpacing(5)
+        self.ai_provider_buttons: dict[str, QPushButton] = {}
+        for mode, label in (
+            ("local", ui_text("本地模型", "Local model")),
+            ("api", "API"),
+            ("off", ui_text("关闭", "Off")),
+        ):
+            button = self._action_button(label, f"ai_provider:{mode}", provider_row)
+            button.setStyleSheet(
+                "QPushButton { text-align: center; color: #4E5F3D; background: #F6F1E4; "
+                "border: 1px solid #DDD3BB; border-radius: 7px; font-size: 10px; }"
+            )
+            self.ai_provider_buttons[mode] = button
+            provider_layout.addWidget(button)
+        layout.addWidget(provider_row)
+
+        self.ai_api_base_input = QLineEdit(page)
+        self.ai_api_base_input.setPlaceholderText("https://provider.example/v1")
+        self.ai_api_model_input = QLineEdit(page)
+        self.ai_api_model_input.setPlaceholderText(ui_text("模型名称", "Model name"))
+        self.ai_api_key_input = QLineEdit(page)
+        self.ai_api_key_input.setPlaceholderText(ui_text("API 密钥（不会写入配置文件）", "API key (not stored in config)"))
+        self.ai_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        for field in (self.ai_api_base_input, self.ai_api_model_input, self.ai_api_key_input):
+            field.setFixedHeight(28)
+            field.setStyleSheet(
+                "QLineEdit { color: #4A463A; background: #FFF9EA; border: 1px solid #E5D8B9; "
+                "border-radius: 7px; padding: 0 8px; font-size: 11px; }"
+            )
+            layout.addWidget(field)
+        self.ai_api_save_button = self._action_button(
+            ui_text("保存并授权此域名", "Save and authorize domain"), "ai_save_api", page
+        )
+        layout.addWidget(self.ai_api_save_button)
+
         self.ai_command_button = self._action_button(ui_text("复制模型安装命令", "Copy model install command"), "ai_copy_command", page)
         self.ai_recheck_button = self._action_button(ui_text("重新检测", "Check again"), "ai_recheck", page)
-        layout.addWidget(self.ai_toggle_button)
         layout.addWidget(self.ai_command_button)
         layout.addWidget(self.ai_recheck_button)
         layout.addStretch(1)
@@ -3056,14 +3372,19 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         button_labels = {
             "mcp": ui_text("复制 MCP 配置", "Copy MCP config"),
             "http": ui_text("复制 HTTP 地址", "Copy HTTP URL"),
-            "ready_handoff": ui_text("复制可用 handoff", "Copy ready handoff"),
+            "latest_handoff": ui_text("复制最新批次 handoff", "Copy latest batch handoff"),
+            "ready_handoff": ui_text("复制全部可用素材", "Copy all ready assets"),
             "agent_recipe": ui_text("复制 Agent 配方", "Copy Agent recipe"),
             "ai_setup": ui_text("AI 分拣", "AI sorting"),
             "logs": ui_text("打开日志目录", "Open logs folder"),
             "exit": ui_text("退出 Haypile", "Quit Haypile"),
             "ai_copy_command": ui_text("复制模型安装命令", "Copy model install command"),
             "ai_recheck": ui_text("重新检测", "Check again"),
+            "ai_save_api": ui_text("保存并授权此域名", "Save and authorize domain"),
             "settings": ui_text("返回设置", "Back to settings"),
+            "ai_provider:local": ui_text("本地模型", "Local model"),
+            "ai_provider:api": "API",
+            "ai_provider:off": ui_text("关闭", "Off"),
             "language:auto": ui_text("自动", "Auto"),
             "language:zh": "简体中文",
             "language:en": "English",
@@ -3080,9 +3401,6 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             ui_text("低功耗：开", "Low power: on")
             if self._low_power_enabled
             else ui_text("低功耗：关", "Low power: off")
-        )
-        self.ai_toggle_button.setText(
-            ui_text("关闭 AI", "Disable AI") if self._ai_enabled else ui_text("开启 AI", "Enable AI")
         )
         self.material_panel.retranslate()
         if self._drawer_page:
@@ -3620,19 +3938,47 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         low_power: bool,
         language: str,
         service_status: str,
+        ai_provider: str,
+        api_base_url: str,
+        api_model: str,
+        api_key_present: bool,
     ) -> None:
         self.low_power_button.setText(
             ui_text("低功耗：开", "Low power: on") if low_power else ui_text("低功耗：关", "Low power: off")
         )
         self._low_power_enabled = bool(low_power)
         self._language_mode = language
+        self._ai_provider_mode = ai_provider
         self.ai_settings_button.setText(
             ui_text("AI 分拣：开", "AI sorting: on") if ai_enabled else ui_text("AI 分拣：关", "AI sorting: off")
         )
         self.ai_status_label.setText(ai_status)
-        self.ai_toggle_button.setText(
-            ui_text("关闭 AI", "Disable AI") if ai_enabled else ui_text("开启 AI", "Enable AI")
+        self.ai_api_base_input.setText(api_base_url)
+        self.ai_api_model_input.setText(api_model)
+        self.ai_api_key_input.clear()
+        self.ai_api_key_input.setPlaceholderText(
+            ui_text("密钥已存入系统凭据库", "Key stored in system credential store")
+            if api_key_present
+            else ui_text("API 密钥（不会写入配置文件）", "API key (not stored in config)")
         )
+        api_visible = ai_provider == "api"
+        for widget in (
+            self.ai_api_base_input,
+            self.ai_api_model_input,
+            self.ai_api_key_input,
+            self.ai_api_save_button,
+        ):
+            widget.setVisible(api_visible)
+        self.ai_command_button.setVisible(ai_provider == "local")
+        self.ai_recheck_button.setVisible(ai_provider == "local")
+        for mode, button in self.ai_provider_buttons.items():
+            active = mode == ai_provider
+            button.setStyleSheet(
+                "QPushButton { text-align: center; "
+                f"color: {'#FFF9EA' if active else '#4E5F3D'}; "
+                f"background: {'#6F7F5A' if active else '#F6F1E4'}; "
+                "border: 1px solid #DDD3BB; border-radius: 7px; font-size: 10px; }"
+            )
         self.service_status_label.setText(service_status)
         for mode, button in self.language_buttons.items():
             active = mode == language
@@ -3684,12 +4030,31 @@ class HaypileFloatingBall(QWidget):
         self._ai_preference = (
             bool(stored_ai) if isinstance(stored_ai, bool) else bool(self.settings.VISION_CLASSIFIER_ENABLED)
         )
+        default_provider = "local" if self._ai_preference else "off"
+        self.ai_provider_mode = str(stored_state.get("ai_provider") or default_provider).strip().lower()
+        if self.ai_provider_mode not in {"local", "api", "off"}:
+            self.ai_provider_mode = default_provider
+        self.ai_api_base_url = str(stored_state.get("ai_api_base_url") or "").strip()
+        self.ai_api_model = str(stored_state.get("ai_api_model") or "").strip()
+        self.ai_api_authorized_host = str(stored_state.get("ai_api_authorized_host") or "").strip()
+        self.ai_api_key_present = bool(stored_state.get("ai_api_key_present", False))
+        self._session_api_key = ""
+        if self.ai_provider_mode == "api" and self.ai_api_key_present:
+            try:
+                current_host = api_authority(self.ai_api_base_url)
+            except ValueError:
+                current_host = ""
+            if current_host and current_host == self.ai_api_authorized_host:
+                self._session_api_key = SystemCredentialStore.get(current_host)
+            self.ai_api_key_present = bool(self._session_api_key)
 
         self.api_process: subprocess.Popen[str] | None = None
         self.api_owned_by_gui = False
         self.worker: IngestWorker | None = None
         self.remote_worker: RemoteDownloadWorker | None = None
-        self.pending_retry_list: list[Path] = []
+        self.ai_batch_worker: AIBatchWorker | None = None
+        self._ai_batch_queue: list[str] = []
+        self.latest_batch_id = ""
         self.ai_enabled = self._restore_ai_enabled()
 
         self.drag_offset = QPoint()
@@ -3775,6 +4140,11 @@ class HaypileFloatingBall(QWidget):
         self.quick_menu = QuickMenuWindow()
         self.material_panel = self.quick_menu.material_panel
         self.material_panel.set_toast_handler(self.show_toast)
+        self.material_panel.set_ai_handlers(
+            provider_factory=self._current_ai_provider_config,
+            enabled_callback=lambda: self.ai_enabled and not self.low_power_enabled,
+            retry_batch_callback=self._retry_latest_ai_batch,
+        )
         self.quick_menu.set_action_handler(self._handle_quick_menu_action)
         self.quick_menu.set_close_handler(self._close_attached_ui)
         self._refresh_ai_menu_status()
@@ -3832,7 +4202,7 @@ class HaypileFloatingBall(QWidget):
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
             )
         except Exception:
-            logger.debug("Failed to apply Windows DWM window tweaks", exc_info=True)
+            logger.debug("Failed to apply Windows DWM window tweaks")
             return
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -3896,7 +4266,10 @@ class HaypileFloatingBall(QWidget):
 
         pulse = 0.5 + 0.5 * math.sin(self._pulse_phase)
 
-        busy = self.worker is not None and self.worker.isRunning()
+        busy = bool(
+            (self.worker is not None and self.worker.isRunning())
+            or (self.ai_batch_worker is not None and self.ai_batch_worker.isRunning())
+        )
         drop_feedback = self._drop_feedback_active()
         icon_rect = outer_rect.adjusted(
             -1,
@@ -4453,21 +4826,21 @@ class HaypileFloatingBall(QWidget):
     def _start_worker(self, files: list[Path]) -> None:
         merged_files: list[Path] = []
         seen: set[str] = set()
-        for file_path in [*self.pending_retry_list, *files]:
+        for file_path in files:
             key = str(file_path.resolve())
             if key in seen:
                 continue
             if file_path.exists() and file_path.is_file():
                 merged_files.append(file_path)
                 seen.add(key)
-        if self.pending_retry_list:
-            logger.warning("检测到稍后重试队列，合并重试文件数量=%s", len(self.pending_retry_list))
-        self.pending_retry_list = []
+        if not merged_files:
+            self.show_toast(ui_text("没有可收纳的文件", "No files to store"), success=False)
+            return
 
         self.worker = IngestWorker(merged_files, self.assets_dir, ai_enabled=self.ai_enabled)
         self.worker.finished_signal.connect(self._on_ingest_finished)
         self.worker.progress_signal.connect(self._on_ingest_progress)
-        self.worker.degraded_signal.connect(self._on_ingest_degraded)
+        self.worker.batch_signal.connect(self._on_ingest_batch)
         self.worker.start()
         self._sync_visual_timer()
         self.show_toast(ui_text(f"已接收 {len(merged_files)} 个文件，正在收纳...", f"Received {len(merged_files)} files, storing..."), success=True)
@@ -4512,24 +4885,71 @@ class HaypileFloatingBall(QWidget):
             self.worker.deleteLater()
             self.worker = None
 
+    def _on_ingest_batch(self, batch_id: str, _summary: object) -> None:
+        self.latest_batch_id = batch_id
+        if hasattr(self.material_panel, "set_batch_scope"):
+            self.material_panel.set_batch_scope("latest")
+        if self.ai_enabled and not self.low_power_enabled:
+            self._enqueue_ai_batch(batch_id)
+
+    def _enqueue_ai_batch(self, batch_id: str) -> None:
+        normalized = str(batch_id or "").strip()
+        if not normalized or normalized in self._ai_batch_queue:
+            return
+        if self.ai_batch_worker is not None and self.ai_batch_worker.batch_id == normalized:
+            return
+        self._ai_batch_queue.append(normalized)
+        self._start_next_ai_batch()
+
+    def _start_next_ai_batch(self) -> None:
+        if self.ai_batch_worker is not None or not self.ai_enabled or self.low_power_enabled:
+            return
+        while self._ai_batch_queue:
+            batch_id = self._ai_batch_queue.pop(0)
+            bundles = BundleService().list_bundles(
+                status="pending",
+                asset_type="image",
+                batch_id=batch_id,
+            )
+            if not bundles:
+                continue
+            self.ai_batch_worker = AIBatchWorker(
+                batch_id,
+                bundles,
+                self.assets_dir,
+                self._current_ai_provider_config(),
+            )
+            self.ai_batch_worker.finished_signal.connect(self._on_ai_batch_finished)
+            self.ai_batch_worker.start()
+            self._sync_visual_timer()
+            return
+
+    def _on_ai_batch_finished(self, batch_id: str, message: str, success: bool) -> None:
+        worker = self.ai_batch_worker
+        self.ai_batch_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        if self.quick_menu.current_page() == "assets":
+            self.material_panel.refresh()
+        self._refresh_pending_badge()
+        if batch_id == self.latest_batch_id:
+            self.show_toast(message, success=success)
+        self._sync_visual_timer()
+        self._start_next_ai_batch()
+
+    def _retry_latest_ai_batch(self) -> None:
+        latest = BundleService().get_latest_batch()
+        if latest is None:
+            self.show_toast(ui_text("还没有可重试的批次", "No batch to retry"), success=False)
+            return
+        if not self.ai_enabled or self.low_power_enabled:
+            self.show_toast(ui_text("请先开启 AI 整理", "Enable AI sorting first"), success=False)
+            return
+        self._enqueue_ai_batch(str(latest["id"]))
+        self.show_toast(ui_text("已加入 AI 整理队列", "Added to AI sorting queue"), success=True)
+
     def _on_ingest_progress(self, percent: int, text: str) -> None:
         self.quick_menu.set_progress(percent, text)
-
-    def _on_ingest_degraded(
-        self,
-        file_path: str,
-        reason: str,
-        pending_count: int,
-    ) -> None:
-        path = Path(file_path)
-        if path not in self.pending_retry_list:
-            self.pending_retry_list.append(path)
-        logger.warning(
-            "入库降级：文件进入稍后重试队列 file=%s reason=%s pending=%s",
-            file_path,
-            reason,
-            pending_count,
-        )
 
     def show_toast(self, message: str, *, success: bool) -> None:
         self.quick_menu.show_feedback(
@@ -4642,31 +5062,44 @@ class HaypileFloatingBall(QWidget):
         try:
             self._save_gui_state({"x": self.x(), "y": self.y()})
         except OSError:
-            logger.debug("Failed to save Haypile window position", exc_info=True)
+            logger.debug("Failed to save Haypile window position")
 
     def _default_ai_enabled(self) -> bool:
         return bool(self.settings.VISION_CLASSIFIER_ENABLED) and not self.low_power_enabled
 
     def _restore_ai_enabled(self) -> bool:
-        return bool(self._ai_preference) and not self.low_power_enabled
+        if self.low_power_enabled or self.ai_provider_mode == "off":
+            return False
+        if self.ai_provider_mode == "api":
+            return bool(self.ai_api_base_url and self.ai_api_model and self._session_api_key)
+        return bool(self._ai_preference)
 
     def _save_ai_enabled(self) -> None:
         if not self.low_power_enabled:
             self._ai_preference = bool(self.ai_enabled)
         try:
-            self._save_gui_state({"ai_enabled": self._ai_preference})
+            self._save_gui_state(
+                {
+                    "ai_enabled": self._ai_preference,
+                    "ai_provider": self.ai_provider_mode,
+                }
+            )
         except OSError:
-            logger.debug("Failed to save Haypile AI setting", exc_info=True)
+            logger.debug("Failed to save Haypile AI setting")
 
     def _set_low_power_enabled(self, enabled: bool) -> None:
+        if enabled and self.ai_enabled and self.ai_provider_mode == "off":
+            self.ai_provider_mode = "local"
         self.low_power_enabled = bool(enabled)
         if self.low_power_enabled:
             self._ai_preference = bool(self.ai_enabled or self._ai_preference)
             self.ai_enabled = False
             self._drag_awareness_timer.stop()
             self._clear_external_drag_candidate()
+            self._ai_batch_queue.clear()
+            self._shutdown_ai_batch_worker()
         else:
-            self.ai_enabled = bool(self._ai_preference)
+            self.ai_enabled = self._restore_ai_enabled()
             if self.isVisible() and (sys.platform == "darwin" or sys.platform.startswith("win")):
                 self._drag_awareness_timer.start()
         try:
@@ -4677,7 +5110,7 @@ class HaypileFloatingBall(QWidget):
                 }
             )
         except OSError:
-            logger.debug("Failed to save Haypile low-power setting", exc_info=True)
+            logger.debug("Failed to save Haypile low-power setting")
         self._sync_visual_timer()
         self._refresh_ai_menu_status()
         self.show_toast(
@@ -4687,13 +5120,118 @@ class HaypileFloatingBall(QWidget):
             success=True,
         )
 
+    def _current_ai_provider_config(self) -> AIProviderConfig:
+        if not self.ai_enabled or self.low_power_enabled or self.ai_provider_mode == "off":
+            return AIProviderConfig(mode="off")
+        if self.ai_provider_mode == "api":
+            return AIProviderConfig(
+                mode="api",
+                base_url=self.ai_api_base_url,
+                model=self.ai_api_model,
+                api_key=self._session_api_key,
+                authorized_host=self.ai_api_authorized_host,
+            )
+        return AIProviderConfig(
+            mode="local",
+            base_url=str(self.settings.VISION_CLASSIFIER_BASE_URL),
+            model=str(self.settings.VISION_CLASSIFIER_MODEL),
+        )
+
+    def _set_ai_provider_mode(self, mode: str) -> None:
+        if mode not in {"local", "api", "off"}:
+            return
+        self.ai_provider_mode = mode
+        self._ai_preference = mode != "off"
+        if mode == "off" or self.low_power_enabled:
+            self.ai_enabled = False
+            self._ai_batch_queue.clear()
+            self._shutdown_ai_batch_worker()
+        elif mode == "local":
+            self.ai_enabled = True
+        else:
+            self.ai_enabled = bool(
+                self.ai_api_base_url and self.ai_api_model and self._session_api_key
+            )
+        try:
+            self._save_gui_state(
+                {
+                    "ai_provider": self.ai_provider_mode,
+                    "ai_enabled": self._ai_preference,
+                }
+            )
+        except OSError:
+            logger.debug("Failed to save Haypile AI provider")
+        self._refresh_ai_menu_status()
+        if mode == "api" and not self.ai_enabled:
+            self.show_toast(ui_text("填写 API 配置后保存授权", "Enter API settings and authorize"), success=False)
+        else:
+            self.show_toast(self._ai_status_text(), success=True)
+
+    def _save_api_provider(self) -> None:
+        base_value = self.quick_menu.ai_api_base_input.text().strip()
+        model = self.quick_menu.ai_api_model_input.text().strip()
+        entered_key = self.quick_menu.ai_api_key_input.text().strip()
+        try:
+            base_url = normalize_api_base_url(base_value)
+            host = api_authority(base_url)
+        except ValueError:
+            self.show_toast(
+                ui_text("API 地址无效；远程服务必须使用 HTTPS", "Invalid API URL; remote services require HTTPS"),
+                success=False,
+            )
+            return
+        if not model:
+            self.show_toast(ui_text("请填写模型名称", "Enter a model name"), success=False)
+            return
+        host_changed = bool(self.ai_api_authorized_host and host != self.ai_api_authorized_host)
+        if host_changed and not entered_key:
+            self.show_toast(ui_text("更换域名后请重新填写密钥授权", "Enter the key again for the new domain"), success=False)
+            return
+        key = entered_key
+        if not key and host == self.ai_api_authorized_host:
+            key = self._session_api_key or SystemCredentialStore.get(host)
+        if not key:
+            self.show_toast(ui_text("请填写 API 密钥", "Enter an API key"), success=False)
+            return
+
+        stored = SystemCredentialStore.set(host, key)
+        self.ai_provider_mode = "api"
+        self.ai_api_base_url = base_url
+        self.ai_api_model = model
+        self.ai_api_authorized_host = host
+        self.ai_api_key_present = stored
+        self._session_api_key = key
+        self._ai_preference = True
+        self.ai_enabled = not self.low_power_enabled
+        try:
+            self._save_gui_state(
+                {
+                    "ai_provider": "api",
+                    "ai_enabled": True,
+                    "ai_api_base_url": base_url,
+                    "ai_api_model": model,
+                    "ai_api_authorized_host": host,
+                    "ai_api_key_present": stored,
+                }
+            )
+        except OSError:
+            logger.debug("Failed to save Haypile API provider settings")
+        self.quick_menu.ai_api_key_input.clear()
+        self._refresh_ai_menu_status()
+        self.show_toast(
+            ui_text("API 已授权", "API authorized")
+            if stored
+            else ui_text("API 仅在本次会话可用", "API available for this session only"),
+            success=True,
+        )
+
     def _set_language_mode(self, mode: str) -> None:
         self.language_mode = mode if mode in {"auto", "zh", "en"} else "auto"
         set_ui_language(self.language_mode)
         try:
             self._save_gui_state({"language": self.language_mode})
         except OSError:
-            logger.debug("Failed to save Haypile language setting", exc_info=True)
+            logger.debug("Failed to save Haypile language setting")
         self.quick_menu.retranslate()
         self.material_panel.refresh()
         self._refresh_ai_menu_status()
@@ -4726,6 +5264,17 @@ class HaypileFloatingBall(QWidget):
         self.remote_worker.deleteLater()
         self.remote_worker = None
 
+    def _shutdown_ai_batch_worker(self) -> None:
+        if self.ai_batch_worker is None:
+            return
+        if self.ai_batch_worker.isRunning():
+            self.ai_batch_worker.requestInterruption()
+            if not self.ai_batch_worker.wait(1800):
+                self.ai_batch_worker.terminate()
+                self.ai_batch_worker.wait(600)
+        self.ai_batch_worker.deleteLater()
+        self.ai_batch_worker = None
+
     def shutdown(self) -> None:
         if self._cleanup_done:
             return
@@ -4742,6 +5291,7 @@ class HaypileFloatingBall(QWidget):
             self._audio_suction_animation.stop()
         self._shutdown_remote_worker()
         self._shutdown_worker()
+        self._shutdown_ai_batch_worker()
         self.stop_api_server()
         self.quick_menu.hide()
         self.quick_menu.close()
@@ -4798,6 +5348,29 @@ class HaypileFloatingBall(QWidget):
             QApplication.clipboard().setText(base_url)
             self.show_toast(ui_text(f"已复制 HTTP 地址 {base_url}", f"HTTP URL copied {base_url}"), success=True)
             return
+        if action == "latest_handoff":
+            service = BundleService()
+            latest = service.get_latest_batch()
+            if latest is None:
+                self.show_toast(ui_text("还没有最新批次", "No latest batch"), success=False)
+                return
+            batch_id = str(latest["id"])
+            bundles = service.list_bundles(status="ready", batch_id=batch_id)
+            if not bundles:
+                self.show_toast(ui_text("最新批次还没有可用素材", "Latest batch has no ready assets"), success=False)
+                return
+            QApplication.clipboard().setText(
+                json.dumps(
+                    self.material_panel._handoff_for_bundles(bundles, batch_id=batch_id),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            self.show_toast(
+                ui_text(f"已复制最新批次 {len(bundles)} 个素材", f"Copied {len(bundles)} latest assets"),
+                success=True,
+            )
+            return
         if action == "ready_handoff":
             bundles = BundleService().list_bundles(status="ready")
             if not bundles:
@@ -4815,20 +5388,23 @@ class HaypileFloatingBall(QWidget):
         if action == "ai_setup":
             self._show_ai_setup_panel(self._ai_model_status_text())
             return
+        if action.startswith("ai_provider:"):
+            self._set_ai_provider_mode(action.partition(":")[2])
+            return
+        if action == "ai_save_api":
+            self._save_api_provider()
+            return
         if action == "ai_toggle":
-            if not self.ai_enabled and self.low_power_enabled:
-                self.show_toast(self._ai_status_text(), success=False)
+            if self.ai_enabled:
+                self._set_ai_provider_mode("off")
                 return
-            if not self.ai_enabled:
-                state, status_text = self._ai_model_state()
-                if state != "ready":
-                    self._show_ai_setup_panel(status_text)
-                    return
-            self.ai_enabled = not self.ai_enabled
-            self._ai_preference = self.ai_enabled
-            self._save_ai_enabled()
-            self._refresh_ai_menu_status()
-            self.show_toast(self._ai_status_text(), success=True)
+            self.ai_provider_mode = "local"
+            state, status_text = self._ai_model_state()
+            if state != "ready":
+                self.ai_enabled = False
+                self._show_ai_setup_panel(status_text)
+                return
+            self._set_ai_provider_mode("local")
             return
         if action == "ai_copy_command":
             model = str(self.settings.VISION_CLASSIFIER_MODEL or "qwen2.5vl:3b")
@@ -4872,19 +5448,35 @@ class HaypileFloatingBall(QWidget):
             low_power=self.low_power_enabled,
             language=self.language_mode,
             service_status=self._status_text(),
+            ai_provider=self.ai_provider_mode,
+            api_base_url=self.ai_api_base_url,
+            api_model=self.ai_api_model,
+            api_key_present=self.ai_api_key_present,
         )
 
     def _ai_status_text(self) -> str:
         if self.low_power_enabled:
             return ui_text("低功耗模式 · AI 分拣关闭", "Low power · AI sorting off")
-        if not self.ai_enabled:
+        if self.ai_provider_mode == "off":
             return ui_text("AI 分拣已关闭", "AI sorting off")
-        return ui_text("AI 分拣已开启", "AI sorting on")
+        if self.ai_provider_mode == "api":
+            return (
+                ui_text(f"API 模式 · {self.ai_api_model}", f"API mode · {self.ai_api_model}")
+                if self.ai_enabled
+                else ui_text("API 模式 · 等待授权", "API mode · authorization needed")
+            )
+        return ui_text("本地模型模式", "Local model mode")
 
     def _ai_model_status_text(self) -> str:
         return self._ai_model_state()[1]
 
     def _ai_model_state(self) -> tuple[str, str]:
+        if self.ai_provider_mode == "off":
+            return "off", ui_text("AI 分拣已关闭", "AI sorting off")
+        if self.ai_provider_mode == "api":
+            if self.ai_enabled and self._session_api_key:
+                return "ready", ui_text(f"API 已配置 {self.ai_api_model}", f"API configured {self.ai_api_model}")
+            return "missing", ui_text("API 等待授权", "API authorization needed")
         model = str(self.settings.VISION_CLASSIFIER_MODEL or "").strip() or "unknown"
         base_url = str(self.settings.VISION_CLASSIFIER_BASE_URL or "").rstrip("/")
         if not base_url:
@@ -4908,9 +5500,15 @@ class HaypileFloatingBall(QWidget):
     def _show_ai_setup_panel(self, status_text: str) -> None:
         self.quick_menu.open_drawer("ai", self._ball_anchor_rect(), self._available_geometry())
         self.quick_menu.ai_status_label.setText(status_text)
-        self.show_toast(ui_text("先安装本地视觉模型", "Install the local vision model first"), success=False)
+        if self.ai_provider_mode == "local" and self._ai_model_state()[0] != "ready":
+            self.show_toast(ui_text("先安装本地视觉模型", "Install the local vision model first"), success=False)
 
     def _recheck_ai_setup(self) -> None:
+        if self.ai_provider_mode == "off":
+            self.ai_provider_mode = "local"
+        if self.ai_provider_mode != "local":
+            self._refresh_ai_menu_status()
+            return
         state, status_text = self._ai_model_state()
         if state == "ready":
             self.ai_enabled = True
@@ -5802,7 +6400,10 @@ class HaypileFloatingBall(QWidget):
         self.update()
 
     def _visual_state_active(self) -> bool:
-        busy = self.worker is not None and self.worker.isRunning()
+        busy = bool(
+            (self.worker is not None and self.worker.isRunning())
+            or (self.ai_batch_worker is not None and self.ai_batch_worker.isRunning())
+        )
         if self.low_power_enabled:
             return (
                 self._drag_hover
@@ -5903,7 +6504,7 @@ class HaypileFloatingBall(QWidget):
         try:
             self._has_pending_assets = build_material_panel_summary().pending_count > 0
         except Exception:
-            logger.debug("Failed to refresh Haypile pending badge", exc_info=True)
+            logger.debug("Failed to refresh Haypile pending badge")
             self._has_pending_assets = False
         if not self._has_pending_assets and self.quick_menu._attention_action == "status":
             self.quick_menu.set_attention_action("")
@@ -6003,7 +6604,7 @@ class HaypileFloatingBall(QWidget):
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except OSError as exc:
-            logger.debug("Failed to kill process tree pid=%s error=%s", pid, exc, exc_info=True)
+            logger.debug("Failed to kill process tree pid=%s error_type=%s", pid, type(exc).__name__)
             return
 
 def main(argv: list[str] | None = None) -> int:
@@ -6014,7 +6615,10 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["HAYPILE_BACKEND_HOST_ALLOW_START"] = "1"
         from backend_host import main as backend_main
 
-        return backend_main()
+        try:
+            return backend_main()
+        except KeyboardInterrupt:
+            return 0
     if "--mcp" in args:
         from mcp_server import main as mcp_main
 

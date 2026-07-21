@@ -15,7 +15,7 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0a1"
 SOURCE_BASE_DIR = Path(__file__).resolve().parents[2]
 _MODE_FILES = {"backend": "backend_host.py", "mcp": "mcp_server.py"}
 
