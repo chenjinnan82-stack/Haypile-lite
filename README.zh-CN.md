@@ -18,17 +18,12 @@
 
 </div>
 
-## 下载
+## 安全 Alpha
 
-桌面测试包不需要安装 Python。
+`v0.3.0-alpha.2` 正在完成存储、媒体、IPC 和发布链加固，新的桌面下载暂时
+停止分发。历史测试 Release 仍保留用于追溯，但不建议新的种子用户继续安装。
 
-| 平台 | 下载 | 说明 |
-| --- | --- | --- |
-| macOS Apple Silicon | [应用 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc 签名；解压后右键“打开” |
-| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip.sha256) | 未签名预览版；SmartScreen 可能提示 |
-
-仓库当前包含 `v0.3.0-alpha.1` 源码候选。只有 macOS 和 Windows 验收通过后，
-这里才会替换为新的桌面安装包，避免说明和下载版本错位。
+Haypile 会保存受控的本地副本，但 Alpha 版本不应成为不可替代素材的唯一备份。
 
 ## 看它怎么工作
 
@@ -62,7 +57,7 @@ Haypile 的本地优先不是一句口号：
   `gui_state.json`、日志、provenance 或 handoff。
 - 云端视觉请求不发送原始文件名和本地绝对路径。
 
-安全边界问题请按 [SECURITY.md](SECURITY.md) 私下报告。
+安全边界问题请按 [SECURITY.md](SECURITY.md) 或通过 [GitHub 私密漏洞报告](https://github.com/chenjinnan82-stack/Haypile-lite/security/advisories/new) 提交。
 
 ## v0.3 增加了什么
 

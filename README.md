@@ -18,18 +18,15 @@ A local-first asset intake for AI creators and independent developers.
 
 </div>
 
-## Download
+## Safety Alpha
 
-No Python is required for the desktop test builds.
+New desktop downloads are temporarily paused while `v0.3.0-alpha.2` storage,
+media, IPC, and release hardening is verified on macOS and Windows. Historical
+test releases remain available for provenance, but are not recommended for new
+seed-user testing.
 
-| Platform | Download | Notes |
-| --- | --- | --- |
-| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed; right-click **Open** |
-| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned preview; SmartScreen may warn |
-
-The repository currently contains the `v0.3.0-alpha.1` source candidate. New
-desktop packages will replace the links above only after macOS and Windows
-validation passes.
+Haypile keeps controlled local copies, but an Alpha build must not be the only
+backup of material you cannot replace.
 
 ## See It Work
 
@@ -63,7 +60,7 @@ Haypile is local-first by design:
   `gui_state.json`, logs, provenance, or handoff data.
 - Cloud vision requests omit original filenames and local absolute paths.
 
-See [Security Policy](SECURITY.md) for reporting security boundary failures.
+See [Security Policy](SECURITY.md) or [report privately on GitHub](https://github.com/chenjinnan82-stack/Haypile-lite/security/advisories/new).
 
 ## What v0.3 Adds
 

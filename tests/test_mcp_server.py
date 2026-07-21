@@ -78,7 +78,7 @@ class McpServerTests(unittest.TestCase):
         )
 
         response = json.loads(process.stdout)
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.1")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.2")
         self.assertNotIn("PySide6", process.stderr)
 
     def test_lists_haypile_tools(self) -> None:
@@ -103,7 +103,7 @@ class McpServerTests(unittest.TestCase):
                 }
             )
 
-        get_json.assert_called_once_with("/api/v1/bundles?status=ready&type=image&role=hero_image")
+        get_json.assert_called_once_with("/api/v1/bundles?status=ready&type=image&role=hero_image&limit=100")
         payload = json.loads(response["result"]["content"][0]["text"])
         self.assertEqual(payload, [{"id": "hero"}])
 
@@ -173,7 +173,7 @@ class McpServerTests(unittest.TestCase):
             )
 
         list_bundles.assert_called_once_with(
-            status="ready", asset_type="image", role=None, theme_id=None, audio_usage=None, batch_id=None, limit=None, cursor=None
+            status="ready", asset_type="image", role=None, theme_id=None, audio_usage=None, batch_id=None, limit=100, cursor=None
         )
         payload = json.loads(response["result"]["content"][0]["text"])
         self.assertEqual(payload["source"], "haypile")
@@ -199,7 +199,7 @@ class McpServerTests(unittest.TestCase):
             theme_id=None,
             audio_usage=None,
             batch_id="batch-1",
-            limit=None,
+            limit=100,
             cursor=None,
         )
         self.assertEqual(payload["batch_id"], "batch-1")
@@ -219,7 +219,7 @@ class McpServerTests(unittest.TestCase):
             theme_id=None,
             audio_usage=None,
             batch_id="batch-2",
-            limit=None,
+            limit=100,
             cursor=None,
         )
 
@@ -253,6 +253,7 @@ class McpServerTests(unittest.TestCase):
             [sys.executable, str(server_path)],
             input=(
                 json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}) + "\n"
+                + json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
                 + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n"
             ),
             text=True,
@@ -263,9 +264,32 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "haypile")
-        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.1")
+        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.2")
         names = [tool["name"] for tool in responses[1]["result"]["tools"]]
         self.assertIn("haypile_copy_handoff", names)
+
+    def test_malformed_and_oversized_messages_do_not_end_stdio_session(self) -> None:
+        server_path = Path(mcp_server.__file__)
+        oversized = "x" * (mcp_server.MAX_LINE_BYTES + 1)
+        process = subprocess.run(
+            [sys.executable, str(server_path)],
+            input=(
+                oversized + "\n"
+                + "{not-json}\n"
+                + json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}) + "\n"
+                + json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
+                + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n"
+            ),
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+
+        responses = [json.loads(line) for line in process.stdout.splitlines()]
+        self.assertEqual([responses[0]["error"]["code"], responses[1]["error"]["code"]], [-32700, -32700])
+        self.assertEqual(responses[2]["result"]["serverInfo"]["version"], "0.3.0-alpha.2")
+        self.assertIn("tools", responses[3]["result"])
 
 
 if __name__ == "__main__":

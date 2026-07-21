@@ -237,10 +237,19 @@ class MaterialSummaryTests(unittest.TestCase):
             VISION_CLASSIFIER_BASE_URL="http://127.0.0.1:11434",
         )
         material_summary_module._classifier_status_cached.cache_clear()
-        with patch.object(material_summary_module.urllib.request, "urlopen", return_value=FakeResponse()):
+        class FakeOpener:
+            def open(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        with patch.object(
+            material_summary_module.urllib.request,
+            "build_opener",
+            return_value=FakeOpener(),
+        ) as build_opener:
             status = material_summary_module._classifier_status(settings)
 
         self.assertEqual(status, "模型：未安装 qwen3-vl:8b")
+        self.assertEqual(build_opener.call_count, 1)
 
     def test_summary_shows_ready_rehearsal_as_one_plain_status(self) -> None:
         rehearsal_root = self.tmpdir / "rehearsal"

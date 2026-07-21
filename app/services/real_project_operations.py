@@ -114,6 +114,45 @@ def execute_haypile_minimal_real_project_rollback(
     if state != "applied_verified":
         raise HaypileRealProjectOperationError("rollback requires applied_verified state")
 
+    conflicts: list[str] = []
+    for entry in context["entries"]:
+        if entry.get("existed_before") is True:
+            continue
+        path_ref = _safe_relative_path(entry.get("path_ref"))
+        target = _resolve_under(context["project_root"], path_ref)
+        if not target.is_file():
+            continue
+        applied_hash = str(entry.get("applied_sha256") or entry.get("source_sha256") or "").strip()
+        if not applied_hash or _sha256(target) != applied_hash:
+            conflicts.append(path_ref)
+    if conflicts:
+        conflict_report = {
+            "report_type": "haypile_real_project_minimal_rollback_report",
+            "version": "haypile_real_project_minimal_rollback_report.v1",
+            "status": "conflict",
+            "passed": False,
+            "checked_at": _timestamp(),
+            "conflicts": conflicts,
+            "removed_files": [],
+            "remaining_written_files": conflicts,
+            "auto_rollback_allowed": False,
+        }
+        _write_json(context["report_root"] / ROLLBACK_REPORT_NAME, conflict_report)
+        return {
+            "operation_type": "haypile_minimal_real_project_rollback",
+            "version": "haypile_minimal_real_project_rollback.v1",
+            "status": "conflict",
+            "passed": False,
+            "project_root": context["project_root"].as_posix(),
+            "conflicts": conflicts,
+            "removed_files": [],
+            "remaining_written_files": conflicts,
+            "operation_count": 0,
+            "write_scope": "explicit_user_selected_project_root",
+            "auto_rollback_allowed": False,
+            "requires_human_confirmation": True,
+        }
+
     removed_files: list[str] = []
     missing_files: list[str] = []
     preserved_files: list[str] = []

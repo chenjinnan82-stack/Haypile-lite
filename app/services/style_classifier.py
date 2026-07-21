@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import os
@@ -9,10 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-from xml.etree import ElementTree
 
 import httpx
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -29,6 +29,7 @@ from app.services.ai_provider import (
     chat_completions_url,
     normalize_api_base_url,
 )
+from app.services.media_validator import MediaValidationError, validate_raster, validate_svg
 
 logger = logging.getLogger(__name__)
 
@@ -174,13 +175,14 @@ class StyleClassifier:
                 source="guard",
             )
 
+        if image_path.suffix.lower() == ".svg":
+            return self._fallback_result(
+                reason="svg_ai_upload_disabled",
+                role="unknown",
+                source="guard",
+            )
         try:
-            if image_path.stat().st_size > self.max_image_bytes:
-                return self._fallback_result(
-                    reason="image_too_large",
-                    role="unknown",
-                    source="guard",
-                )
+            image_path.stat()
         except OSError:
             return self._fallback_result(
                 reason="image_stat_failed",
@@ -188,7 +190,7 @@ class StyleClassifier:
                 source="guard",
             )
 
-        image_b64 = self._encode_image_base64(image_path)
+        image_b64, preview_media_type = self._encode_image_preview(image_path)
         if not image_b64:
             return self._fallback_result(
                 reason="image_encode_failed",
@@ -201,7 +203,7 @@ class StyleClassifier:
         payload = self._build_request_payload(
             prompt=prompt,
             image_b64=image_b64,
-            media_type=self._image_media_type(image_path),
+            media_type=preview_media_type,
         )
 
         raw, runtime_receipt = await self._call_model(payload)
@@ -260,15 +262,41 @@ class StyleClassifier:
             normalized.append(self.fallback_theme)
         return normalized or [self.fallback_theme]
 
-    @staticmethod
-    def _encode_image_base64(image_path: Path) -> str:
+    def _encode_image_preview(self, image_path: Path) -> tuple[str, str]:
         try:
-            binary = image_path.read_bytes()
-        except OSError:
-            return ""
-        if not binary:
-            return ""
-        return base64.b64encode(binary).decode("utf-8")
+            validate_raster(image_path)
+            with Image.open(image_path) as opened:
+                image = ImageOps.exif_transpose(opened)
+                image.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+                has_alpha = "A" in image.getbands() or "transparency" in image.info
+                if has_alpha:
+                    image = image.convert("RGBA")
+                    media_type, image_format = "image/png", "PNG"
+                    save_options: dict[str, Any] = {"optimize": True}
+                else:
+                    image = image.convert("RGB")
+                    media_type, image_format = "image/jpeg", "JPEG"
+                    save_options = {"quality": 86, "optimize": True, "progressive": True}
+                for _attempt in range(5):
+                    buffer = io.BytesIO()
+                    image.save(buffer, format=image_format, **save_options)
+                    payload = buffer.getvalue()
+                    if payload and len(payload) <= self.max_image_bytes:
+                        return base64.b64encode(payload).decode("ascii"), media_type
+                    next_width = max(1, int(image.width * 0.78))
+                    next_height = max(1, int(image.height * 0.78))
+                    if (next_width, next_height) == image.size:
+                        break
+                    image = image.resize((next_width, next_height), Image.Resampling.LANCZOS)
+        except (
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+            UnidentifiedImageError,
+            OSError,
+            ValueError,
+        ):
+            return "", "image/jpeg"
+        return "", "image/jpeg"
 
     def _build_prompt(
         self, candidate_themes: list[str], metadata: dict[str, Any]
@@ -626,8 +654,8 @@ class StyleClassifier:
     def technical_quality(self, image_path: Path, role: str) -> tuple[str, str]:
         if image_path.suffix.lower() == ".svg":
             try:
-                ElementTree.parse(image_path)
-            except (ElementTree.ParseError, OSError):
+                validate_svg(image_path)
+            except MediaValidationError:
                 return "low", "invalid_svg"
             return "high", "scalable_vector"
 
@@ -744,22 +772,10 @@ class StyleClassifier:
     @staticmethod
     def _read_svg_dimensions(image_path: Path) -> tuple[int | None, int | None]:
         try:
-            root = ElementTree.parse(image_path).getroot()
-        except (ElementTree.ParseError, OSError):
+            validated = validate_svg(image_path)
+        except MediaValidationError:
             return None, None
-        width = StyleClassifier._parse_numeric_dimension(root.attrib.get("width"))
-        height = StyleClassifier._parse_numeric_dimension(root.attrib.get("height"))
-        if width is not None and height is not None:
-            return width, height
-        viewbox = root.attrib.get("viewBox")
-        if viewbox:
-            parts = [part for part in viewbox.replace(",", " ").split() if part]
-            if len(parts) == 4:
-                try:
-                    return int(float(parts[2])), int(float(parts[3]))
-                except ValueError:
-                    return None, None
-        return None, None
+        return validated.width, validated.height
 
     @staticmethod
     def _parse_numeric_dimension(value: str | None) -> int | None:

@@ -109,12 +109,12 @@ Bundle payload:
 
 ```json
 {
-  "id": "generic_img_hero_image_abcd1234",
+  "id": "4d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f25",
   "theme_id": "generic",
   "type": "image",
   "role": "hero_image",
   "status": "ready",
-  "sha256": "abcd...",
+  "sha256": "4d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f25",
   "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
   "access": "manifest_static",
   "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
@@ -127,7 +127,9 @@ Bundle payload:
 
 Fields:
 
-- `id`: stable bundle id derived from the registered asset filename.
+- `id`: full SHA-256 content identity for a registered asset. During the
+  migration window, a unique legacy filename stem is accepted only as a lookup
+  alias; responses always return the canonical identity.
 - `theme_id`: theme bucket.
 - `type`: currently `image` or `audio`.
 - `role`: `main_background`, `hero_image`, `logo`, `icon`, `content_image`,
@@ -222,12 +224,12 @@ Set `HAYPILE_BASE_URL` when the backend is not using
   "base_url": "http://127.0.0.1:8010",
   "assets": [
     {
-      "id": "generic_img_hero_image_abcd1234",
+      "id": "4d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f25",
       "theme_id": "generic",
       "type": "image",
       "role": "hero_image",
       "status": "ready",
-      "sha256": "abcd...",
+      "sha256": "4d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f254d8c6f25",
       "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
       "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
       "access": "manifest_static",

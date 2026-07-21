@@ -10,8 +10,8 @@ Haypile Lite is local-first. The intended trust boundary is:
 
 Please do not open a public issue for a vulnerability.
 
-Email the maintainer or use GitHub's private vulnerability reporting if it is
-enabled for the repository. Include:
+Use [GitHub Private Vulnerability Reporting](https://github.com/chenjinnan82-stack/Haypile-lite/security/advisories/new),
+which is enabled for this repository, or email the maintainer. Include:
 
 - A short description.
 - Steps to reproduce.
@@ -20,9 +20,9 @@ enabled for the repository. Include:
 
 ## Supported Version
 
-The downloadable desktop test builds are currently `v0.2.x`. The repository may
-contain a `v0.3.x` prerelease candidate before matching packages are published;
-include the exact commit when reporting candidate-source issues.
+New desktop downloads are paused while `v0.3.0-alpha.2` hardening is verified.
+Historical `v0.2.x` test assets remain available for provenance but are not the
+supported seed-user path. Include the exact commit when reporting source issues.
 
 ## Notes
 

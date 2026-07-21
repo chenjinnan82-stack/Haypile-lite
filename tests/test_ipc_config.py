@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from tempfile import TemporaryDirectory
 from pathlib import Path
 
@@ -49,29 +49,38 @@ class IpcConfigTests(unittest.TestCase):
 
     def test_send_ipc_request_uses_configured_authkey_and_logs_failure(self) -> None:
         settings = Settings(_env_file=None, IPC_AUTHKEY="local-secret")
+        raw_socket = MagicMock()
+        raw_socket.detach.return_value = 42
+        connection = MagicMock()
+        connection.poll.return_value = False
 
         with (
             patch("app.core.ipc.get_settings", return_value=settings),
-            patch("app.core.ipc.Client", side_effect=OSError("no listener")) as client,
-            self.assertLogs("app.core.ipc", level="DEBUG") as logs,
+            patch("app.core.ipc.socket.socket", return_value=raw_socket),
+            patch("app.core.ipc.Connection", return_value=connection),
+            patch("app.core.ipc.authenticate_ipc_connection") as authenticate,
         ):
             result = ipc.send_ipc_request({"action": "ping"}, address="local-address", timeout=0.01)
 
         self.assertIsNone(result)
-        self.assertEqual(client.call_args.kwargs["authkey"], b"local-secret")
-        self.assertTrue(any("Haypile IPC request failed" in line for line in logs.output))
+        self.assertEqual(raw_socket.settimeout.call_args_list[0].args, (0.01,))
+        self.assertEqual(raw_socket.settimeout.call_args_list[1].args, (None,))
+        authenticate.assert_called_once_with(
+            connection,
+            b"local-secret",
+            timeout=0.01,
+            server=False,
+        )
+        connection.close.assert_called_once_with()
 
-    def test_start_ipc_listener_uses_configured_authkey(self) -> None:
-        settings = Settings(_env_file=None, IPC_AUTHKEY="listener-secret")
-
+    def test_start_ipc_listener_defers_authentication_to_timed_connection_handler(self) -> None:
         with (
-            patch("app.core.ipc.get_settings", return_value=settings),
             patch("app.core.ipc.cleanup_unix_socket"),
             patch("app.core.ipc.Listener") as listener,
         ):
             ipc.start_ipc_listener(address="local-address")
 
-        self.assertEqual(listener.call_args.kwargs["authkey"], b"listener-secret")
+        self.assertIsNone(listener.call_args.kwargs["authkey"])
 
 
 if __name__ == "__main__":

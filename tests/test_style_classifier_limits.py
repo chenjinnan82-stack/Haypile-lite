@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,19 +15,20 @@ from app.core.config import get_settings
 from app.services.style_classifier import StyleClassificationResult, StyleClassifier
 
 
-def test_style_classifier_rejects_large_image_before_base64(tmp_path) -> None:
+def test_style_classifier_builds_bounded_metadata_free_preview(tmp_path) -> None:
     image = tmp_path / "large.png"
-    image.write_bytes(b"x" * 32)
+    Image.new("RGB", (4096, 3072), (50, 120, 80)).save(image, pnginfo=None)
     classifier = StyleClassifier.__new__(StyleClassifier)
-    classifier.enabled = True
-    classifier.max_image_bytes = 8
-    classifier.fallback_theme = "generic"
+    classifier.max_image_bytes = 8 * 1024 * 1024
 
-    result = asyncio.run(classifier.classify_image(image, candidate_themes=["generic"]))
+    encoded, media_type = classifier._encode_image_preview(image)
+    payload = base64.b64decode(encoded)
+    with Image.open(io.BytesIO(payload)) as preview:
+        self_size = preview.size
 
-    assert result.theme_id == "generic"
-    assert result.reason == "image_too_large"
-    assert result.source == "guard"
+    assert media_type == "image/jpeg"
+    assert len(payload) <= classifier.max_image_bytes
+    assert max(self_size) <= 2048
 
 
 def test_ingest_worker_does_not_run_visual_classification() -> None:

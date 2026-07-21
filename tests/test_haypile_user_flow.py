@@ -167,9 +167,9 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
                     "TALB": type("Tag", (), {"text": ["Haypile"]})(),
                 }
 
-        with patch(
-            "app.services.scanner.MutagenFile",
-            side_effect=lambda path: FakeAudio() if Path(path).suffix == ".m4a" else None,
+        fake_audio = lambda path: FakeAudio() if Path(path).suffix == ".m4a" else None
+        with patch("app.services.scanner.MutagenFile", side_effect=fake_audio), patch(
+            "app.services.media_validator.MutagenFile", side_effect=fake_audio
         ):
             manifest = AssetScanner(self.assets_dir, self.manifest_path)._scan_assets_directory_sync()
 
@@ -209,6 +209,26 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
 
         self.assertTrue(finished[-1][1])
         self.assertIn("新增 1", finished[-1][0])
+
+    def test_batch_is_durable_before_manifest_projection(self) -> None:
+        image = self.tmpdir / "durable.svg"
+        image.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>',
+            encoding="utf-8",
+        )
+        observed_batch_ids: list[str] = []
+
+        async def observe_completed_batch(_scanner) -> dict[str, object]:
+            latest = StorageRuntimeDB(self.runtime_db_path).latest_batch()
+            self.assertIsNotNone(latest)
+            observed_batch_ids.append(str(latest["id"]))
+            return {}
+
+        worker = IngestWorker([image], self.assets_dir, ai_enabled=False)
+        with patch.object(AssetScanner, "scan_assets_directory", new=observe_completed_batch):
+            worker.run()
+
+        self.assertEqual(len(observed_batch_ids), 1)
 
     def test_ai_failure_does_not_undo_ingest_or_mark_asset_ready(self) -> None:
         image = self.tmpdir / "pending.svg"

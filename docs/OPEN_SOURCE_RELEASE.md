@@ -1,6 +1,6 @@
 # v0.3 Open Source Release Copy
 
-Draft copy for `v0.3.0-alpha.1`. Do not publish it until the private image
+Draft copy for `v0.3.0-alpha.2`. Do not publish it until the private image
 evaluation, macOS/Windows package checks, and 3–5 user pilot have passed.
 
 ## GitHub About
@@ -26,7 +26,7 @@ provenance
 
 ## Release Title
 
-Haypile v0.3.0-alpha.1 · Current-project AI asset intake
+Haypile v0.3.0-alpha.2 · Security-hardened current-project AI asset intake
 
 ## GitHub Release Body
 
@@ -46,15 +46,15 @@ remain supported.
 - Local Ollama, authorized OpenAI-compatible API, or no-AI operation.
 - Latest-batch handoff through read-only HTTP and MCP.
 - API keys remain in Keychain or Credential Manager, never public metadata.
-- 230 automated tests plus source backend/MCP smoke checks.
+- 262 automated tests plus source backend/MCP smoke checks.
 
 ### Install
 
 Attach these files only after both platform builds pass:
 
 ```text
-Haypile-v0.3.0-alpha.1-macos-arm64.app.zip
-Haypile-v0.3.0-alpha.1-windows-x64.zip
+Haypile-v0.3.0-alpha.2-macos-arm64.app.zip
+Haypile-v0.3.0-alpha.2-windows-x64.zip
 matching .sha256 files
 ```
 

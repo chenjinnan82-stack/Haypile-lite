@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.0-alpha.2 (hardening candidate)
+
+- Pause the older desktop test download path while both platforms are rebuilt.
+- Pin browser imports to verified public IP addresses without ambient proxies or redirects.
+- Stage, validate, fsync, atomically commit, and recover asset intake with storage format v2.
+- Reject decompression bombs, unsafe SVG content, and malformed audio before commit.
+- Quarantine damaged theme contracts and add locked schema revisions.
+- Use full SHA-256 bundle identities with unique legacy aliases during migration.
+- Add per-instance locks, per-connection IPC timeouts, stricter MCP lifecycle handling,
+  and rollback conflict preservation.
+- Mark Alpha storage as a controlled copy, not a user's only backup.
+
 ## v0.3.0-alpha.1 (candidate)
 
 - Store and manifest assets before optional AI classification.

@@ -13,10 +13,12 @@ PYTHON="${PYTHON:-python3.12}"
 VENV="$ROOT/.build-venv"
 BUILD_DIR="$ROOT/build"
 DIST_DIR="$ROOT/dist"
+DEPLOY_DIR="$ROOT/deployment"
+DEPLOY_LOG="$BUILD_DIR/pyside6-deploy.log"
 ICONSET="$BUILD_DIR/Haypile.iconset"
 APP="$DIST_DIR/Haypile.app"
 BIN="$APP/Contents/MacOS/Haypile"
-ZIP="$DIST_DIR/Haypile-v0.3.0-alpha.1-macos-arm64.app.zip"
+ZIP="$DIST_DIR/Haypile-v0.3.0-alpha.2-macos-arm64.app.zip"
 SPEC="$ROOT/pysidedeploy.spec"
 ICON_SOURCE="$ROOT/assets/haypile-app-icon.png"
 SPEC_BACKUP=""
@@ -35,6 +37,7 @@ cleanup() {
     cp "$SPEC_BACKUP" "$SPEC"
     rm -f "$SPEC_BACKUP"
   fi
+  rm -rf "$DEPLOY_DIR"
 }
 trap cleanup EXIT
 
@@ -55,7 +58,7 @@ fi
 SPEC_BACKUP="$(mktemp)"
 cp "$SPEC" "$SPEC_BACKUP"
 
-rm -rf "$ICONSET" "$APP" "$ZIP" "$ZIP.sha256"
+rm -rf "$DEPLOY_DIR" "$ICONSET" "$APP" "$ZIP" "$ZIP.sha256"
 mkdir -p "$ICONSET" "$DIST_DIR"
 
 while read -r pixels filename; do
@@ -74,13 +77,33 @@ done <<'EOF'
 EOF
 iconutil -c icns "$ICONSET" -o "$BUILD_DIR/Haypile.icns"
 
-"$VENV/bin/pyside6-deploy" -c pysidedeploy.spec -f
+"$VENV/bin/pyside6-deploy" -c pysidedeploy.spec -f --keep-deployment-files \
+  2>&1 | tee "$DEPLOY_LOG"
 
 test -x "$BIN"
 test -f "$APP/Contents/Resources/Haypile.icns"
 test -f "$APP/Contents/MacOS/ui_assets/haypile-icon.png"
 test -f "$APP/Contents/MacOS/ui_assets/drop-leaf-frame.svg"
 test -f "$APP/Contents/MacOS/assets/haypile-app-icon.png"
+BUILD_COMMIT="$(git rev-parse HEAD)"
+GITHUB_RUN_ID="${GITHUB_RUN_ID:-local}"
+/usr/bin/python3 -c 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps({"version":"0.3.0-alpha.2","commit":sys.argv[2],"platform":"macos-arm64","workflow_run":sys.argv[3]}, indent=2, sort_keys=True)+"\n")' \
+  "$APP/Contents/Resources/BUILD_INFO.json" "$BUILD_COMMIT" "$GITHUB_RUN_ID"
+test -f "$APP/Contents/Resources/BUILD_INFO.json"
+forbidden_runtime_path="$({
+  find "$APP" -type d -name storage -print -quit
+  find "$APP" -type f \( \
+    -name .env -o \
+    -name ipc_authkey -o \
+    -name assets_manifest.json -o \
+    -name storage_runtime.db -o \
+    -name gui_state.json \
+  \) -print -quit
+} | head -n 1)"
+if [[ -n "$forbidden_runtime_path" ]]; then
+  echo "Haypile.app contains runtime or user state: $forbidden_runtime_path" >&2
+  exit 1
+fi
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.github.chenjinnan82-stack.haypile' "$APP/Contents/Info.plist"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = \
   "io.github.chenjinnan82-stack.haypile"
@@ -92,11 +115,12 @@ fi
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 
-MCP_SMOKE_OUTPUT="$(printf '%s\n%s\n' \
-  '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+MCP_SMOKE_OUTPUT="$(printf '%s\n%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"haypile-build","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   | "$BIN" --mcp)"
-grep -q '"version": "0.3.0-alpha.1"' <<<"$MCP_SMOKE_OUTPUT"
+grep -q '"version": "0.3.0-alpha.2"' <<<"$MCP_SMOKE_OUTPUT"
 
 SMOKE_ROOT="$(mktemp -d)"
 SMOKE_PORT="${HAYPILE_SMOKE_PORT:-18010}"
