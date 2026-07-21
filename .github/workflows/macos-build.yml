@@ -11,8 +11,8 @@ on:
         required: true
         type: string
       release_tag:
-        description: Draft release tag to receive the ZIP
-        required: true
+        description: Optional draft release tag to receive the ZIP
+        required: false
         type: string
 
 permissions:
