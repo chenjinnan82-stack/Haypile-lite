@@ -47,6 +47,7 @@ class IpcConfigTests(unittest.TestCase):
         with patch.dict("os.environ", {"ADMIN_API_KEY": "admin-secret", "IPC_AUTHKEY": ""}, clear=False):
             self.assertEqual(Settings(_env_file=None).IPC_AUTHKEY, "admin-secret")
 
+    @unittest.skipIf(ipc.is_windows(), "Unix socket test")
     def test_send_ipc_request_uses_configured_authkey_and_logs_failure(self) -> None:
         settings = Settings(_env_file=None, IPC_AUTHKEY="local-secret")
         raw_socket = MagicMock()
@@ -56,7 +57,6 @@ class IpcConfigTests(unittest.TestCase):
 
         with (
             patch("app.core.ipc.get_settings", return_value=settings),
-            patch("app.core.ipc.get_listener_family", return_value="AF_UNIX"),
             patch("app.core.ipc.socket.socket", return_value=raw_socket),
             patch("app.core.ipc.Connection", return_value=connection),
             patch("app.core.ipc.authenticate_ipc_connection") as authenticate,
