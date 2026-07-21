@@ -19,6 +19,7 @@ ICONSET="$BUILD_DIR/Haypile.iconset"
 APP="$DIST_DIR/Haypile.app"
 BIN="$APP/Contents/MacOS/Haypile"
 ZIP="$DIST_DIR/Haypile-v0.3.0-alpha.2-macos-arm64.app.zip"
+MACOS_BUILD_VERSION="3002"
 SPEC="$ROOT/pysidedeploy.spec"
 ICON_SOURCE="$ROOT/assets/haypile-app-icon.png"
 SPEC_BACKUP=""
@@ -105,8 +106,15 @@ if [[ -n "$forbidden_runtime_path" ]]; then
   exit 1
 fi
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.github.chenjinnan82-stack.haypile' "$APP/Contents/Info.plist"
+if /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" >/dev/null 2>&1; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $MACOS_BUILD_VERSION" "$APP/Contents/Info.plist"
+else
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $MACOS_BUILD_VERSION" "$APP/Contents/Info.plist"
+fi
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = \
   "io.github.chenjinnan82-stack.haypile"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = \
+  "$MACOS_BUILD_VERSION"
 if /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$APP/Contents/Info.plist" >/dev/null 2>&1; then
   echo "Haypile.app unexpectedly hides its Dock icon." >&2
   exit 1
