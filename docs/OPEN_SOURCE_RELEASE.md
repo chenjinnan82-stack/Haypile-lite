@@ -46,7 +46,7 @@ remain supported.
 - Local Ollama, authorized OpenAI-compatible API, or no-AI operation.
 - Latest-batch handoff through read-only HTTP and MCP.
 - API keys remain in Keychain or Credential Manager, never public metadata.
-- 262 automated tests plus source backend/MCP smoke checks.
+- 263 automated tests plus source backend/MCP smoke checks.
 
 ### Install
 

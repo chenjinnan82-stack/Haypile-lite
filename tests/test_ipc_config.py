@@ -56,6 +56,7 @@ class IpcConfigTests(unittest.TestCase):
 
         with (
             patch("app.core.ipc.get_settings", return_value=settings),
+            patch("app.core.ipc.get_listener_family", return_value="AF_UNIX"),
             patch("app.core.ipc.socket.socket", return_value=raw_socket),
             patch("app.core.ipc.Connection", return_value=connection),
             patch("app.core.ipc.authenticate_ipc_connection") as authenticate,
@@ -71,6 +72,26 @@ class IpcConfigTests(unittest.TestCase):
             timeout=0.01,
             server=False,
         )
+        connection.close.assert_called_once_with()
+
+    @unittest.skipUnless(ipc.is_windows(), "Windows named pipe test")
+    def test_windows_ipc_waits_for_named_pipe_with_request_timeout(self) -> None:
+        connection = MagicMock()
+        connection.poll.return_value = False
+        with (
+            patch("_winapi.WaitNamedPipe") as wait_named_pipe,
+            patch("app.core.ipc.Client", return_value=connection),
+            patch("app.core.ipc.authenticate_ipc_connection"),
+        ):
+            result = ipc.send_ipc_request(
+                {"action": "ping"},
+                address=r"\\.\pipe\haypile-test",
+                authkey=b"local-secret",
+                timeout=0.01,
+            )
+
+        self.assertIsNone(result)
+        wait_named_pipe.assert_called_once_with(r"\\.\pipe\haypile-test", 10)
         connection.close.assert_called_once_with()
 
     def test_start_ipc_listener_defers_authentication_to_timed_connection_handler(self) -> None:

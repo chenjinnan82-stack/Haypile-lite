@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -433,7 +434,7 @@ class AtomicIngestRecoveryTests(unittest.TestCase):
                 json.dumps({"format_version": 1}),
                 encoding="utf-8",
             )
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     """
                     CREATE TABLE vfs_asset_links (
