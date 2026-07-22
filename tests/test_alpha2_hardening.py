@@ -755,6 +755,7 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
             self.assertIn("source_ref:", text)
             self.assertIn("tag_commit", text.lower())
             self.assertIn("attest-build-provenance@", text)
+            self.assertIn('--repo "$GITHUB_REPOSITORY"', text)
         macos_text = workflows[1].read_text(encoding="utf-8")
         self.assertIn("python -m unittest discover -s tests", macos_text)
         self.assertLess(
