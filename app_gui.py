@@ -3219,7 +3219,12 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._ai_provider_mode = "off"
         self._language_mode = "auto"
         self._drawer_transition_id = 0
+        self._hide_transition_id: int | None = None
         self._build_drawer()
+        self._hide_finalize_timer = QTimer(self)
+        self._hide_finalize_timer.setSingleShot(True)
+        self._hide_finalize_timer.setInterval(175)
+        self._hide_finalize_timer.timeout.connect(self._finalize_pending_hide)
         self._feedback_timer = QTimer(self)
         self._feedback_timer.setSingleShot(True)
         self._feedback_timer.setInterval(1700)
@@ -3504,7 +3509,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
 
     def _show_ring_animation(self) -> None:
         self._drawer_transition_id += 1
-        self._hide_after_slide = False
+        self._cancel_pending_hide()
         self._hovered_action = ""
         offset = self._slide_offset()
         start_shift = QPointF(offset.x() * 0.55, offset.y() * 0.55)
@@ -3547,6 +3552,9 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
 
     def hide_menu(self) -> None:
         self._drawer_transition_id += 1
+        transition_id = self._drawer_transition_id
+        self._hide_finalize_timer.stop()
+        self._hide_transition_id = None
         self._feedback_timer.stop()
         self._agent_timer.stop()
         had_drawer = self.drawer_shell.isVisible() and not self._feedback_only
@@ -3557,6 +3565,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
         if not self.isVisible():
+            self._hide_after_slide = False
             self.drawer_shell.hide()
             self.progress_bar.hide()
             self.feedback_label.hide()
@@ -3564,6 +3573,11 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._fade_animation.stop()
         self._slide_animation.stop()
         self._drawer_motion.stop()
+        if self._page_slide.state() == QPropertyAnimation.State.Running:
+            page_end = self._page_slide.endValue()
+            self._page_slide.stop()
+            if isinstance(page_end, QPoint):
+                self.drawer_stack.move(page_end)
         if had_drawer and self._animations_enabled():
             current = self.drawer_shell.pos()
             self._start_drawer_motion(
@@ -3574,6 +3588,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             )
         else:
             self.drawer_shell.hide()
+        self._hide_transition_id = transition_id
         self._hide_after_slide = True
         self._fade_animation.setDuration(150)
         self._fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
@@ -3585,15 +3600,39 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._slide_animation.setEndValue(self._slide_offset())
         self._fade_animation.start()
         self._slide_animation.start()
+        self._hide_finalize_timer.start()
 
     def _on_fade_finished(self) -> None:
-        was_hiding = self._hide_after_slide
+        if self._hide_after_slide:
+            self._finalize_pending_hide()
+            return
         super()._on_fade_finished()
-        if was_hiding:
-            self.drawer_shell.hide()
-            self.progress_bar.hide()
-            self.feedback_label.hide()
-            self._drawer_motion.stop()
+
+    def _cancel_pending_hide(self) -> None:
+        self._hide_finalize_timer.stop()
+        self._hide_transition_id = None
+        self._hide_after_slide = False
+
+    def _finalize_pending_hide(self) -> None:
+        transition_id = self._hide_transition_id
+        if (
+            transition_id is None
+            or transition_id != self._drawer_transition_id
+            or not self._hide_after_slide
+        ):
+            return
+        self._hide_finalize_timer.stop()
+        self._hide_transition_id = None
+        self._hide_after_slide = False
+        self._fade_animation.stop()
+        self._slide_animation.stop()
+        self._drawer_motion.stop()
+        self._page_slide.stop()
+        self._set_content_shift(QPointF())
+        self.drawer_shell.hide()
+        self.progress_bar.hide()
+        self.feedback_label.hide()
+        self.hide()
 
     def enterEvent(self, event) -> None:
         super(_LegacyQuickMenuWindow, self).enterEvent(event)
@@ -3641,6 +3680,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         if page not in self._pages:
             return
         self._drawer_transition_id += 1
+        self._cancel_pending_hide()
         if self._fade_animation.state() == QPropertyAnimation.State.Running:
             self._fade_animation.stop()
         if self._slide_animation.state() == QPropertyAnimation.State.Running:
@@ -3930,6 +3970,8 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             painter.drawText(label_rect, alignment, label)
 
     def show_feedback(self, message: str, success: bool, anchor: QRect, available: QRect) -> None:
+        self._drawer_transition_id += 1
+        self._cancel_pending_hide()
         self._feedback_timer.stop()
         self.feedback_label.setText(message)
         self.feedback_label.setStyleSheet(

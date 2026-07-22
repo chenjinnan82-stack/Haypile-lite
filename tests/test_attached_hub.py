@@ -228,6 +228,31 @@ class AttachedHubTests(unittest.TestCase):
             self.assertEqual(menu._drawer_motion.duration(), 150)
             QTest.qWait(210)
             self.assertFalse(menu.isVisible())
+            self.assertFalse(menu.drawer_shell.isVisible())
+            self.assertFalse(menu._hide_finalize_timer.isActive())
+        finally:
+            if previous_platform is None:
+                os.environ.pop("QT_QPA_PLATFORM", None)
+            else:
+                os.environ["QT_QPA_PLATFORM"] = previous_platform
+
+    def test_reopening_during_close_invalidates_stale_hide_completion(self) -> None:
+        previous_platform = os.environ.get("QT_QPA_PLATFORM")
+        os.environ["QT_QPA_PLATFORM"] = "animation-test"
+        try:
+            self.ball._handle_quick_menu_action("assets")
+            menu = self.ball.quick_menu
+            self.ball._toggle_quick_menu()
+            self.assertTrue(menu._hide_finalize_timer.isActive())
+
+            self.ball._handle_quick_menu_action("agent")
+            QTest.qWait(210)
+
+            self.assertTrue(menu.isVisible())
+            self.assertTrue(menu.is_drawer_open())
+            self.assertEqual(menu.current_page(), "agent")
+            self.assertFalse(menu._hide_finalize_timer.isActive())
+            self.assertFalse(menu._hide_after_slide)
         finally:
             if previous_platform is None:
                 os.environ.pop("QT_QPA_PLATFORM", None)
