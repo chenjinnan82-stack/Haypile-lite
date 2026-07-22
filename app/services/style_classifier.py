@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import math
 import logging
 import os
 import re
@@ -526,10 +527,10 @@ class StyleClassifier:
 
         # Direct JSON first
         try:
-            data = json.loads(text)
-            if isinstance(data, dict):
+            data = json.loads(text, parse_constant=StyleClassifier._reject_json_constant)
+            if isinstance(data, dict) and not StyleClassifier._contains_nonfinite(data):
                 return data
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             pass
 
         # Extract first {...} block if model wrapped with prose/code fences.
@@ -540,10 +541,29 @@ class StyleClassifier:
 
         snippet = text[start : end + 1]
         try:
-            data = json.loads(snippet)
-        except json.JSONDecodeError:
+            data = json.loads(
+                snippet,
+                parse_constant=StyleClassifier._reject_json_constant,
+            )
+        except (json.JSONDecodeError, ValueError):
             return None
-        return data if isinstance(data, dict) else None
+        if not isinstance(data, dict) or StyleClassifier._contains_nonfinite(data):
+            return None
+        return data
+
+    @staticmethod
+    def _reject_json_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON constant: {value}")
+
+    @staticmethod
+    def _contains_nonfinite(value: Any) -> bool:
+        if isinstance(value, float):
+            return not math.isfinite(value)
+        if isinstance(value, dict):
+            return any(StyleClassifier._contains_nonfinite(item) for item in value.values())
+        if isinstance(value, list):
+            return any(StyleClassifier._contains_nonfinite(item) for item in value)
+        return False
 
     def _normalize_result(
         self,
@@ -574,6 +594,8 @@ class StyleClassifier:
         try:
             score = float(value)
         except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(score):
             return 0.0
         if score < 0.0:
             return 0.0

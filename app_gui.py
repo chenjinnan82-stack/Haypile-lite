@@ -53,6 +53,7 @@ from app.core.exceptions import ResourceExhaustedError
 from app.core.file_lock import InterProcessFileLock
 from app.core.ipc import send_ipc_request
 from app.services.asset_provenance import (
+    provenance_path_for,
     public_origin_url,
     read_asset_provenance,
     sanitize_provenance,
@@ -306,6 +307,7 @@ class RemoteDownloadWorker(QThread):
             if self.isInterruptionRequested():
                 for path in downloaded:
                     path.unlink(missing_ok=True)
+                    provenance_path_for(path).unlink(missing_ok=True)
 
     def _run_downloads(self, downloaded: list[Path]) -> None:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
@@ -480,7 +482,13 @@ class IngestWorker(QThread):
                 self.storage_runtime.interrupt_batch(batch_id)
                 self._close_loop()
                 return
-            self.storage_runtime.record_item_discovered(batch_id, idx, file_path.name)
+            provenance = read_asset_provenance(file_path)
+            self.storage_runtime.record_item_discovered(
+                batch_id,
+                idx,
+                file_path.name,
+                origin_url=str(provenance.get("origin_url") or ""),
+            )
             progress_base = int((idx - 1) / total_files * 84)
             self.progress_signal.emit(
                 progress_base + 8,
@@ -839,7 +847,7 @@ class IngestWorker(QThread):
         safe_role = self._safe_identifier(role or "unknown")
         rel_path = destination.relative_to(self.assets_dir).as_posix()
         asset_url = f"/static/{rel_path}"
-        asset_key = safe_role if safe_role != "unknown" else destination.stem
+        asset_key = destination.stem
 
         self.theme_registry.upsert_image_asset(
             theme_id=safe_theme,
@@ -892,6 +900,9 @@ def _persist_ai_failure(bundle: dict[str, object], assets_dir: Path, reason: str
         if not asset_path.is_file() or asset_path.is_symlink():
             return
         provenance = read_asset_provenance(asset_path)
+        existing = provenance.get("ai_suggestions")
+        if isinstance(existing, dict) and existing.get("source") == "model":
+            return
         provenance.update(
             {
                 "source_key": source_key,
@@ -1686,6 +1697,10 @@ class MaterialPanelWindow(QWidget):
             "QLineEdit { color: #4A463A; background: #FFF9EA; "
             "border: 1px solid #E5D8B9; border-radius: 7px; padding: 0 8px; font-size: 11px; }"
         )
+        self._search_refresh_timer = QTimer(self)
+        self._search_refresh_timer.setSingleShot(True)
+        self._search_refresh_timer.setInterval(180)
+        self._search_refresh_timer.timeout.connect(self.refresh)
         self.search_input.textChanged.connect(self._on_search_changed)
         layout.addWidget(self.search_input)
 
@@ -2233,7 +2248,7 @@ class MaterialPanelWindow(QWidget):
 
     def _on_search_changed(self, _text: str) -> None:
         self._page_index = 0
-        self.refresh()
+        self._search_refresh_timer.start()
 
     def _change_page(self, delta: int) -> None:
         page_size = len(self.item_labels)
@@ -4290,6 +4305,8 @@ class HaypileFloatingBall(QWidget):
         self._backend_wait_notice_shown = False
         self.worker: IngestWorker | None = None
         self.remote_worker: RemoteDownloadWorker | None = None
+        self._remote_ingest_paths: set[Path] = set()
+        self._cleanup_stale_browser_downloads()
         self.ai_batch_worker: AIBatchWorker | None = None
         self._ai_batch_queue: list[str] = []
         self.latest_batch_id = ""
@@ -5177,6 +5194,30 @@ class HaypileFloatingBall(QWidget):
         )
         self.quick_menu.set_progress(5, ui_text("正在获取网页素材...", "Fetching web assets..."))
 
+    @staticmethod
+    def _delete_remote_temp(path: Path) -> None:
+        path.unlink(missing_ok=True)
+        provenance_path_for(path).unlink(missing_ok=True)
+
+    def _cleanup_remote_ingest_paths(self) -> None:
+        for path in self._remote_ingest_paths:
+            self._delete_remote_temp(path)
+        self._remote_ingest_paths.clear()
+
+    def _cleanup_stale_browser_downloads(self) -> None:
+        incoming_dir = self.settings.STORAGE_DIR / "incoming" / "browser"
+        try:
+            candidates = list(incoming_dir.iterdir())
+        except OSError:
+            return
+        cutoff = time.time() - 24 * 60 * 60
+        for path in candidates:
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                continue
+
     def _on_remote_download_finished(
         self,
         downloaded_files: list[Path],
@@ -5186,7 +5227,7 @@ class HaypileFloatingBall(QWidget):
     ) -> None:
         if self._closing:
             for path in downloaded_files:
-                path.unlink(missing_ok=True)
+                self._delete_remote_temp(path)
             return
         if self.remote_worker is not None:
             self.remote_worker.deleteLater()
@@ -5200,6 +5241,7 @@ class HaypileFloatingBall(QWidget):
             self.show_toast(ui_text("没有找到可收纳的图片或音频", "No images or audio to store"), success=False)
             self.quick_menu.complete_progress(False, message)
             return
+        self._remote_ingest_paths.update(downloaded_files)
         self._drop_feedback_until = time.monotonic() + 0.65
         self._sync_visual_timer()
         self.update()
@@ -5218,6 +5260,7 @@ class HaypileFloatingBall(QWidget):
                 merged_files.append(file_path)
                 seen.add(key)
         if not merged_files:
+            self._cleanup_remote_ingest_paths()
             self.show_toast(ui_text("没有可收纳的文件", "No files to store"), success=False)
             return
 
@@ -5235,6 +5278,7 @@ class HaypileFloatingBall(QWidget):
         )
 
     def _on_ingest_finished(self, message: str, success: bool) -> None:
+        self._cleanup_remote_ingest_paths()
         if self._closing:
             return
         if success:
@@ -5725,6 +5769,7 @@ class HaypileFloatingBall(QWidget):
         )
         backend_done = self.api_process is None
         if workers_done and backend_done:
+            self._cleanup_remote_ingest_paths()
             self._cleanup_done = True
             self._shutdown_timer.stop()
             self._close_api_log()

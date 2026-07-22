@@ -117,6 +117,62 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         for path_ref in written_files:
             self.assertFalse((project_root / path_ref).exists())
 
+    def test_material_search_refresh_is_debounced(self) -> None:
+        class CountingPanel(MaterialPanelWindow):
+            def __init__(self) -> None:
+                self.refresh_count = 0
+                super().__init__()
+
+            def refresh(self) -> None:
+                self.refresh_count += 1
+
+        panel = CountingPanel()
+        try:
+            panel.refresh_count = 0
+            panel._on_search_changed("a")
+            panel._on_search_changed("ab")
+            panel._on_search_changed("abc")
+            self.assertEqual(panel.refresh_count, 0)
+
+            QTest.qWait(220)
+            self.assertEqual(panel.refresh_count, 1)
+        finally:
+            panel.close()
+
+    def test_browser_temp_cleanup_removes_sidecar_and_only_stale_files(self) -> None:
+        storage = self.tmpdir / "storage"
+        incoming = storage / "incoming/browser"
+        incoming.mkdir(parents=True)
+        stale = incoming / "stale.png"
+        recent = incoming / "recent.png"
+        stale.write_bytes(b"stale")
+        recent.write_bytes(b"recent")
+        write_asset_provenance(stale, {"origin_url": "https://stale.example/a.png"})
+        old = time.time() - 25 * 60 * 60
+        os.utime(stale, (old, old))
+        os.utime(stale.with_name(stale.name + ".provenance.json"), (old, old))
+        dummy = SimpleNamespace(settings=SimpleNamespace(STORAGE_DIR=storage))
+
+        app_gui_module.HaypileFloatingBall._cleanup_stale_browser_downloads(dummy)
+
+        self.assertFalse(stale.exists())
+        self.assertFalse(stale.with_name(stale.name + ".provenance.json").exists())
+        self.assertTrue(recent.exists())
+
+    def test_remote_ingest_cleanup_removes_owned_file_and_sidecar(self) -> None:
+        downloaded = self.tmpdir / "incoming/browser/audio.mp3"
+        downloaded.parent.mkdir(parents=True)
+        downloaded.write_bytes(b"audio")
+        write_asset_provenance(downloaded, {"origin_url": "https://media.example/audio.mp3"})
+        dummy = SimpleNamespace(_remote_ingest_paths={downloaded})
+        dummy._delete_remote_temp = app_gui_module.HaypileFloatingBall._delete_remote_temp
+
+        app_gui_module.HaypileFloatingBall._cleanup_remote_ingest_paths(dummy)
+
+        self.assertFalse(downloaded.exists())
+        self.assertFalse(downloaded.with_name(downloaded.name + ".provenance.json").exists())
+        self.assertEqual(dummy._remote_ingest_paths, set())
+
     def test_project_picker_handoff_refresh_populates_existing_confirmation_preview(self) -> None:
         project_root = self.tmpdir / "signal-pool-demo"
         summary = MaterialPanelSummary(
@@ -712,19 +768,23 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             panel._set_filter_mode("all")
             panel.search_input.setText("icon")
+            QTest.qWait(200)
             self.assertIn("icon.png", panel.item_labels[0].text())
             self.assertTrue(panel.item_labels[1].isHidden())
 
             panel.search_input.setText("主视觉")
+            QTest.qWait(200)
             self.assertIn("hero.png", panel.item_labels[0].text())
             self.assertTrue(panel.item_labels[1].isHidden())
 
             panel.search_input.setText("可用")
+            QTest.qWait(200)
             self.assertIn("hero.png", panel.item_labels[0].text())
             self.assertIn("icon.png", panel.item_labels[1].text())
             self.assertTrue(panel.item_labels[2].isHidden())
 
             panel.search_input.setText("不存在")
+            QTest.qWait(200)
             self.assertEqual(panel.detail_label.text(), "没有匹配资源")
             self.assertTrue(panel.item_labels[0].isHidden())
         finally:
@@ -797,6 +857,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel._selected_bundle_id, "asset-3")
 
             panel.search_input.setText("asset-1")
+            QTest.qWait(200)
             self.assertEqual(panel._page_index, 0)
             self.assertTrue(panel.page_row.isHidden())
             self.assertIn("asset-1.png", panel.item_labels[0].text())

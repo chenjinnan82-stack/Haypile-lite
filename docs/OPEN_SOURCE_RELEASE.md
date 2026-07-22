@@ -1,7 +1,7 @@
 # v0.3 Open Source Release Copy
 
-Draft copy for `v0.3.0-alpha.4`. Do not publish it until the security regression,
-private image evaluation, and macOS/Windows package checks have passed. After
+Draft copy for `v0.3.0-alpha.5`. Do not publish it until the security regression
+and macOS/Windows package checks have passed. After
 publication, limit it to a 3–5 user pilot.
 
 ## GitHub About
@@ -27,7 +27,7 @@ provenance
 
 ## Release Title
 
-Haypile v0.3.0-alpha.4 · Safety seed build for local Agent asset handoff
+Haypile v0.3.0-alpha.5 · Safety seed build for local Agent asset handoff
 
 ## GitHub Release Body
 
@@ -51,17 +51,21 @@ remain supported.
 - Missing physical copies are never ready and are excluded from ready handoffs.
 - Local drops are rejected before persistence when count, total size, or free-space
   limits are exceeded.
-- 293 Python 3.12 tests plus packaged backend/MCP smoke checks.
-- Keeps the incomplete `alpha.3` tag immutable and corrects its stale Windows
-  package-smoke version gate.
+- Malformed SVG geometry and non-finite model output are rejected before they can
+  influence readiness or persisted metadata.
+- Ingest history remains immutable when a controlled copy goes missing, while
+  manifest projection is serialized and Agent reads fail closed.
+- MCP distinguishes protocol errors from bounded tool failures and keeps legacy
+  `type=asset` clients compatible.
+- 309 Python 3.12 tests plus packaged backend/MCP smoke checks.
 
 ### Install
 
 Attach these files only after both platform builds pass:
 
 ```text
-Haypile-v0.3.0-alpha.4-macos-arm64.app.zip
-Haypile-v0.3.0-alpha.4-windows-x64.zip
+Haypile-v0.3.0-alpha.5-macos-arm64.app.zip
+Haypile-v0.3.0-alpha.5-windows-x64.zip
 matching .sha256 files
 ```
 

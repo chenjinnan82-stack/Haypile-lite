@@ -163,6 +163,33 @@ class MaterialSummaryTests(unittest.TestCase):
         self.assertEqual(summary.pending_count, 0)
         self.assertEqual(summary.recent_items[0].usage_label, "背景")
 
+    def test_theme_only_reference_is_marked_as_missing_copy(self) -> None:
+        self._write_json(
+            self.themes_dir / "generic.json",
+            {
+                "theme_name": "generic",
+                "physical_assets": {
+                    "hero": {
+                        "url": "/static/generic/images/missing.png",
+                        "type": "image",
+                        "role": "hero_image",
+                    }
+                },
+            },
+        )
+
+        summary = build_material_panel_summary(
+            assets_dir=self.assets_dir,
+            manifest_path=self.manifest_path,
+            themes_dir=self.themes_dir,
+            real_project_binding_path=self.binding_path,
+        )
+
+        self.assertEqual(summary.recent_items[0].status_label, "副本缺失")
+        self.assertEqual(summary.recognized_count, 0)
+        self.assertEqual(summary.pending_count, 0)
+        self.assertIn("有副本缺失", summary.recognition_status)
+
     def test_summary_reflects_bundle_role_confirmation(self) -> None:
         source_key = "generic/images/generic_img_unknown_bbbb.png"
         url = "/static/generic/images/generic_img_unknown_bbbb.png"

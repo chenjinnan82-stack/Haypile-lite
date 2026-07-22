@@ -37,6 +37,17 @@ class AtomicJsonIoTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"status": "old"})
             self.assertEqual(list(Path(tmpdir).glob("*.tmp")), [])
 
+    def test_atomic_write_json_rejects_nonfinite_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.json"
+            path.write_text('{"status": "old"}', encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                atomic_write_json(path, {"confidence": float("nan")})
+
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"status": "old"})
+            self.assertEqual(list(Path(tmpdir).glob("*.tmp")), [])
+
     def test_scanner_manifest_uses_atomic_replace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

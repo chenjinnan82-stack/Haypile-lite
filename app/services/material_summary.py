@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+import time
 import urllib.error
 import urllib.request
 
@@ -141,9 +142,16 @@ def build_material_panel_summary(
 
     total_count = len(items)
     pending_count = sum(1 for item in items if item.status_label == "待确认")
-    recognized_count = max(0, total_count - pending_count)
+    missing_count = sum(1 for item in items if item.status_label == "副本缺失")
+    recognized_count = sum(1 for item in items if item.status_label == "已识别")
     service_status = "Haypile：运行中" if resolved_manifest_path.exists() else "Haypile：等待入库"
-    recognition_status = f"{'分类：有待确认' if pending_count else '分类：可用'} · {_classifier_status(settings)}"
+    if missing_count:
+        classification_label = "分类：有副本缺失"
+    elif pending_count:
+        classification_label = "分类：有待确认"
+    else:
+        classification_label = "分类：可用"
+    recognition_status = f"{classification_label} · {_classifier_status(settings)}"
     rehearsal_status, rehearsal_status_label = _rehearsal_status(rehearsal_root)
     binding = resolve_haypile_real_project_root(binding_path=real_project_binding_path)
     resolved_real_project_root = real_project_root or (binding.project_root if binding is not None else None)
@@ -314,14 +322,14 @@ def _build_items(
         asset_type = str(value.get("type") or "").strip().lower()
         role = str(value.get("role") or value.get("source_key") or "").strip()
         usage_label = _usage_label(role=role, asset_type=asset_type)
-        status_label = "待确认" if usage_label == "未确定" else "已识别"
+        status_label = "副本缺失"
         source_key = str(value.get("source_key") or "").strip()
         provenance = read_asset_provenance(assets_dir / source_key) if source_key else {}
         items.append(
             MaterialSummaryItem(
                 title=Path(url_path).name or str(value.get("source_key") or "material"),
                 usage_label=usage_label,
-                confidence_label="低把握" if status_label == "待确认" else "中等把握",
+                confidence_label="低把握",
                 status_label=status_label,
                 preview_url=url_path,
                 theme_id=str(value.get("theme_id") or "").strip(),
@@ -339,11 +347,18 @@ def _classifier_status(settings) -> str:
         bool(settings.VISION_CLASSIFIER_ENABLED),
         str(settings.VISION_CLASSIFIER_MODEL or "").strip() or "unknown",
         str(settings.VISION_CLASSIFIER_BASE_URL or "").rstrip("/"),
+        int(time.monotonic() // 5),
     )
 
 
-@lru_cache(maxsize=1)
-def _classifier_status_cached(enabled: bool, model: str, base_url: str) -> str:
+@lru_cache(maxsize=2)
+def _classifier_status_cached(
+    enabled: bool,
+    model: str,
+    base_url: str,
+    _ttl_bucket: int | None = None,
+) -> str:
+    _ = _ttl_bucket
     if not enabled:
         return "模型：关闭"
     if not base_url:

@@ -28,11 +28,20 @@ def atomic_write_json(path: Path, payload: Any) -> None:
             raise OSError(f"Unable to create atomic temp file for {target}") from last_error
 
         with os.fdopen(fd, "w", encoding="utf-8") as temp:
-            json.dump(payload, temp, ensure_ascii=False, indent=2)
+            json.dump(payload, temp, ensure_ascii=False, indent=2, allow_nan=False)
             temp.flush()
             os.fsync(temp.fileno())
         os.replace(temp_path, target)
         temp_path = None
+        if os.name != "nt":
+            directory_fd = os.open(
+                str(target.parent),
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     finally:
         if temp_path:
             try:

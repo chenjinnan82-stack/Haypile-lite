@@ -9,6 +9,7 @@ import sqlite3
 import socket
 import tempfile
 import threading
+import time
 import unittest
 import re
 from multiprocessing import Pipe
@@ -184,6 +185,29 @@ class MediaValidationTests(unittest.TestCase):
                 path.write_text(payload, encoding="utf-8")
                 with self.subTest(index=index), self.assertRaises(MediaValidationError):
                     validate_svg(path)
+
+    def test_rejects_nonfinite_or_excessive_svg_dimensions(self) -> None:
+        unsafe_payloads = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 Infinity 10" />',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1e309 10" />',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 -10 10" />',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 0 10" />',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32769 10" />',
+            '<svg xmlns="http://www.w3.org/2000/svg" width="Infinity" height="10" />',
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            for index, payload in enumerate(unsafe_payloads):
+                path = Path(raw) / f"unsafe-dimensions-{index}.svg"
+                path.write_text(payload, encoding="utf-8")
+                with self.subTest(index=index), self.assertRaises(MediaValidationError):
+                    validate_svg(path)
+
+            valid = Path(raw) / "valid.svg"
+            valid.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-10 -10 800 400" />',
+                encoding="utf-8",
+            )
+            self.assertEqual((validate_svg(valid).width, validate_svg(valid).height), (800, 400))
 
     def test_rejects_excessive_total_pixels_across_frames(self) -> None:
         with self.assertRaisesRegex(MediaValidationError, "raster_total_pixel_limit"):
@@ -420,6 +444,76 @@ class AtomicIngestRecoveryTests(unittest.TestCase):
             self.assertFalse(asset.exists())
             self.assertEqual(runtime.asset_hash_index(assets), {})
             self.assertEqual(len(list((root / "quarantine").iterdir())), 1)
+
+    def test_missing_committed_copy_does_not_rewrite_ingest_history(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            assets = root / "assets"
+            asset = assets / "generic/images/hero.png"
+            asset.parent.mkdir(parents=True)
+            asset.write_bytes(b"original-bytes")
+            digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+            runtime = StorageRuntimeDB(root / "index/storage_runtime.db")
+            batch_id = runtime.begin_batch()
+            runtime.record_item_discovered(batch_id, 1, "hero.png")
+            runtime.commit_item(
+                batch_id,
+                1,
+                sha256_hex=digest,
+                src_path=Path("hero.png"),
+                dst_path=asset,
+                strategy="atomic-copy",
+            )
+            runtime.complete_batch(
+                batch_id,
+                accepted_count=1,
+                duplicate_count=0,
+                rejected_count=0,
+            )
+            asset.unlink()
+
+            runtime.recover_incomplete_ingest(
+                assets_dir=assets,
+                staging_dir=root / "staging",
+                quarantine_dir=root / "quarantine",
+            )
+
+            self.assertEqual(runtime.latest_batch()["id"], batch_id)
+            with closing(runtime.get_connection()) as conn:
+                item_state = conn.execute(
+                    "SELECT state FROM ingest_batch_items WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchone()[0]
+            self.assertEqual(item_state, "committed")
+            recorded = StorageRuntimeDB.read_recorded_asset_hash_index(runtime.db_path, assets)
+            self.assertEqual(recorded[digest], asset.resolve(strict=False))
+
+    def test_manifest_scans_are_serialized(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            scanner = AssetScanner(root / "assets", root / "index/manifest.json")
+            active = 0
+            maximum_active = 0
+            counter_lock = threading.Lock()
+
+            def locked_scan(_self, _should_stop=None):
+                nonlocal active, maximum_active
+                with counter_lock:
+                    active += 1
+                    maximum_active = max(maximum_active, active)
+                time.sleep(0.05)
+                with counter_lock:
+                    active -= 1
+                return {}
+
+            with patch.object(AssetScanner, "_scan_assets_directory_locked", locked_scan):
+                threads = [threading.Thread(target=scanner._scan_assets_directory_sync) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+            self.assertEqual(maximum_active, 1)
 
     def test_legacy_upgrade_recomputes_identity_without_deleting_asset(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -795,7 +889,7 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
         self.assertIn('DEPLOY_DIR="$ROOT/deployment"', text)
         self.assertIn('rm -rf "$DEPLOY_DIR"', text)
         self.assertIn('DEPLOY_LOG="$BUILD_DIR/pyside6-deploy.log"', text)
-        self.assertIn('MACOS_BUILD_VERSION="3004"', text)
+        self.assertIn('MACOS_BUILD_VERSION="3005"', text)
         self.assertIn("Add :CFBundleVersion string", text)
 
 

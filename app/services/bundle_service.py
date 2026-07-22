@@ -191,6 +191,10 @@ class BundleService:
         bundle = self.get_bundle(bundle_id)
         if bundle is None or bundle["status"] == "missing":
             return None
+        if bundle["type"] == "audio" and normalized_role != "audio":
+            raise ValueError("role incompatible with asset type")
+        if bundle["type"] == "image" and normalized_role not in ALLOWED_IMAGE_ROLES:
+            raise ValueError("role incompatible with asset type")
 
         theme_id = bundle["theme_id"] or self._theme_from_key(bundle["source_key"]) or "generic"
         existing_contract = self._theme_assets_by_url().get(bundle["url"], {})

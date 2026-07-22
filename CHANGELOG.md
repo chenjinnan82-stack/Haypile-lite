@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.3.0-alpha.5 (seed safety candidate)
+
+- Reject malformed or non-finite SVG geometry and AI confidence data before it
+  reaches media metadata, readiness decisions, or persisted JSON.
+- Preserve immutable ingest history, record per-occurrence browser origins, and
+  enforce SQLite foreign keys without changing storage format v2.
+- Serialize manifest projection and fail the latest-batch Agent view closed when
+  the current projection is unavailable.
+- Keep media roles type-safe, distinguish missing controlled copies in the UI,
+  and prevent missing references from counting as identified assets.
+- Return MCP tool failures as bounded tool results, retain the legacy `asset`
+  filter meaning, and keep protocol errors for malformed requests.
+- Clean owned browser-import temporary files, debounce material search, and
+  refresh cached model availability without adding background polling.
+
 ## v0.3.0-alpha.4 (seed safety candidate)
 
 - Keep the published `alpha.3` tag immutable after its Windows package smoke

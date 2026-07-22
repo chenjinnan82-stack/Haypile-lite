@@ -24,12 +24,14 @@ class StorageRuntimeDBTests(unittest.TestCase):
             with closing(db.get_connection()) as conn:
                 journal_mode = conn.execute("PRAGMA journal_mode;").fetchone()
                 synchronous = conn.execute("PRAGMA synchronous;").fetchone()
+                foreign_keys = conn.execute("PRAGMA foreign_keys;").fetchone()
 
             self.assertIsNotNone(journal_mode)
             self.assertEqual(str(journal_mode[0]).lower(), "wal")
             self.assertIsNotNone(synchronous)
             # NORMAL maps to 1.
             self.assertEqual(int(synchronous[0]), 1)
+            self.assertEqual(int(foreign_keys[0]), 1)
         finally:
             # On Windows, WAL side files may be released slightly later.
             time.sleep(0.05)
@@ -111,6 +113,37 @@ class StorageRuntimeDBTests(unittest.TestCase):
             self.assertEqual(db.resolve_batch_id(batch_id), batch_id)
             self.assertEqual(db.resolve_batch_id("missing"), "")
             self.assertEqual(db.batch_hashes(batch_id), ["sha-a", "sha-b"])
+        finally:
+            time.sleep(0.05)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_batch_items_preserve_each_import_origin(self) -> None:
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            db = StorageRuntimeDB(db_path=tmpdir / "index/runtime.db")
+            batch_id = db.begin_batch()
+            db.record_item_discovered(
+                batch_id,
+                1,
+                "first.png",
+                origin_url="https://one.example",
+            )
+            db.record_item_discovered(
+                batch_id,
+                2,
+                "second.png",
+                origin_url="https://two.example",
+            )
+
+            with closing(db.get_connection()) as conn:
+                rows = conn.execute(
+                    "SELECT source_name, origin_url FROM ingest_batch_items ORDER BY ordinal"
+                ).fetchall()
+
+            self.assertEqual(
+                rows,
+                [("first.png", "https://one.example"), ("second.png", "https://two.example")],
+            )
         finally:
             time.sleep(0.05)
             shutil.rmtree(tmpdir, ignore_errors=True)
