@@ -18,17 +18,13 @@
 
 </div>
 
-## v0.3.0-alpha.2 安全种子版
+## 桌面下载暂时暂停
 
-面向小范围种子用户，验证 **拖入 → 检查 → 交付 → Codex 读取**：
+`v0.3.0-alpha.2` 桌面包已被后续安全修复取代；`v0.3.0-alpha.3`
+安全种子版正在验证中。历史 Release 仍保留作溯源，但请勿再用于新的种子测试。
 
-- [下载 macOS Apple Silicon 版](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.2/Haypile-v0.3.0-alpha.2-macos-arm64.app.zip)
-- [下载 Windows x64 版](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.2/Haypile-v0.3.0-alpha.2-windows-x64.zip)
-- [版本说明与 SHA-256 校验文件](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.2)
-
-这是 prerelease，不是稳定安装版。macOS 包仅做 ad-hoc 签名、尚未经过苹果
-公证；解压后请右键点击 `Haypile.app` 并选择“打开”。Haypile 会保存受控的
-本地副本，但 Alpha 版本不应成为不可替代素材的唯一备份。
+下方源码方式仍可用于测试。Haypile 会保存受控的本地副本，但 Alpha 版本不应
+成为不可替代素材的唯一备份。
 
 ## 看它怎么工作
 

@@ -7,6 +7,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.services.asset_provenance import public_origin_url, read_asset_provenance, write_asset_provenance
+from app.services.scanner import read_manifest_snapshot
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.theme_registry import ThemeRegistry
 
@@ -42,6 +43,7 @@ class BundleService:
         self.themes_dir = themes_dir or settings.THEMES_DIR  # type: ignore[union-attr]
         self.runtime_db_path = runtime_db_path or (settings.INDEX_DIR / "storage_runtime.db")  # type: ignore[union-attr]
         self.theme_recoveries: list[dict[str, str]] = []
+        self.manifest_generation = ""
 
     def list_bundles(
         self,
@@ -55,9 +57,11 @@ class BundleService:
         limit: int | None = None,
         cursor: str | None = None,
     ) -> list[dict[str, Any]]:
-        manifest = self._read_json(self.manifest_path)
+        manifest, readiness = read_manifest_snapshot(self.manifest_path)
+        self.manifest_generation = str(readiness["manifest_generation"])
         theme_assets = self._theme_assets_by_url()
         sha_by_path = self._sha_by_dst_path()
+        recorded_sha_by_path = self._recorded_sha_by_dst_path()
         bundles: list[dict[str, str]] = []
 
         for source_key, item in sorted(manifest.items()):
@@ -73,19 +77,31 @@ class BundleService:
             source_path = self._asset_path(source_key)
             if source_path is None:
                 continue
-            cached_sha = sha_by_path.get(str(source_path.resolve(strict=False))) or ""
-            sha256 = cached_sha if self._is_sha256(cached_sha) else self._sha256(source_path)
-            provenance = read_asset_provenance(source_path)
+            asset_exists = source_path.is_file() and not source_path.is_symlink()
+            resolved_source = str(source_path.resolve(strict=False))
+            cached_sha = sha_by_path.get(resolved_source) or (
+                recorded_sha_by_path.get(resolved_source) if not asset_exists else ""
+            ) or ""
+            sha256 = cached_sha if self._is_sha256(cached_sha) else (
+                self._sha256(source_path) if asset_exists else ""
+            )
+            provenance = read_asset_provenance(source_path) if asset_exists else {}
             ai_suggestions = provenance.get("ai_suggestions")
             bundle_audio_usage = self._audio_usage_from(provenance) if item_type == "audio" else "unknown"
-            bundle_id = sha256
+            bundle_id = sha256 or self._missing_id(source_key)
             bundles.append(
                 {
                     "id": bundle_id,
                     "theme_id": self._theme_from_key(source_key),
                     "type": item_type,
                     "role": item_role,
-                    "status": "pending" if item_role == "unknown" or (item_type == "audio" and bundle_audio_usage == "unknown") else "ready",
+                    "status": (
+                        "missing"
+                        if not asset_exists
+                        else "pending"
+                        if item_role == "unknown" or (item_type == "audio" and bundle_audio_usage == "unknown")
+                        else "ready"
+                    ),
                     "sha256": sha256,
                     "url": url,
                     "access": "manifest_static",
@@ -98,38 +114,6 @@ class BundleService:
                     "audio_metadata": self._audio_metadata_from(item),
                     "audio_tags": self._audio_tags_from(item),
                     "audio_usage": bundle_audio_usage,
-                }
-            )
-
-        known_urls = {bundle["url"] for bundle in bundles}
-        for url, asset in sorted(theme_assets.items()):
-            if url in known_urls:
-                continue
-            source_key = url.removeprefix("/static/").lstrip("/")
-            item_role = self._role_from(source_key=source_key, theme_asset=asset)
-            asset_path = self._asset_path(source_key)
-            provenance = read_asset_provenance(asset_path) if asset_path is not None else {}
-            ai_suggestions = provenance.get("ai_suggestions")
-            item_type = str(asset.get("type") or "asset")
-            bundles.append(
-                {
-                    "id": Path(source_key).stem or self._safe_id(url),
-                    "theme_id": str(asset.get("theme_id") or self._theme_from_key(source_key)),
-                    "type": item_type,
-                    "role": item_role,
-                    "status": "missing",
-                    "sha256": "",
-                    "url": url,
-                    "access": "manifest_static",
-                    "source_key": source_key,
-                    "origin_url": public_origin_url(str(provenance.get("origin_url") or "")),
-                    "content_type": str(provenance.get("content_type") or ""),
-                    "downloaded_at": str(provenance.get("downloaded_at") or ""),
-                    "ai_suggestions": ai_suggestions if isinstance(ai_suggestions, dict) else {},
-                    "duration_seconds": None,
-                    "audio_metadata": {},
-                    "audio_tags": {},
-                    "audio_usage": self._audio_usage_from(provenance) if item_type == "audio" else "unknown",
                 }
             )
 
@@ -315,6 +299,15 @@ class BundleService:
             ).items()
         }
 
+    def _recorded_sha_by_dst_path(self) -> dict[str, str]:
+        return {
+            str(path): sha256_hex
+            for sha256_hex, path in StorageRuntimeDB.read_recorded_asset_hash_index(
+                self.runtime_db_path,
+                self.assets_dir,
+            ).items()
+        }
+
     def _asset_path(self, source_key: str) -> Path | None:
         root = self.assets_dir.resolve(strict=False)
         candidate = self.assets_dir / Path(str(source_key).replace("\\", "/"))
@@ -391,6 +384,11 @@ class BundleService:
     @staticmethod
     def _safe_id(text: str) -> str:
         return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in text).strip("_") or "bundle"
+
+    @staticmethod
+    def _missing_id(source_key: str) -> str:
+        digest = hashlib.sha256(source_key.encode("utf-8", errors="replace")).hexdigest()
+        return f"missing-{digest}"
 
     @staticmethod
     def _is_sha256(value: str) -> bool:

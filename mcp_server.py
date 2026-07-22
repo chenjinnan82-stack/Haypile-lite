@@ -16,12 +16,59 @@ from uuid import uuid4
 from app.core.config import get_settings
 from app.services.asset_provenance import sanitize_provenance
 
-BASE_URL = os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010").rstrip("/")
+
+def _validate_base_url(value: str) -> str:
+    source = str(value or "")
+    if any(ord(char) < 32 or ord(char) == 127 for char in source):
+        raise RuntimeError("HAYPILE_BASE_URL cannot contain control characters")
+    raw = source.strip().rstrip("/")
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("HAYPILE_BASE_URL is invalid") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("HAYPILE_BASE_URL must use HTTP or HTTPS")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise RuntimeError("HAYPILE_BASE_URL cannot contain credentials, query, or fragment")
+    if parsed.path not in {"", "/"}:
+        raise RuntimeError("HAYPILE_BASE_URL cannot contain a path")
+    host = parsed.hostname.lower()
+    is_local = host in {"127.0.0.1", "localhost", "::1"}
+    allow_remote = os.environ.get("HAYPILE_ALLOW_REMOTE_BASE_URL", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not is_local and (not allow_remote or parsed.scheme != "https"):
+        raise RuntimeError(
+            "Remote HAYPILE_BASE_URL requires HTTPS and HAYPILE_ALLOW_REMOTE_BASE_URL=1"
+        )
+    netloc = parsed.hostname
+    if ":" in netloc and not netloc.startswith("["):
+        netloc = f"[{netloc}]"
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urllib.parse.urlunsplit((parsed.scheme, netloc, "", "", ""))
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+BASE_URL = _validate_base_url(
+    os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010")
+)
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = {PROTOCOL_VERSION, "2024-11-05"}
-SERVER_VERSION = "0.3.0-alpha.2"
+SERVER_VERSION = "0.3.0-alpha.3"
 MAX_LINE_BYTES = 1024 * 1024
-LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+LOCAL_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _NoRedirectHandler(),
+)
 SESSION_HEARTBEAT_SECONDS = 5.0
 SESSION_ONLINE_SECONDS = 12.0
 SESSION_CLEANUP_SECONDS = 60.0

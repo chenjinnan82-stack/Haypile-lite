@@ -74,6 +74,21 @@ class LocalDataSecurityTests(unittest.TestCase):
         self.assertFalse(started)
         self.assertNotIn(private_path, "\n".join(captured.output))
 
+    def test_ipc_ping_identifies_haypile_and_startup_phase(self) -> None:
+        server = type("Server", (), {"started": False})()
+        channel = ControlChannelServer(server, "127.0.0.1", 8010)
+
+        starting = channel._handle_payload({"type": "ping"})
+        server.started = True
+        ready = channel._handle_payload({"type": "ping"})
+
+        self.assertEqual(starting["product"], "haypile")
+        self.assertEqual(starting["protocol_version"], 1)
+        self.assertEqual(starting["phase"], "starting")
+        self.assertFalse(starting["ready"])
+        self.assertEqual(ready["phase"], "ready")
+        self.assertTrue(ready["ready"])
+
     def test_network_defaults_remain_local_only(self) -> None:
         settings = Settings(
             _env_file=None,
@@ -160,6 +175,7 @@ class LocalDataSecurityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers["cache-control"], "private, no-store")
             self.assertEqual(response.headers["content-security-policy"], "default-src 'none'; sandbox")
+            self.assertEqual(response.headers["cross-origin-resource-policy"], "same-origin")
             self.assertEqual(response.headers["x-content-type-options"], "nosniff")
 
     def test_untrusted_host_is_rejected(self) -> None:

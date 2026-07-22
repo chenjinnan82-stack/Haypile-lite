@@ -113,12 +113,16 @@ class ControlChannelServer:
             return {"ok": False, "error": "invalid_payload"}
         request_type = str(payload.get("type", "")).strip().lower()
         if request_type == "ping":
+            ready = bool(getattr(self._server, "started", False))
             return {
                 "ok": True,
+                "product": "haypile",
+                "protocol_version": 1,
                 "pid": os.getpid(),
                 "host": self._host,
                 "port": self._port,
-                "ready": bool(getattr(self._server, "started", False)),
+                "ready": ready,
+                "phase": "ready" if ready else "starting",
             }
         if request_type == "stop":
             self._server.should_exit = True

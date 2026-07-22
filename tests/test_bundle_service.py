@@ -5,6 +5,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -12,8 +14,11 @@ from fastapi.testclient import TestClient
 from app.services.asset_provenance import write_asset_provenance
 from app.api.v1.batches import get_bundle_service as get_batch_bundle_service, router as batches_router
 from app.api.v1.bundles import get_bundle_service, router
+from app.api.v1.theme import get_vault_service, router as theme_router
 from app.services.bundle_service import BundleService
+from app.services.scanner import manifest_dirty_path
 from app.services.storage_runtime import StorageRuntimeDB
+from app.services.vault_service import VaultService
 
 
 class BundleServiceTests(unittest.TestCase):
@@ -26,7 +31,6 @@ class BundleServiceTests(unittest.TestCase):
             by_source = {bundle["source_key"]: bundle for bundle in bundles}
             hero = by_source["generic/images/generic_img_hero_image_abcd.png"]
             unknown = by_source["generic/images/generic_img_unknown_eeee.png"]
-            by_id = {bundle["id"]: bundle for bundle in bundles}
             self.assertEqual(hero["status"], "ready")
             self.assertEqual(hero["role"], "hero_image")
             self.assertEqual(hero["sha256"], hashlib.sha256(b"hero").hexdigest())
@@ -34,13 +38,11 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(hero["origin_url"], "https://cdn.example.com")
             self.assertEqual(hero["ai_suggestions"]["quality"], "high")
             self.assertEqual(unknown["status"], "pending")
-            self.assertEqual(by_id["missing_icon"]["status"], "missing")
-            self.assertEqual(by_id["missing_icon"]["sha256"], "")
             self.assertEqual(
                 [bundle["id"] for bundle in service.list_bundles(status="ready")],
                 [hero["id"]],
             )
-            self.assertEqual(service.list_bundles(role="icon")[0]["id"], "missing_icon")
+            self.assertEqual(service.list_bundles(role="icon"), [])
 
     def test_bundle_service_reports_quarantined_theme_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -179,6 +181,7 @@ class BundleServiceTests(unittest.TestCase):
             no_batch = client.get("/api/v1/batches/latest")
 
             self.assertEqual(listed.status_code, 200)
+            self.assertEqual(len(listed.headers["X-Haypile-Manifest-Generation"]), 64)
             hero_hash = hashlib.sha256(b"hero").hexdigest()
             self.assertTrue(any(item["id"] == hero_hash for item in listed.json()))
             self.assertEqual(ready.status_code, 200)
@@ -193,6 +196,89 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(one.json()["origin_url"], "https://cdn.example.com")
             self.assertEqual(missing.status_code, 404)
             self.assertEqual(no_batch.status_code, 404)
+
+    def test_missing_physical_asset_is_never_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            service = _bundle_service(root)
+            hero = root / "assets/generic/images/generic_img_hero_image_abcd.png"
+            unknown = root / "assets/generic/images/generic_img_unknown_eeee.png"
+            hero.unlink()
+            unknown.unlink()
+
+            bundles = {item["source_key"]: item for item in service.list_bundles()}
+
+            known = bundles["generic/images/generic_img_hero_image_abcd.png"]
+            legacy = bundles["generic/images/generic_img_unknown_eeee.png"]
+            self.assertEqual(known["status"], "missing")
+            self.assertEqual(known["id"], hashlib.sha256(b"hero").hexdigest())
+            self.assertEqual(legacy["status"], "missing")
+            self.assertTrue(legacy["id"].startswith("missing-"))
+            self.assertTrue(legacy["id"])
+            self.assertNotIn(known["id"], {item["id"] for item in service.list_bundles(status="ready")})
+
+    def test_bundles_api_fails_closed_for_untrusted_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            service = _bundle_service(root)
+            app = FastAPI()
+            app.include_router(router, prefix="/api/v1")
+            app.dependency_overrides[get_bundle_service] = lambda: service
+            client = TestClient(app)
+            self.addCleanup(client.close)
+            manifest = root / "index/assets_manifest.json"
+
+            manifest_dirty_path(manifest).write_text("{}", encoding="utf-8")
+            dirty = client.get("/api/v1/bundles")
+            manifest_dirty_path(manifest).unlink()
+            manifest.write_text("{broken", encoding="utf-8")
+            unreadable = client.get("/api/v1/bundles")
+            manifest.unlink()
+            missing = client.get("/api/v1/bundles")
+            manifest.write_text("{}", encoding="utf-8")
+            empty = client.get("/api/v1/bundles")
+
+            self.assertEqual(dirty.status_code, 503)
+            self.assertEqual(dirty.json()["detail"]["code"], "catalog_projection_dirty")
+            self.assertEqual(unreadable.status_code, 503)
+            self.assertEqual(unreadable.json()["detail"]["code"], "catalog_projection_unreadable")
+            self.assertEqual(missing.status_code, 503)
+            self.assertEqual(missing.json()["detail"]["code"], "catalog_projection_missing")
+            self.assertEqual(empty.status_code, 200)
+            self.assertEqual(empty.json(), [])
+
+    def test_vault_api_fails_closed_with_the_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest = root / "index/assets_manifest.json"
+            manifest.parent.mkdir(parents=True)
+            themes = root / "themes"
+            service = VaultService(themes_dir=themes)
+            app = FastAPI()
+            app.include_router(theme_router, prefix="/api/v1")
+            app.dependency_overrides[get_vault_service] = lambda: service
+            client = TestClient(app)
+            self.addCleanup(client.close)
+
+            with patch(
+                "app.api.v1.theme.get_settings",
+                return_value=SimpleNamespace(MANIFEST_PATH=manifest),
+            ):
+                missing = client.get("/api/v1/vault")
+                manifest.write_text("{}", encoding="utf-8")
+                healthy = client.get("/api/v1/vault")
+
+            self.assertEqual(missing.status_code, 503)
+            self.assertEqual(
+                missing.json()["detail"]["code"],
+                "catalog_projection_missing",
+            )
+            self.assertEqual(healthy.status_code, 200)
+            self.assertEqual(healthy.json(), [])
+            self.assertEqual(
+                len(healthy.headers["X-Haypile-Manifest-Generation"]),
+                64,
+            )
 
     def test_bundles_api_supports_latest_and_concrete_batch_without_changing_default(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

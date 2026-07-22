@@ -10,6 +10,7 @@ import locale
 import logging
 import math
 import os
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -248,6 +249,40 @@ class DroppedMediaHTMLParser(HTMLParser):
             self._audio_depth -= 1
 
 
+def _ingest_batch_preflight_error(
+    files: list[Path],
+    storage_dir: Path,
+    *,
+    max_files: int,
+    max_bytes: int,
+    reserve_bytes: int,
+) -> str:
+    if len(files) > max_files:
+        return ui_text(
+            f"单次最多收纳 {max_files} 个文件",
+            f"A single drop can contain at most {max_files} files",
+        )
+    total_bytes = 0
+    for path in files:
+        try:
+            if path.is_file() and not path.is_symlink():
+                total_bytes += max(0, path.stat().st_size)
+        except OSError:
+            continue
+    if total_bytes > max_bytes:
+        return ui_text("单次收纳总量不能超过 2GB", "A single drop cannot exceed 2GB")
+    try:
+        free_bytes = shutil.disk_usage(storage_dir).free
+    except OSError:
+        return ui_text("无法确认素材库剩余空间", "Could not check asset storage space")
+    if free_bytes < total_bytes + reserve_bytes:
+        return ui_text(
+            "素材库空间不足，请至少保留 256MB 余量",
+            "Not enough storage space; keep at least 256MB free",
+        )
+    return ""
+
+
 class RemoteDownloadWorker(QThread):
     finished_signal = Signal(object, str, bool)
     progress_signal = Signal(int, str)
@@ -264,10 +299,18 @@ class RemoteDownloadWorker(QThread):
         self.incoming_dir = incoming_dir
 
     def run(self) -> None:
+        downloaded: list[Path] = []
+        try:
+            self._run_downloads(downloaded)
+        finally:
+            if self.isInterruptionRequested():
+                for path in downloaded:
+                    path.unlink(missing_ok=True)
+
+    def _run_downloads(self, downloaded: list[Path]) -> None:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
             self.incoming_dir.chmod(0o700)
-        downloaded: list[Path] = []
         failed = 0
         too_large = 0
         unsupported = 0
@@ -349,6 +392,9 @@ class IngestWorker(QThread):
     }
     ALLOWED_AUDIO_MIME: set[str] = set(AUDIO_CONTENT_TYPE_EXTENSIONS)
     MAX_FILE_SIZE_BYTES: int = 500 * 1024 * 1024
+    MAX_DROP_FILES: int = 256
+    MAX_DROP_BYTES: int = 2 * 1024 * 1024 * 1024
+    MIN_FREE_RESERVE_BYTES: int = 256 * 1024 * 1024
     HASH_CHUNK_SIZE: int = 1024 * 1024
 
     def __init__(self, files: list[Path], assets_dir: Path, *, ai_enabled: bool | None = None) -> None:
@@ -380,6 +426,19 @@ class IngestWorker(QThread):
         self._loop = None
 
     def run(self) -> None:
+        try:
+            self._run_ingest()
+        except Exception as exc:
+            logger.exception("Unexpected ingest worker failure error_type=%s", type(exc).__name__)
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit(
+                    ui_text("入库意外中断，重启后将自动恢复", "Import stopped unexpectedly; restart to recover"),
+                    False,
+                )
+        finally:
+            self._close_loop()
+
+    def _run_ingest(self) -> None:
         accepted_count = 0
         duplicate_count = 0
         renamed_count = 0
@@ -387,6 +446,10 @@ class IngestWorker(QThread):
         recovered_theme_count = 0
         staging_dir = self.settings.STORAGE_DIR / "staging" / "ingest"
         quarantine_dir = self.settings.STORAGE_DIR / "quarantine" / "ingest"
+        preflight_error = self._batch_preflight_error()
+        if preflight_error:
+            self.finished_signal.emit(preflight_error, False)
+            return
         try:
             mark_manifest_dirty(self.settings.MANIFEST_PATH)
             self.storage_runtime.recover_incomplete_ingest(
@@ -559,7 +622,11 @@ class IngestWorker(QThread):
         scanner = AssetScanner()
         manifest_ready = True
         try:
-            self._run_coro(scanner.scan_assets_directory())
+            self._run_coro(
+                scanner.scan_assets_directory(should_stop=self.isInterruptionRequested)
+            )
+        except InterruptedError:
+            return
         except (OSError, RuntimeError, ValueError):
             manifest_ready = False
             logger.warning("Asset manifest projection failed; Agent access is paused until recovery")
@@ -611,6 +678,15 @@ class IngestWorker(QThread):
         self.progress_signal.emit(100, ui_text("入库完成", "Import complete"))
         self.finished_signal.emit(message, True)
         self._close_loop()
+
+    def _batch_preflight_error(self) -> str:
+        return _ingest_batch_preflight_error(
+            self.files,
+            self.settings.STORAGE_DIR,
+            max_files=self.MAX_DROP_FILES,
+            max_bytes=self.MAX_DROP_BYTES,
+            reserve_bytes=self.MIN_FREE_RESERVE_BYTES,
+        )
 
     def _build_hash_index(self) -> dict[str, Path]:
         return self.storage_runtime.asset_hash_index(self.assets_dir)
@@ -861,6 +937,8 @@ class AIRefreshWorker(QThread):
 
     def run(self) -> None:
         bundle_id = str(self.bundle.get("id") or "")
+        if self.isInterruptionRequested():
+            return
         loop = asyncio.new_event_loop()
         try:
             classification = loop.run_until_complete(
@@ -878,6 +956,8 @@ class AIRefreshWorker(QThread):
             return
         finally:
             loop.close()
+        if self.isInterruptionRequested():
+            return
         classification, auto_ready = classification
         suggestions = classification.ai_suggestions()
         source = str(suggestions.get("source") or "").strip()
@@ -1955,12 +2035,15 @@ class MaterialPanelWindow(QWidget):
         summary = build_material_panel_summary()
         service = BundleService()
         list_bundles = getattr(service, "list_bundles", None)
-        if callable(list_bundles):
-            all_bundles = list_bundles()
-        else:
+        catalog_unavailable = False
+        try:
+            all_bundles = list_bundles() if callable(list_bundles) else []
+        except ManifestReadinessError:
+            all_bundles = []
+            catalog_unavailable = True
+        if not callable(list_bundles) and not catalog_unavailable:
             # Keep lightweight adapters usable while the production service
             # still takes the single full-scan path above.
-            all_bundles = []
             for item in summary.recent_items:
                 source_key = str(item.source_key or "").strip()
                 bundle_id = Path(source_key).stem or Path(item.preview_url).stem
@@ -1983,10 +2066,17 @@ class MaterialPanelWindow(QWidget):
             for bundle in all_bundles
             if str(bundle.get("source_key") or "")
         }
-        if self._batch_scope == "latest":
-            scoped_bundles = list_bundles(batch_id="latest") if callable(list_bundles) else all_bundles
+        if catalog_unavailable:
+            scoped_bundles = []
+            scoped_items = []
+        elif self._batch_scope == "latest":
+            try:
+                scoped_bundles = list_bundles(batch_id="latest") if callable(list_bundles) else all_bundles
+            except ManifestReadinessError:
+                catalog_unavailable = True
+                scoped_bundles = []
             scoped_ids = {str(bundle.get("id") or "") for bundle in scoped_bundles}
-            scoped_items = [
+            scoped_items = [] if catalog_unavailable else [
                 item for item in summary.recent_items if self._bundle_for_item(item)["id"] in scoped_ids
             ]
         else:
@@ -2023,7 +2113,14 @@ class MaterialPanelWindow(QWidget):
         self.copy_selected_button.setEnabled(False)
         self.copy_ready_button.setVisible(bool(scoped_items) and not self._embedded)
         if not scoped_items:
-            self.detail_label.setText(ui_text("拖入图片或音频开始收纳", "Drop images or audio to start storing"))
+            self.detail_label.setText(
+                ui_text(
+                    "素材已保存，Agent 接口待恢复",
+                    "Assets are saved; Agent access is pending recovery",
+                )
+                if catalog_unavailable and summary.total_count > 0
+                else ui_text("拖入图片或音频开始收纳", "Drop images or audio to start storing")
+            )
             self.detail_label.show()
         elif not self._recent_items:
             self.detail_label.setText(ui_text("没有匹配资源", "No matching assets"))
@@ -2310,7 +2407,7 @@ class MaterialPanelWindow(QWidget):
             if self._toast_callback is not None:
                 self._toast_callback(ui_text("AI 分拣未开启", "AI sorting is off"), False)
             return
-        bundle = BundleService().get_bundle(self._selected_bundle_id)
+        bundle = self._get_bundle_safely(self._selected_bundle_id)
         if bundle is None:
             self.detail_label.setText(ui_text("资源不存在", "Asset not found"))
             self.detail_label.show()
@@ -2336,11 +2433,11 @@ class MaterialPanelWindow(QWidget):
         if self._toast_callback is not None:
             self._toast_callback(message, success)
         if bundle_id != self._selected_bundle_id:
-            current = BundleService().get_bundle(self._selected_bundle_id) if self._selected_bundle_id else None
+            current = self._get_bundle_safely(self._selected_bundle_id) if self._selected_bundle_id else None
             if current is not None:
                 self._refresh_retry_ai_button(current)
             return
-        bundle = BundleService().get_bundle(bundle_id)
+        bundle = self._get_bundle_safely(bundle_id)
         if bundle is not None:
             self._show_detail_for_bundle(bundle, copied=False)
             if not success:
@@ -2370,7 +2467,7 @@ class MaterialPanelWindow(QWidget):
             return
         try:
             updated = BundleService().set_bundle_role(self._selected_bundle_id, role)
-        except ValueError:
+        except (ManifestReadinessError, ValueError):
             updated = None
         if updated is None:
             self.detail_label.setText(ui_text("用途更新失败", "Role update failed"))
@@ -2385,7 +2482,7 @@ class MaterialPanelWindow(QWidget):
             return
         try:
             updated = BundleService().set_bundle_audio_usage(self._selected_bundle_id, usage)
-        except ValueError:
+        except (ManifestReadinessError, ValueError):
             updated = None
         if updated is None:
             self.detail_label.setText(ui_text("音频用途更新失败", "Audio usage update failed"))
@@ -2399,7 +2496,7 @@ class MaterialPanelWindow(QWidget):
         self._leave_search_input_mode()
         if not self._selected_bundle_id:
             return
-        bundle = BundleService().get_bundle(self._selected_bundle_id)
+        bundle = self._get_bundle_safely(self._selected_bundle_id)
         if bundle is None:
             return
         QApplication.clipboard().setText(
@@ -2408,6 +2505,19 @@ class MaterialPanelWindow(QWidget):
         self._show_detail_for_bundle(bundle, copied=True)
         if self._toast_callback is not None:
             self._toast_callback(ui_text("已复制 handoff", "Handoff copied"), True)
+
+    def _get_bundle_safely(self, bundle_id: str) -> dict[str, object] | None:
+        try:
+            return BundleService().get_bundle(bundle_id)
+        except ManifestReadinessError:
+            self.detail_label.setText(
+                ui_text(
+                    "素材已保存，Agent 接口待恢复",
+                    "Assets are saved; Agent access is pending recovery",
+                )
+            )
+            self.detail_label.show()
+            return None
 
     @staticmethod
     def _suggested_role(value: object) -> str:
@@ -2600,7 +2710,17 @@ class MaterialPanelWindow(QWidget):
 
     def _copy_ready_handoff(self) -> None:
         self._leave_search_input_mode()
-        bundles = BundleService().list_bundles(status="ready")
+        try:
+            bundles = BundleService().list_bundles(status="ready")
+        except ManifestReadinessError:
+            self.detail_label.setText(
+                ui_text(
+                    "素材已保存，Agent 接口待恢复",
+                    "Assets are saved; Agent access is pending recovery",
+                )
+            )
+            self.detail_label.show()
+            return
         if not bundles:
             self.detail_label.setText(ui_text("没有可用 assets\n先拖入或确认用途", "No ready assets\nDrop files or confirm roles"))
             self.detail_label.show()
@@ -4164,6 +4284,10 @@ class HaypileFloatingBall(QWidget):
 
         self.api_process: subprocess.Popen[str] | None = None
         self.api_owned_by_gui = False
+        self._api_log_handle = None
+        self._backend_phase = "idle"
+        self._backend_phase_started_at = 0.0
+        self._backend_wait_notice_shown = False
         self.worker: IngestWorker | None = None
         self.remote_worker: RemoteDownloadWorker | None = None
         self.ai_batch_worker: AIBatchWorker | None = None
@@ -4210,6 +4334,8 @@ class HaypileFloatingBall(QWidget):
         self._geometry_animation: QPropertyAnimation | None = None
         self._closing = False
         self._cleanup_done = False
+        self._shutdown_started_at = 0.0
+        self._shutdown_wait_notice_shown = False
         self._collapse_timer = QTimer(self)
         self._collapse_timer.setSingleShot(True)
         self._collapse_timer.setInterval(170)
@@ -4231,6 +4357,12 @@ class HaypileFloatingBall(QWidget):
         self._drag_awareness_timer = QTimer(self)
         self._drag_awareness_timer.setInterval(80)
         self._drag_awareness_timer.timeout.connect(self._poll_external_drag_candidate)
+        self._backend_timer = QTimer(self)
+        self._backend_timer.setInterval(150)
+        self._backend_timer.timeout.connect(self._poll_api_server)
+        self._shutdown_timer = QTimer(self)
+        self._shutdown_timer.setInterval(100)
+        self._shutdown_timer.timeout.connect(self._poll_shutdown)
 
         self.setWindowFlags(
             Qt.WindowType.Window
@@ -4736,19 +4868,34 @@ class HaypileFloatingBall(QWidget):
     def closeEvent(self, event) -> None:
         self._drag_awareness_timer.stop()
         self._clear_external_drag_candidate()
-        self.shutdown()
+        if not self._cleanup_done:
+            event.ignore()
+            self.shutdown()
+            return
         event.accept()
         super().closeEvent(event)
 
     def start_api_server(self) -> None:
-        if self.api_process is not None and self.api_process.poll() is None:
-            return
+        if self.api_process is not None:
+            if self.api_process.poll() is None:
+                return
+            self._finish_api_process()
 
-        if self._probe_backend_via_ipc():
+        existing = self._probe_backend_response()
+        if self._is_configured_haypile_backend(existing):
             self.api_owned_by_gui = False
+            self._backend_phase = "ready"
             return
         if self._is_port_open(self.settings.HOST, self.settings.PORT):
             self.api_owned_by_gui = False
+            self._backend_phase = "conflict"
+            self.show_toast(
+                ui_text(
+                    f"端口 {self.settings.PORT} 已被其他程序占用",
+                    f"Port {self.settings.PORT} is used by another program",
+                ),
+                success=False,
+            )
             return
 
         allow_gui_backend_start = (
@@ -4767,47 +4914,162 @@ class HaypileFloatingBall(QWidget):
             creationflags = (
                 subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
             )
-        self.api_process = subprocess.Popen(
-            command,
-            cwd=str(self.project_root),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            env=env,
-            creationflags=creationflags,
-        )
-        if self._wait_backend_ready(timeout_seconds=5.0):
-            self.api_owned_by_gui = True
+        try:
+            self.settings.LOG_DIR.mkdir(parents=True, exist_ok=True)
+            log_path = self.settings.LOG_DIR / "backend-process.log"
+            self._api_log_handle = log_path.open("a", encoding="utf-8", buffering=1)
+            if os.name != "nt":
+                log_path.chmod(0o600)
+            self.api_process = subprocess.Popen(
+                command,
+                cwd=str(self.project_root),
+                stdout=self._api_log_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+                creationflags=creationflags,
+            )
+        except OSError as exc:
+            self._close_api_log()
+            logger.error("Backend process launch failed error_type=%s", type(exc).__name__)
+            self.show_toast(ui_text("后台服务启动失败", "Backend failed to start"), success=False)
             return
-        self.stop_api_server()
-        self.show_toast(ui_text("后台服务启动失败", "Backend failed to start"), success=False)
+        self.api_owned_by_gui = True
+        self._backend_phase = "starting"
+        self._backend_phase_started_at = time.monotonic()
+        self._backend_wait_notice_shown = False
+        self._backend_timer.start()
 
     def stop_api_server(self) -> None:
+        if self.api_process is None:
+            self._backend_phase = "idle"
+            return
+        if self.api_process.poll() is not None:
+            self._finish_api_process()
+            return
         if self.api_owned_by_gui:
             send_ipc_request({"type": "stop"}, timeout=0.6)
-        if self.api_process is None:
+        self._backend_phase = "stopping"
+        self._backend_phase_started_at = time.monotonic()
+        self._backend_timer.start()
+
+    def _poll_api_server(self) -> None:
+        process = self.api_process
+        if process is None:
+            self._backend_timer.stop()
             return
-        if self.api_process.poll() is None:
-            self.api_process.terminate()
-            try:
-                self.api_process.wait(timeout=4)
-            except subprocess.TimeoutExpired:
-                self.api_process.kill()
-                self.api_process.wait(timeout=2)
-            if self.api_process.poll() is None:
-                self._kill_process_tree(self.api_process.pid)
+        if process.poll() is not None:
+            failed_to_start = self._backend_phase == "starting"
+            self._finish_api_process()
+            if failed_to_start and not self._closing:
+                self.show_toast(ui_text("后台服务启动失败", "Backend failed to start"), success=False)
+            return
+
+        now = time.monotonic()
+        if self._backend_phase == "starting":
+            response = self._probe_backend_response()
+            if self._is_configured_haypile_backend(
+                response,
+                require_ready=True,
+                expected_pid=getattr(process, "pid", None),
+            ):
+                self._backend_phase = "ready"
+                self._backend_timer.stop()
+                self._refresh_ai_menu_status()
+                return
+            if now - self._backend_phase_started_at >= 5.0 and not self._backend_wait_notice_shown:
+                self._backend_wait_notice_shown = True
+                self.show_toast(
+                    ui_text("后台仍在准备素材库", "Backend is still preparing the asset library"),
+                    success=True,
+                )
+            return
+
+        elapsed = now - self._backend_phase_started_at
+        if self._backend_phase == "stopping" and elapsed >= 10.0:
+            logger.warning("Backend graceful shutdown timed out; sending terminate")
+            process.terminate()
+            self._backend_phase = "terminating"
+            self._backend_phase_started_at = now
+        elif self._backend_phase == "terminating" and elapsed >= 3.0:
+            logger.error("Backend terminate timed out; forcing process exit")
+            if sys.platform.startswith("win"):
+                self._kill_process_tree(process.pid)
+            else:
+                process.kill()
+            self._backend_phase = "killing"
+            self._backend_phase_started_at = now
+        elif self._backend_phase == "killing" and elapsed >= 2.0:
+            if sys.platform.startswith("win"):
+                self._kill_process_tree(process.pid)
+            else:
+                process.kill()
+
+    def _finish_api_process(self) -> None:
         self.api_process = None
         self.api_owned_by_gui = False
+        self._backend_phase = "idle"
+        self._backend_timer.stop()
+        self._close_api_log()
+
+    def _close_api_log(self) -> None:
+        handle, self._api_log_handle = self._api_log_handle, None
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _is_haypile_backend(response: object, *, require_ready: bool = False) -> bool:
+        if not isinstance(response, dict):
+            return False
+        if response.get("ok") is not True:
+            return False
+        if response.get("product") != "haypile" or response.get("protocol_version") != 1:
+            return False
+        return not require_ready or response.get("ready") is True
+
+    def _is_configured_haypile_backend(
+        self,
+        response: object,
+        *,
+        require_ready: bool = False,
+        expected_pid: int | None = None,
+    ) -> bool:
+        if not self._is_haypile_backend(response, require_ready=require_ready):
+            return False
+        assert isinstance(response, dict)
+        try:
+            port = int(response.get("port"))
+            pid = int(response.get("pid"))
+        except (TypeError, ValueError):
+            return False
+        if response.get("host") != self.settings.HOST or port != self.settings.PORT:
+            return False
+        return expected_pid is None or pid == expected_pid
+
+    def _probe_backend_response(self) -> dict[str, object] | None:
+        response = send_ipc_request({"type": "ping"}, timeout=0.45)
+        return response if isinstance(response, dict) else None
 
     def _probe_backend_via_ipc(self) -> bool:
-        response = send_ipc_request({"type": "ping"}, timeout=0.45)
-        return bool(response and response.get("ok"))
+        return self._is_configured_haypile_backend(self._probe_backend_response())
 
     def _wait_backend_ready(self, timeout_seconds: float = 5.0) -> bool:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
-            response = send_ipc_request({"type": "ping"}, timeout=0.45)
-            if response and response.get("ok") and response.get("ready"):
+            response = self._probe_backend_response()
+            expected_pid = (
+                self.api_process.pid
+                if self.api_owned_by_gui and self.api_process is not None
+                else None
+            )
+            if self._is_configured_haypile_backend(
+                response,
+                require_ready=True,
+                expected_pid=expected_pid,
+            ):
                 return True
             time.sleep(0.12)
         return False
@@ -4899,6 +5161,8 @@ class HaypileFloatingBall(QWidget):
         )
 
     def _start_remote_download_worker(self, urls: list[str], local_files: list[Path] | None = None) -> None:
+        if self._closing:
+            return
         self.remote_worker = RemoteDownloadWorker(urls, self.settings.STORAGE_DIR / "incoming" / "browser")
         self.remote_worker.progress_signal.connect(self._on_ingest_progress)
         self.remote_worker.finished_signal.connect(
@@ -4920,6 +5184,10 @@ class HaypileFloatingBall(QWidget):
         success: bool,
         local_files: list[Path],
     ) -> None:
+        if self._closing:
+            for path in downloaded_files:
+                path.unlink(missing_ok=True)
+            return
         if self.remote_worker is not None:
             self.remote_worker.deleteLater()
             self.remote_worker = None
@@ -4938,6 +5206,8 @@ class HaypileFloatingBall(QWidget):
         self._start_worker(files)
 
     def _start_worker(self, files: list[Path]) -> None:
+        if self._closing:
+            return
         merged_files: list[Path] = []
         seen: set[str] = set()
         for file_path in files:
@@ -4965,6 +5235,8 @@ class HaypileFloatingBall(QWidget):
         )
 
     def _on_ingest_finished(self, message: str, success: bool) -> None:
+        if self._closing:
+            return
         if success:
             now = time.monotonic()
             if self._is_duplicate_only_result(message):
@@ -5001,6 +5273,8 @@ class HaypileFloatingBall(QWidget):
 
     def _on_ingest_batch(self, batch_id: str, _summary: object) -> None:
         self.latest_batch_id = batch_id
+        if self._closing:
+            return
         if hasattr(self.material_panel, "set_batch_scope"):
             self.material_panel.set_batch_scope("latest")
         if self.ai_enabled and not self.low_power_enabled:
@@ -5016,15 +5290,25 @@ class HaypileFloatingBall(QWidget):
         self._start_next_ai_batch()
 
     def _start_next_ai_batch(self) -> None:
-        if self.ai_batch_worker is not None or not self.ai_enabled or self.low_power_enabled:
+        if (
+            self._closing
+            or self.ai_batch_worker is not None
+            or not self.ai_enabled
+            or self.low_power_enabled
+        ):
             return
         while self._ai_batch_queue:
             batch_id = self._ai_batch_queue.pop(0)
-            bundles = BundleService().list_bundles(
-                status="pending",
-                asset_type="image",
-                batch_id=batch_id,
-            )
+            try:
+                bundles = BundleService().list_bundles(
+                    status="pending",
+                    asset_type="image",
+                    batch_id=batch_id,
+                )
+            except ManifestReadinessError:
+                self._ai_batch_queue.insert(0, batch_id)
+                QTimer.singleShot(1000, self._start_next_ai_batch)
+                return
             if not bundles:
                 continue
             self.ai_batch_worker = AIBatchWorker(
@@ -5039,6 +5323,8 @@ class HaypileFloatingBall(QWidget):
             return
 
     def _on_ai_batch_finished(self, batch_id: str, message: str, result_status: str) -> None:
+        if self._closing:
+            return
         worker = self.ai_batch_worker
         self.ai_batch_worker = None
         if worker is not None:
@@ -5364,9 +5650,7 @@ class HaypileFloatingBall(QWidget):
             return
         if self.worker.isRunning():
             self.worker.requestInterruption()
-            if not self.worker.wait(1800):
-                self.worker.terminate()
-                self.worker.wait(600)
+            return
         self.worker.deleteLater()
         self.worker = None
 
@@ -5375,9 +5659,7 @@ class HaypileFloatingBall(QWidget):
             return
         if self.remote_worker.isRunning():
             self.remote_worker.requestInterruption()
-            if not self.remote_worker.wait(1800):
-                self.remote_worker.terminate()
-                self.remote_worker.wait(600)
+            return
         self.remote_worker.deleteLater()
         self.remote_worker = None
 
@@ -5386,17 +5668,26 @@ class HaypileFloatingBall(QWidget):
             return
         if self.ai_batch_worker.isRunning():
             self.ai_batch_worker.requestInterruption()
-            if not self.ai_batch_worker.wait(1800):
-                self.ai_batch_worker.terminate()
-                self.ai_batch_worker.wait(600)
+            return
         self.ai_batch_worker.deleteLater()
         self.ai_batch_worker = None
 
-    def shutdown(self) -> None:
-        if self._cleanup_done:
+    def _shutdown_ai_refresh_worker(self) -> None:
+        worker = self.material_panel.ai_refresh_worker
+        if worker is None:
             return
-        self._cleanup_done = True
+        if worker.isRunning():
+            worker.requestInterruption()
+            return
+        worker.deleteLater()
+        self.material_panel.ai_refresh_worker = None
+
+    def shutdown(self) -> None:
+        if self._cleanup_done or self._closing:
+            return
         self._closing = True
+        self._shutdown_started_at = time.monotonic()
+        self._shutdown_wait_notice_shown = False
         self._collapse_timer.stop()
         self._drag_prepare_timer.stop()
         self._exit_timer.stop()
@@ -5409,10 +5700,50 @@ class HaypileFloatingBall(QWidget):
         self._shutdown_remote_worker()
         self._shutdown_worker()
         self._shutdown_ai_batch_worker()
+        self._shutdown_ai_refresh_worker()
         self.stop_api_server()
-        self.quick_menu.hide()
-        self.quick_menu.close()
-        QTimer.singleShot(0, QCoreApplication.quit)
+        self.show_toast(
+            ui_text("正在安全结束当前操作", "Finishing the current operation safely"),
+            success=True,
+        )
+        self._shutdown_timer.start()
+        self._poll_shutdown()
+
+    def _poll_shutdown(self) -> None:
+        self._shutdown_remote_worker()
+        self._shutdown_worker()
+        self._shutdown_ai_batch_worker()
+        self._shutdown_ai_refresh_worker()
+        workers_done = all(
+            worker is None
+            for worker in (
+                self.remote_worker,
+                self.worker,
+                self.ai_batch_worker,
+                self.material_panel.ai_refresh_worker,
+            )
+        )
+        backend_done = self.api_process is None
+        if workers_done and backend_done:
+            self._cleanup_done = True
+            self._shutdown_timer.stop()
+            self._close_api_log()
+            self.quick_menu.hide()
+            self.quick_menu.close()
+            QTimer.singleShot(0, QCoreApplication.quit)
+            return
+        if (
+            time.monotonic() - self._shutdown_started_at >= 30.0
+            and not self._shutdown_wait_notice_shown
+        ):
+            self._shutdown_wait_notice_shown = True
+            self.show_toast(
+                ui_text(
+                    "仍在安全结束；如必须立即退出，请使用系统强制退出",
+                    "Still finishing safely; use the system Force Quit only if necessary",
+                ),
+                success=False,
+            )
 
     def _reposition_progress_window(self) -> None:
         if self.quick_menu.isVisible():
@@ -5472,7 +5803,17 @@ class HaypileFloatingBall(QWidget):
                 self.show_toast(ui_text("还没有最新批次", "No latest batch"), success=False)
                 return
             batch_id = str(latest["id"])
-            bundles = service.list_bundles(status="ready", batch_id=batch_id)
+            try:
+                bundles = service.list_bundles(status="ready", batch_id=batch_id)
+            except ManifestReadinessError:
+                self.show_toast(
+                    ui_text(
+                        "素材已保存，Agent 接口待恢复",
+                        "Assets are saved; Agent access is pending recovery",
+                    ),
+                    success=False,
+                )
+                return
             if not bundles:
                 self.show_toast(ui_text("最新批次还没有可用素材", "Latest batch has no ready assets"), success=False)
                 return
@@ -5489,7 +5830,17 @@ class HaypileFloatingBall(QWidget):
             )
             return
         if action == "ready_handoff":
-            bundles = BundleService().list_bundles(status="ready")
+            try:
+                bundles = BundleService().list_bundles(status="ready")
+            except ManifestReadinessError:
+                self.show_toast(
+                    ui_text(
+                        "素材已保存，Agent 接口待恢复",
+                        "Assets are saved; Agent access is pending recovery",
+                    ),
+                    success=False,
+                )
+                return
             if not bundles:
                 self.show_toast(ui_text("没有可用素材", "No ready assets"), success=False)
                 return

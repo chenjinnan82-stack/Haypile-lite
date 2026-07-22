@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import multiprocessing
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 from tempfile import TemporaryDirectory
@@ -7,6 +9,12 @@ from pathlib import Path
 
 from app.core.config import Settings
 from app.core import ipc
+
+
+def _read_ipc_key_in_process(key_file: str) -> str:
+    os.environ["HAYPILE_IPC_AUTHKEY_FILE"] = key_file
+    os.environ["IPC_AUTHKEY"] = ""
+    return Settings(_env_file=None).IPC_AUTHKEY
 
 
 class IpcConfigTests(unittest.TestCase):
@@ -59,6 +67,36 @@ class IpcConfigTests(unittest.TestCase):
 
         self.assertNotEqual(ipc_key, "admin-secret")
         self.assertEqual(len(ipc_key), 64)
+
+    def test_ipc_authkey_first_creation_is_atomic_across_processes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = multiprocessing.get_context("spawn")
+            call_count = 0
+            with context.Pool(processes=12) as pool:
+                for round_index in range(10):
+                    key_file = root / f"round-{round_index}" / "ipc_authkey"
+                    keys = pool.map(_read_ipc_key_in_process, [str(key_file)] * 12)
+                    call_count += len(keys)
+                    self.assertEqual(len(set(keys)), 1)
+                    self.assertEqual(key_file.read_text(encoding="utf-8"), keys[0])
+                    if os.name != "nt":
+                        self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+            self.assertGreaterEqual(call_count, 100)
+
+    def test_ipc_authkey_recovers_empty_file_under_lock(self) -> None:
+        with TemporaryDirectory() as tmp:
+            key_file = Path(tmp) / "ipc_authkey"
+            key_file.write_text("", encoding="utf-8")
+            with patch.dict(
+                "os.environ",
+                {"HAYPILE_IPC_AUTHKEY_FILE": str(key_file), "IPC_AUTHKEY": ""},
+                clear=False,
+            ):
+                key = Settings(_env_file=None).IPC_AUTHKEY
+
+            self.assertEqual(len(key), 64)
+            self.assertEqual(key_file.read_text(encoding="utf-8"), key)
 
     @unittest.skipIf(ipc.is_windows(), "Unix socket test")
     def test_send_ipc_request_uses_configured_authkey_and_logs_failure(self) -> None:

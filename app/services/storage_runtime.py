@@ -749,6 +749,32 @@ class StorageRuntimeDB:
             return {}
         return cls._verified_asset_hash_index(rows, assets_dir)
 
+    @classmethod
+    def read_recorded_asset_hash_index(cls, db_path: Path, assets_dir: Path) -> dict[str, Path]:
+        """Read recorded identities for reporting missing committed assets."""
+        if not db_path.is_file():
+            return {}
+        try:
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                rows = conn.execute("SELECT sha256, dst_path FROM vfs_asset_links").fetchall()
+        except sqlite3.Error:
+            return {}
+        root = assets_dir.resolve(strict=False)
+        index: dict[str, Path] = {}
+        for sha256_hex, dst_path in rows:
+            if not sha256_hex or not dst_path:
+                continue
+            candidate = Path(str(dst_path))
+            if candidate.is_symlink():
+                continue
+            resolved = candidate.resolve(strict=False)
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                continue
+            index[str(sha256_hex)] = resolved
+        return index
+
     @staticmethod
     def _verified_asset_hash_index(rows: list[tuple[object, ...]], assets_dir: Path) -> dict[str, Path]:
         root = assets_dir.resolve(strict=False)

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.0-alpha.3 (seed safety candidate)
+
+- Replace forced Qt thread termination with cooperative cancellation and a
+  visible, event-driven safe shutdown flow.
+- Identify the local backend over authenticated IPC before treating an open
+  port as Haypile; allow slow startup and retain private backend logs.
+- Create the IPC secret under a cross-process lock with fsync and atomic replace.
+- Restrict MCP to loopback by default; remote endpoints require explicit opt-in
+  and HTTPS, with credentials, redirects, paths, queries, and fragments rejected.
+- Fail bundle and vault reads closed while the manifest projection is dirty,
+  missing, or unreadable, and expose the manifest generation on successful reads.
+- Report manifest-registered files that lost their physical copy as `missing`
+  and exclude them from ready handoffs.
+- Reject oversized local drops or insufficient disk space before creating a
+  batch or changing the manifest projection.
+- Add same-origin resource policy to manifest-gated static responses.
+
 ## v0.3.0-alpha.2 (hardening candidate)
 
 - Pause the older desktop test download path while both platforms are rebuilt.

@@ -60,6 +60,7 @@ class ManifestStaticFiles(StaticFiles):
         response = await super().get_response(path, scope)
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response

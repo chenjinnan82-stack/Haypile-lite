@@ -1,7 +1,8 @@
 # v0.3 Open Source Release Copy
 
-Draft copy for `v0.3.0-alpha.2`. Do not publish it until the private image
-evaluation, macOS/Windows package checks, and 3–5 user pilot have passed.
+Draft copy for `v0.3.0-alpha.3`. Do not publish it until the security regression,
+private image evaluation, macOS/Windows package checks, and 3–5 user pilot have
+passed.
 
 ## GitHub About
 
@@ -26,7 +27,7 @@ provenance
 
 ## Release Title
 
-Haypile v0.3.0-alpha.2 · Security-hardened current-project AI asset intake
+Haypile v0.3.0-alpha.3 · Safety seed build for local Agent asset handoff
 
 ## GitHub Release Body
 
@@ -40,21 +41,25 @@ remain supported.
 
 ### Highlights
 
-- Storage and manifest updates complete before optional AI sorting.
-- Every valid drop receives a batch ID; duplicates remain part of that batch.
-- Conservative image-role suggestions with deterministic technical quality gates.
-- Local Ollama, authorized OpenAI-compatible API, or no-AI operation.
-- Latest-batch handoff through read-only HTTP and MCP.
-- API keys remain in Keychain or Credential Manager, never public metadata.
-- 263 automated tests plus source backend/MCP smoke checks.
+- Cooperative cancellation replaces forced Qt thread termination; shutdown waits
+  for intake, download, AI, manifest, and the owned backend to finish safely.
+- Authenticated IPC identifies the Haypile process, port, PID, protocol, and
+  readiness before the GUI trusts an open local port.
+- IPC secrets are created under a cross-process lock with fsync and atomic replace.
+- MCP is loopback-only by default; explicit remote use requires HTTPS opt-in.
+- Bundle and vault reads fail closed while the manifest projection is not trusted.
+- Missing physical copies are never ready and are excluded from ready handoffs.
+- Local drops are rejected before persistence when count, total size, or free-space
+  limits are exceeded.
+- 291 Python 3.12 tests plus packaged backend/MCP smoke checks.
 
 ### Install
 
 Attach these files only after both platform builds pass:
 
 ```text
-Haypile-v0.3.0-alpha.2-macos-arm64.app.zip
-Haypile-v0.3.0-alpha.2-windows-x64.zip
+Haypile-v0.3.0-alpha.3-macos-arm64.app.zip
+Haypile-v0.3.0-alpha.3-windows-x64.zip
 matching .sha256 files
 ```
 
