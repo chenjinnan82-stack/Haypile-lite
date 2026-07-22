@@ -17,7 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.file_lock import InterProcessFileLock
 
 
-APP_VERSION = "0.3.0a5"
+APP_VERSION = "0.3.0a6"
 SOURCE_BASE_DIR = Path(__file__).resolve().parents[2]
 _MODE_FILES = {"backend": "backend_host.py", "mcp": "mcp_server.py"}
 

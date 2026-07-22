@@ -1,6 +1,6 @@
 # v0.3 Open Source Release Copy
 
-Draft copy for `v0.3.0-alpha.5`. Do not publish it until the security regression
+Draft copy for `v0.3.0-alpha.6`. Do not publish it until the security regression
 and macOS/Windows package checks have passed. After
 publication, limit it to a 3–5 user pilot.
 
@@ -27,7 +27,7 @@ provenance
 
 ## Release Title
 
-Haypile v0.3.0-alpha.5 · Safety seed build for local Agent asset handoff
+Haypile v0.3.0-alpha.6 · Safety seed build for local Agent asset handoff
 
 ## GitHub Release Body
 
@@ -64,8 +64,8 @@ remain supported.
 Attach these files only after both platform builds pass:
 
 ```text
-Haypile-v0.3.0-alpha.5-macos-arm64.app.zip
-Haypile-v0.3.0-alpha.5-windows-x64.zip
+Haypile-v0.3.0-alpha.6-macos-arm64.app.zip
+Haypile-v0.3.0-alpha.6-windows-x64.zip
 matching .sha256 files
 ```
 

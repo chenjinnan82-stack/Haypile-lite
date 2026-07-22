@@ -16,7 +16,7 @@ try:
     os.environ.setdefault("IPC_AUTHKEY", "test-ipc-authkey")
     from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
     from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QMouseEvent, QPixmap
-    from PySide6.QtTest import QTest
+    from PySide6.QtTest import QSignalSpy, QTest
     from PySide6.QtWidgets import QApplication
 
     import app_gui as app_gui_module
@@ -52,6 +52,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         os.environ["HAYPILE_UI_LANG"] = "zh"
         os.environ["HAYPILE_ENABLE_EXPERIMENTAL_PROJECT_APPLY"] = "1"
         os.environ.pop("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH", None)
+
+    def _wait_for_search_refresh(self, panel: MaterialPanelWindow) -> None:
+        spy = QSignalSpy(panel._search_refresh_timer.timeout)
+        if panel._search_refresh_timer.isActive():
+            self.assertTrue(spy.wait(2_000), "search debounce timer did not fire")
 
     def tearDown(self) -> None:
         app_gui_module.set_ui_language("auto")
@@ -129,12 +134,13 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         panel = CountingPanel()
         try:
             panel.refresh_count = 0
+            spy = QSignalSpy(panel._search_refresh_timer.timeout)
             panel._on_search_changed("a")
             panel._on_search_changed("ab")
             panel._on_search_changed("abc")
             self.assertEqual(panel.refresh_count, 0)
 
-            QTest.qWait(220)
+            self.assertTrue(spy.wait(2_000), "search debounce timer did not fire")
             self.assertEqual(panel.refresh_count, 1)
         finally:
             panel.close()
@@ -768,23 +774,23 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             panel._set_filter_mode("all")
             panel.search_input.setText("icon")
-            QTest.qWait(200)
+            self._wait_for_search_refresh(panel)
             self.assertIn("icon.png", panel.item_labels[0].text())
             self.assertTrue(panel.item_labels[1].isHidden())
 
             panel.search_input.setText("主视觉")
-            QTest.qWait(200)
+            self._wait_for_search_refresh(panel)
             self.assertIn("hero.png", panel.item_labels[0].text())
             self.assertTrue(panel.item_labels[1].isHidden())
 
             panel.search_input.setText("可用")
-            QTest.qWait(200)
+            self._wait_for_search_refresh(panel)
             self.assertIn("hero.png", panel.item_labels[0].text())
             self.assertIn("icon.png", panel.item_labels[1].text())
             self.assertTrue(panel.item_labels[2].isHidden())
 
             panel.search_input.setText("不存在")
-            QTest.qWait(200)
+            self._wait_for_search_refresh(panel)
             self.assertEqual(panel.detail_label.text(), "没有匹配资源")
             self.assertTrue(panel.item_labels[0].isHidden())
         finally:
@@ -857,7 +863,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel._selected_bundle_id, "asset-3")
 
             panel.search_input.setText("asset-1")
-            QTest.qWait(200)
+            self._wait_for_search_refresh(panel)
             self.assertEqual(panel._page_index, 0)
             self.assertTrue(panel.page_row.isHidden())
             self.assertIn("asset-1.png", panel.item_labels[0].text())

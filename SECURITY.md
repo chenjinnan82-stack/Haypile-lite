@@ -20,7 +20,7 @@ which is enabled for this repository, or email the maintainer. Include:
 
 ## Supported Version
 
-`v0.3.0-alpha.5` is the current supported seed-user prerelease. Verify its
+`v0.3.0-alpha.6` is the current supported seed-user prerelease. Verify its
 published SHA-256 before running a desktop package. The incomplete `alpha.3`
 and historical `v0.2.x` assets remain available for provenance but are not
 supported test paths. Include the exact version or commit when reporting issues.
