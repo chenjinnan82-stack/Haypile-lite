@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.0-alpha.6 (seed safety candidate)
+
+- Keep the `alpha.5` source tag immutable after both desktop package gates
+  exposed the same timing-sensitive GUI debounce assertion.
+- Wait for the real Qt timer signal in search tests instead of assuming a
+  20-millisecond scheduling margin on loaded macOS and Windows runners.
+- Rebuild both desktop platforms from one corrected source commit without
+  changing the 180-millisecond product interaction.
+
 ## v0.3.0-alpha.5 (seed safety candidate)
 
 - Reject malformed or non-finite SVG geometry and AI confidence data before it

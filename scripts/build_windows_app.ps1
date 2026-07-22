@@ -6,7 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$ReleaseVersion = "0.3.0-alpha.5"
+$ReleaseVersion = "0.3.0-alpha.6"
 
 if ($env:OS -ne "Windows_NT") {
     throw "Haypile Windows builds must run on Windows."

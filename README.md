@@ -20,14 +20,14 @@ A local-first asset intake for AI creators and independent developers.
 
 ## Desktop Downloads
 
-`v0.3.0-alpha.5` is a safety seed prerelease for informed testing.
+`v0.3.0-alpha.6` is a safety seed prerelease for informed testing.
 
 | Platform | Download | Verify |
 | --- | --- | --- |
-| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.5/Haypile-v0.3.0-alpha.5-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.5/Haypile-v0.3.0-alpha.5-macos-arm64.app.zip.sha256) |
-| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.5/Haypile-v0.3.0-alpha.5-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.5/Haypile-v0.3.0-alpha.5-windows-x64.zip.sha256) |
+| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-macos-arm64.app.zip.sha256) |
+| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-windows-x64.zip.sha256) |
 
-[Release notes](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.5)
+[Release notes](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.6)
 
 The macOS build is ad-hoc signed and not notarized; right-click the app and
 choose **Open** on first launch. The Windows build is unsigned and portable;

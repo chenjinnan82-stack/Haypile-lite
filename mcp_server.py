@@ -63,7 +63,7 @@ BASE_URL = _validate_base_url(
 )
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = {PROTOCOL_VERSION, "2024-11-05"}
-SERVER_VERSION = "0.3.0-alpha.5"
+SERVER_VERSION = "0.3.0-alpha.6"
 MAX_LINE_BYTES = 1024 * 1024
 LOCAL_OPENER = urllib.request.build_opener(
     urllib.request.ProxyHandler({}),
