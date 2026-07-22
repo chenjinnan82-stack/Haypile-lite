@@ -22,7 +22,7 @@ $BuildDir = Join-Path $Root "build"
 $WindowsDeployDir = Join-Path $BuildDir "windows-deploy"
 $DistDir = Join-Path $Root "dist"
 $PortableDir = Join-Path $DistDir "Haypile"
-$Zip = Join-Path $DistDir "Haypile-v0.3.0-alpha.1-windows-x64.zip"
+$Zip = Join-Path $DistDir "Haypile-v0.3.0-alpha.2-windows-x64.zip"
 $Checksum = "$Zip.sha256"
 $IconSource = Join-Path $Root "assets/haypile-app-icon.png"
 $Icon = Join-Path $BuildDir "Haypile.ico"
@@ -110,6 +110,13 @@ try {
     if (-not (Get-ChildItem $PortableDir -Filter "qwindows.dll" -File -Recurse | Select-Object -First 1)) {
         throw "Missing Qt Windows platform plugin qwindows.dll."
     }
+    $BuildInfo = [ordered]@{
+        version = "0.3.0-alpha.2"
+        commit = (git rev-parse HEAD).Trim()
+        platform = "windows-x64"
+        workflow_run = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { "local" }
+    }
+    $BuildInfo | ConvertTo-Json | Set-Content (Join-Path $PortableDir "BUILD_INFO.json") -Encoding utf8
 
     $McpInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $McpInfo.FileName = $Exe
@@ -125,7 +132,8 @@ try {
     [void]$McpProcess.Start()
     $McpOutputTask = $McpProcess.StandardOutput.ReadToEndAsync()
     $McpErrorTask = $McpProcess.StandardError.ReadToEndAsync()
-    $McpProcess.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize"}')
+    $McpProcess.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"haypile-build","version":"1"}}}')
+    $McpProcess.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
     $McpProcess.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
     $McpProcess.StandardInput.Close()
     if (-not $McpProcess.WaitForExit(10000)) {
@@ -137,8 +145,8 @@ try {
     if ($McpProcess.ExitCode -ne 0) {
         throw "Haypile.exe --mcp failed: $McpError"
     }
-    if ($McpOutput -notmatch '"version"\s*:\s*"0\.3\.0-alpha\.1"') {
-        throw "Haypile.exe --mcp did not return server version 0.3.0-alpha.1."
+    if ($McpOutput -notmatch '"version"\s*:\s*"0\.3\.0-alpha\.2"') {
+        throw "Haypile.exe --mcp did not return server version 0.3.0-alpha.2."
     }
     $ExpectedMcpKey = Join-Path $SmokeRoot "Haypile/storage/ipc_authkey"
     if (-not (Test-Path $ExpectedMcpKey -PathType Leaf)) {
@@ -191,12 +199,31 @@ try {
         throw "Packaged backend wrote runtime state beside Haypile.exe."
     }
 
+    $ForbiddenRuntimeNames = @(
+        ".env",
+        "ipc_authkey",
+        "assets_manifest.json",
+        "storage_runtime.db",
+        "gui_state.json"
+    )
+    $ForbiddenRuntimePath = Get-ChildItem $PortableDir -Force -Recurse |
+        Where-Object {
+            ($_.PSIsContainer -and $_.Name -eq "storage") -or
+            (-not $_.PSIsContainer -and $ForbiddenRuntimeNames -contains $_.Name)
+        } |
+        Select-Object -First 1
+    if ($null -ne $ForbiddenRuntimePath) {
+        throw "Windows package contains runtime or user state: $($ForbiddenRuntimePath.FullName)"
+    }
+
     Compress-Archive -Path $PortableDir -DestinationPath $Zip -CompressionLevel Optimal
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $Archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
     try {
         $RuntimeEntry = $Archive.Entries |
-            Where-Object { $_.FullName -match '^Haypile/(storage(?:/|$)|\.env$)' } |
+            Where-Object {
+                $_.FullName -match '^Haypile/(storage(?:/|$)|(?:.*/)?(?:\.env|ipc_authkey|assets_manifest\.json|storage_runtime\.db|gui_state\.json))$'
+            } |
             Select-Object -First 1
         if ($null -ne $RuntimeEntry) {
             throw "Windows archive contains runtime state: $($RuntimeEntry.FullName)"

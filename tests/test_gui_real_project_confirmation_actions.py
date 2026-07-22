@@ -235,12 +235,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(payload["assets"][0]["resolved_url"], "http://127.0.0.1:8010/static/generic/images/hero.png")
             self.assertEqual(payload["assets"][0]["ai_suggestions"]["quality"], "high")
             self.assertEqual(payload["assets"][0]["provenance"]["source_key"], "generic/images/hero.png")
-            self.assertEqual(payload["assets"][0]["provenance"]["origin_url"], "https://cdn.example.com/hero.png")
+            self.assertEqual(payload["assets"][0]["provenance"]["origin_url"], "https://cdn.example.com")
             self.assertNotIn("storage/assets", json.dumps(payload))
             self.assertIn("主视觉", panel.detail_label.text())
             self.assertIn("agent 可用", panel.detail_label.text())
             self.assertIn("AI high · 主视觉 · 适合作为主视觉。", panel.detail_label.text())
-            self.assertIn("origin https://cdn.example.com/hero.png", panel.detail_label.text())
+            self.assertIn("origin https://cdn.example.com", panel.detail_label.text())
             self.assertIn("provenance 已包含", panel.detail_label.text())
             self.assertIn("border: 2px solid #C8A24A", panel.item_labels[0].styleSheet())
             self.assertFalse(panel.retry_ai_button.isHidden())
@@ -1884,7 +1884,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_remote_download_worker_accepts_media_content_type(self) -> None:
-        previous_stream = app_gui_module.httpx.stream
+        previous_opener = app_gui_module.open_safe_remote
         body = b"webp-bytes"
 
         class FakeResponse:
@@ -1896,13 +1896,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             def __exit__(self, *_args):
                 return False
 
-            def raise_for_status(self) -> None:
-                return None
-
             def iter_bytes(self):
                 yield body
 
-        app_gui_module.httpx.stream = lambda *_args, **_kwargs: FakeResponse()
+        app_gui_module.open_safe_remote = lambda *_args, **_kwargs: FakeResponse()
         worker = app_gui_module.RemoteDownloadWorker(
             ["https://cdn.example.com/path/hero.webp"],
             self.tmpdir / "incoming",
@@ -1916,15 +1913,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(finished[-1][0][0].suffix, ".webp")
             self.assertEqual(finished[-1][0][0].read_bytes(), body)
             provenance = read_asset_provenance(finished[-1][0][0])
-            self.assertEqual(provenance["origin_url"], "https://cdn.example.com/path/hero.webp")
+            self.assertEqual(provenance["origin_url"], "https://cdn.example.com")
             self.assertEqual(provenance["content_type"], "image/webp")
             self.assertNotIn("temp_file", provenance)
             self.assertIn("downloaded_at", provenance)
         finally:
-            app_gui_module.httpx.stream = previous_stream
+            app_gui_module.open_safe_remote = previous_opener
 
     def test_remote_download_worker_reports_non_media_link_clearly(self) -> None:
-        previous_stream = app_gui_module.httpx.stream
+        previous_opener = app_gui_module.open_safe_remote
 
         class FakeResponse:
             headers = {"content-type": "text/html", "content-length": "42"}
@@ -1935,10 +1932,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             def __exit__(self, *_args):
                 return False
 
-            def raise_for_status(self) -> None:
-                return None
-
-        app_gui_module.httpx.stream = lambda *_args, **_kwargs: FakeResponse()
+        app_gui_module.open_safe_remote = lambda *_args, **_kwargs: FakeResponse()
         worker = app_gui_module.RemoteDownloadWorker(
             ["https://example.com/page"],
             self.tmpdir / "incoming",
@@ -1951,35 +1945,22 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertFalse(finished[-1][2])
             self.assertEqual(finished[-1][1], "没有找到可收纳的图片或音频")
         finally:
-            app_gui_module.httpx.stream = previous_stream
+            app_gui_module.open_safe_remote = previous_opener
 
     def test_remote_download_worker_blocks_private_network_url(self) -> None:
-        previous_stream = app_gui_module.httpx.stream
-        called = False
-
-        def fake_stream(*_args, **_kwargs):
-            nonlocal called
-            called = True
-            raise AssertionError("private URL should be blocked before HTTP")
-
-        app_gui_module.httpx.stream = fake_stream
         worker = app_gui_module.RemoteDownloadWorker(
             ["http://127.0.0.1/private.png"],
             self.tmpdir / "incoming",
         )
         finished: list[tuple[list[Path], str, bool]] = []
         worker.finished_signal.connect(lambda files, message, success: finished.append((files, message, success)))
-        try:
-            worker.run()
+        worker.run()
 
-            self.assertFalse(called)
-            self.assertFalse(finished[-1][2])
-            self.assertEqual(finished[-1][1], "没有找到可收纳的图片或音频")
-        finally:
-            app_gui_module.httpx.stream = previous_stream
+        self.assertFalse(finished[-1][2])
+        self.assertEqual(finished[-1][1], "网页素材无法下载")
 
     def test_remote_download_worker_reports_oversized_asset(self) -> None:
-        previous_stream = app_gui_module.httpx.stream
+        previous_opener = app_gui_module.open_safe_remote
 
         class FakeResponse:
             headers = {
@@ -1993,10 +1974,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             def __exit__(self, *_args):
                 return False
 
-            def raise_for_status(self) -> None:
-                return None
-
-        app_gui_module.httpx.stream = lambda *_args, **_kwargs: FakeResponse()
+        app_gui_module.open_safe_remote = lambda *_args, **_kwargs: FakeResponse()
         worker = app_gui_module.RemoteDownloadWorker(
             ["https://cdn.example.com/huge.png"],
             self.tmpdir / "incoming",
@@ -2009,14 +1987,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertFalse(finished[-1][2])
             self.assertEqual(finished[-1][1], "网页素材超过 500MB")
         finally:
-            app_gui_module.httpx.stream = previous_stream
+            app_gui_module.open_safe_remote = previous_opener
 
     def test_remote_download_worker_accepts_audio_url(self) -> None:
         self.assertEqual(
             app_gui_module.RemoteDownloadWorker.CONTENT_TYPE_EXTENSIONS["audio/mp4"],
             ("audio", ".m4a"),
         )
-        previous_stream = app_gui_module.httpx.stream
+        previous_opener = app_gui_module.open_safe_remote
         body = b"mp3-bytes"
 
         class FakeResponse:
@@ -2028,13 +2006,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             def __exit__(self, *_args):
                 return False
 
-            def raise_for_status(self) -> None:
-                return None
-
             def iter_bytes(self):
                 yield body
 
-        app_gui_module.httpx.stream = lambda *_args, **_kwargs: FakeResponse()
+        app_gui_module.open_safe_remote = lambda *_args, **_kwargs: FakeResponse()
         worker = app_gui_module.RemoteDownloadWorker(
             ["https://cdn.example.com/audio/theme"],
             self.tmpdir / "incoming",
@@ -2049,17 +2024,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(finished[-1][0][0].read_bytes(), body)
             self.assertEqual(read_asset_provenance(finished[-1][0][0])["content_type"], "audio/mpeg")
         finally:
-            app_gui_module.httpx.stream = previous_stream
+            app_gui_module.open_safe_remote = previous_opener
 
     def test_remote_download_worker_reports_http_failure(self) -> None:
-        previous_stream = app_gui_module.httpx.stream
-        request = app_gui_module.httpx.Request("GET", "https://cdn.example.com/forbidden.png")
-        response = app_gui_module.httpx.Response(403, request=request)
+        previous_opener = app_gui_module.open_safe_remote
 
-        def fake_stream(*_args, **_kwargs):
-            raise app_gui_module.httpx.HTTPStatusError("forbidden", request=request, response=response)
+        def fake_open(*_args, **_kwargs):
+            raise app_gui_module.SafeFetchError("http_status_403")
 
-        app_gui_module.httpx.stream = fake_stream
+        app_gui_module.open_safe_remote = fake_open
         worker = app_gui_module.RemoteDownloadWorker(
             ["https://cdn.example.com/forbidden.png"],
             self.tmpdir / "incoming",
@@ -2072,7 +2045,39 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertFalse(finished[-1][2])
             self.assertEqual(finished[-1][1], "网页素材无法下载")
         finally:
-            app_gui_module.httpx.stream = previous_stream
+            app_gui_module.open_safe_remote = previous_opener
+
+    def test_remote_download_worker_removes_partial_file_after_stream_failure(self) -> None:
+        previous_opener = app_gui_module.open_safe_remote
+
+        class BrokenResponse:
+            headers = {"content-type": "image/png", "content-length": "24"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_bytes(self):
+                yield b"partial"
+                raise app_gui_module.SafeFetchError("download_timeout")
+
+        app_gui_module.open_safe_remote = lambda *_args, **_kwargs: BrokenResponse()
+        incoming = self.tmpdir / "incoming"
+        worker = app_gui_module.RemoteDownloadWorker(
+            ["https://cdn.example.com/interrupted.png"],
+            incoming,
+        )
+        finished: list[tuple[list[Path], str, bool]] = []
+        worker.finished_signal.connect(lambda files, message, success: finished.append((files, message, success)))
+        try:
+            worker.run()
+
+            self.assertFalse(finished[-1][2])
+            self.assertEqual(list(incoming.iterdir()), [])
+        finally:
+            app_gui_module.open_safe_remote = previous_opener
 
     def test_ingest_worker_carries_browser_provenance_to_final_asset(self) -> None:
         assets_dir = self.tmpdir / "assets"
@@ -2099,7 +2104,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
 
         provenance = read_asset_provenance(destination)
-        self.assertEqual(provenance["origin_url"], "https://cdn.example.com/hero.webp")
+        self.assertEqual(provenance["origin_url"], "https://cdn.example.com")
         self.assertEqual(provenance["source_key"], "generic/images/generic_img_unknown_deadbeef.webp")
         self.assertEqual(provenance["sha256"], "abc123")
         self.assertNotIn("temp_file", provenance)

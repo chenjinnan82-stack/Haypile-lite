@@ -7,8 +7,8 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.services.asset_provenance import public_origin_url, read_asset_provenance, write_asset_provenance
-from app.services.json_io import atomic_write_json
 from app.services.storage_runtime import StorageRuntimeDB
+from app.services.theme_registry import ThemeRegistry
 
 
 ALLOWED_IMAGE_ROLES = {
@@ -34,11 +34,14 @@ class BundleService:
         themes_dir: Path | None = None,
         runtime_db_path: Path | None = None,
     ) -> None:
-        settings = get_settings()
-        self.assets_dir = assets_dir or settings.ASSETS_DIR
-        self.manifest_path = manifest_path or settings.MANIFEST_PATH
-        self.themes_dir = themes_dir or settings.THEMES_DIR
-        self.runtime_db_path = runtime_db_path or (settings.INDEX_DIR / "storage_runtime.db")
+        settings = get_settings() if any(
+            value is None for value in (assets_dir, manifest_path, themes_dir, runtime_db_path)
+        ) else None
+        self.assets_dir = assets_dir or settings.ASSETS_DIR  # type: ignore[union-attr]
+        self.manifest_path = manifest_path or settings.MANIFEST_PATH  # type: ignore[union-attr]
+        self.themes_dir = themes_dir or settings.THEMES_DIR  # type: ignore[union-attr]
+        self.runtime_db_path = runtime_db_path or (settings.INDEX_DIR / "storage_runtime.db")  # type: ignore[union-attr]
+        self.theme_recoveries: list[dict[str, str]] = []
 
     def list_bundles(
         self,
@@ -70,11 +73,12 @@ class BundleService:
             source_path = self._asset_path(source_key)
             if source_path is None:
                 continue
-            sha256 = sha_by_path.get(str(source_path.resolve(strict=False))) or self._sha256(source_path)
+            cached_sha = sha_by_path.get(str(source_path.resolve(strict=False))) or ""
+            sha256 = cached_sha if self._is_sha256(cached_sha) else self._sha256(source_path)
             provenance = read_asset_provenance(source_path)
             ai_suggestions = provenance.get("ai_suggestions")
             bundle_audio_usage = self._audio_usage_from(provenance) if item_type == "audio" else "unknown"
-            bundle_id = Path(source_key).stem
+            bundle_id = sha256
             bundles.append(
                 {
                     "id": bundle_id,
@@ -187,10 +191,14 @@ class BundleService:
         wanted = str(bundle_id or "").strip()
         if not wanted:
             return None
-        for bundle in self.list_bundles():
+        bundles = self.list_bundles()
+        for bundle in bundles:
             if bundle["id"] == wanted:
                 return bundle
-        return None
+        legacy_matches = [
+            bundle for bundle in bundles if Path(bundle["source_key"]).stem == wanted
+        ]
+        return legacy_matches[0] if len(legacy_matches) == 1 else None
 
     def set_bundle_role(self, bundle_id: str, role: str) -> dict[str, str] | None:
         normalized_role = str(role or "").strip().lower()
@@ -201,43 +209,20 @@ class BundleService:
             return None
 
         theme_id = bundle["theme_id"] or self._theme_from_key(bundle["source_key"]) or "generic"
-        theme_file = self.themes_dir / f"{theme_id}.json"
-        payload = self._read_json(theme_file)
-        if not payload:
-            payload = {
-                "theme_name": theme_id,
-                "css_variables": {},
-                "tailwind_extend": {},
-                "fonts": [],
-                "physical_assets": {},
-                "ui_dev_instruction": "Use these theme assets for consistent visual rendering. Do not fabricate image URLs.",
-            }
-        physical_assets = payload.get("physical_assets")
-        if not isinstance(physical_assets, dict):
-            physical_assets = {}
-            payload["physical_assets"] = physical_assets
-
-        asset_key = ""
-        for key, value in physical_assets.items():
-            if isinstance(value, dict) and str(value.get("url") or "") == bundle["url"]:
-                asset_key = str(key)
-                break
-        if not asset_key:
-            asset_key = Path(bundle["source_key"]).stem or bundle["id"]
-
-        asset = physical_assets.get(asset_key)
-        asset_dict = asset if isinstance(asset, dict) else {}
-        asset_dict.update(
-            {
-                "url": bundle["url"],
+        existing_contract = self._theme_assets_by_url().get(bundle["url"], {})
+        ThemeRegistry(self.themes_dir).upsert_image_asset(
+            theme_id=theme_id,
+            asset_key=(
+                str(existing_contract.get("source_key") or "").strip()
+                or Path(bundle["source_key"]).stem
+                or bundle["id"]
+            ),
+            asset_url=bundle["url"],
+            role=normalized_role,
+            extra_fields={
                 "type": self._asset_contract_type(role=normalized_role, asset_type=bundle["type"]),
-                "role": normalized_role,
-                "css_advice": self._default_css_advice(normalized_role),
-                "placement_intent": self._default_placement_intent(normalized_role),
-            }
+            },
         )
-        physical_assets[asset_key] = asset_dict
-        atomic_write_json(theme_file, payload)
         return self.get_bundle(bundle_id)
 
     def set_bundle_audio_usage(self, bundle_id: str, audio_usage: str) -> dict[str, Any] | None:
@@ -263,8 +248,15 @@ class BundleService:
 
     def _theme_assets_by_url(self) -> dict[str, dict[str, Any]]:
         assets: dict[str, dict[str, Any]] = {}
+        registry = ThemeRegistry(self.themes_dir)
         for theme_file in sorted(self.themes_dir.glob("*.json")):
-            payload = self._read_json(theme_file)
+            try:
+                payload, _path, _created = registry.ensure_theme_contract(theme_file.stem)
+            except (OSError, TimeoutError, ValueError):
+                continue
+            if registry.last_recovery is not None:
+                self.theme_recoveries.append(dict(registry.last_recovery))
+                registry.last_recovery = None
             physical_assets = payload.get("physical_assets")
             if not isinstance(physical_assets, dict):
                 continue
@@ -350,21 +342,8 @@ class BundleService:
 
     @staticmethod
     def _role_from(*, source_key: str, theme_asset: dict[str, Any]) -> str:
-        for candidate in (theme_asset.get("role"), theme_asset.get("source_key"), source_key):
-            text = str(candidate or "").strip().lower()
-            for role in (
-                "main_background",
-                "hero_image",
-                "content_image",
-                "logo",
-                "icon",
-                "texture",
-                "audio",
-                "unknown",
-            ):
-                if role in text:
-                    return role
-        return "unknown"
+        role = str(theme_asset.get("role") or "unknown").strip().lower()
+        return role if role in ALLOWED_BUNDLE_ROLES else "unknown"
 
     @staticmethod
     def _asset_contract_type(*, role: str, asset_type: str) -> str:
@@ -412,3 +391,7 @@ class BundleService:
     @staticmethod
     def _safe_id(text: str) -> str:
         return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in text).strip("_") or "bundle"
+
+    @staticmethod
+    def _is_sha256(value: str) -> bool:
+        return len(value) == 64 and all(char in "0123456789abcdef" for char in value.lower())

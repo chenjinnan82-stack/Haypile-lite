@@ -23,9 +23,9 @@ from app.main import ManifestStaticFiles, app
 from app.services.asset_provenance import public_origin_url, sanitize_provenance
 from app.services.bundle_service import BundleService
 from app.services.json_io import atomic_write_json
+from app.services.safe_remote_fetcher import MAX_REMOTE_URLS, dedupe_remote_urls
 from app.services.scanner import AssetScanner
 from app.services.vfs_storage import VFSStorage
-from app_gui import RemoteDownloadWorker
 from backend_host import ControlChannelServer
 
 
@@ -39,15 +39,29 @@ class LocalDataSecurityTests(unittest.TestCase):
                 "api_key": "secret",
                 "request_body": {"image_bytes": "encoded"},
                 "nested": {"local_path": "C:\\Users\\tester\\hero.png"},
+                "ai_suggestions": {
+                    "source": "model",
+                    "reason": "r" * 200,
+                    "agent_summary": "s" * 200,
+                    "runtime_receipt": {"request_body": "secret"},
+                    "unexpected": {"api_key": "secret"},
+                    "trust": "untrusted_advisory",
+                    "must_not_execute": True,
+                },
             }
         )
 
-        self.assertEqual(payload["origin_url"], "https://cdn.example.com/hero.png")
+        self.assertEqual(payload["origin_url"], "https://cdn.example.com")
         self.assertEqual(payload["source_key"], "generic/images/hero.png")
         self.assertNotIn("temp_file", payload)
         self.assertNotIn("api_key", payload)
         self.assertNotIn("request_body", payload)
-        self.assertEqual(payload["nested"], {})
+        self.assertNotIn("nested", payload)
+        self.assertEqual(len(payload["ai_suggestions"]["reason"]), 80)
+        self.assertEqual(len(payload["ai_suggestions"]["agent_summary"]), 60)
+        self.assertNotIn("runtime_receipt", payload["ai_suggestions"])
+        self.assertNotIn("unexpected", payload["ai_suggestions"])
+        self.assertTrue(payload["ai_suggestions"]["must_not_execute"])
 
     def test_ipc_start_failure_does_not_log_local_socket_path(self) -> None:
         private_path = "/Users/tester/Library/Application Support/Haypile/storage/ipc.sock"
@@ -126,7 +140,7 @@ class LocalDataSecurityTests(unittest.TestCase):
     def test_public_origin_strips_credentials_and_query_secrets(self) -> None:
         self.assertEqual(
             public_origin_url("https://user:secret@cdn.example.com:8443/a.png?token=private#part"),
-            "https://cdn.example.com:8443/a.png",
+            "https://cdn.example.com:8443",
         )
 
     def test_static_assets_send_private_sandbox_headers(self) -> None:
@@ -140,7 +154,8 @@ class LocalDataSecurityTests(unittest.TestCase):
             static = ManifestStaticFiles(directory=str(assets), manifest_path=manifest)
             local_app = Starlette(routes=[Mount("/static", app=static)])
 
-            response = TestClient(local_app, base_url="http://127.0.0.1").get("/static/active.svg")
+            with TestClient(local_app, base_url="http://127.0.0.1") as client:
+                response = client.get("/static/active.svg")
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers["cache-control"], "private, no-store")
@@ -148,15 +163,16 @@ class LocalDataSecurityTests(unittest.TestCase):
             self.assertEqual(response.headers["x-content-type-options"], "nosniff")
 
     def test_untrusted_host_is_rejected(self) -> None:
-        response = TestClient(app, base_url="http://127.0.0.1").get(
-            "/healthz",
-            headers={"host": "evil.example"},
-        )
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            response = client.get(
+                "/healthz",
+                headers={"host": "evil.example"},
+            )
         self.assertEqual(response.status_code, 400)
 
     def test_remote_drop_has_a_bounded_url_count(self) -> None:
         urls = [f"https://cdn.example.com/{index}.png" for index in range(100)]
-        self.assertEqual(len(RemoteDownloadWorker._dedupe_urls(urls)), RemoteDownloadWorker.MAX_URLS)
+        self.assertEqual(len(dedupe_remote_urls(urls)), MAX_REMOTE_URLS)
 
     def test_internal_errors_do_not_echo_local_paths(self) -> None:
         private_path = "/Users/tester/Library/Application Support/Haypile/storage/assets/secret.png"
@@ -168,7 +184,8 @@ class LocalDataSecurityTests(unittest.TestCase):
             raise RuntimeError(private_path)
 
         with self.assertLogs("app.core.exceptions", level="ERROR") as captured:
-            response = TestClient(local_app, raise_server_exceptions=False).get("/boom")
+            with TestClient(local_app, raise_server_exceptions=False) as client:
+                response = client.get("/boom")
 
         self.assertEqual(response.status_code, 500)
         self.assertNotIn(private_path, response.text)
@@ -181,7 +198,7 @@ class LocalDataSecurityTests(unittest.TestCase):
             image_path.write_bytes(b"not decoded")
             scanner = AssetScanner(assets_dir=Path(tmpdir), manifest_path=Path(tmpdir) / "manifest.json")
 
-            with patch("app.services.scanner.Image.open", side_effect=Image.DecompressionBombError):
+            with patch("app.services.media_validator.Image.open", side_effect=Image.DecompressionBombError):
                 self.assertIsNone(scanner._scan_image(image_path))
 
     def test_bundle_service_does_not_read_manifest_paths_outside_assets(self) -> None:

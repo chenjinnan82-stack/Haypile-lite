@@ -3,14 +3,22 @@ from __future__ import annotations
 import os
 import socket
 import threading
-from multiprocessing.connection import Listener
+from multiprocessing.connection import AuthenticationError, Listener
 from typing import Any
 
 import uvicorn
 import logging
 
 from app.core.config import get_settings
-from app.core.ipc import cleanup_unix_socket, get_ipc_address, start_ipc_listener
+from app.core.file_lock import InterProcessFileLock
+from app.core.ipc import (
+    authenticate_ipc_connection,
+    cleanup_unix_socket,
+    get_ipc_address,
+    get_ipc_authkey,
+    send_ipc_request,
+    start_ipc_listener,
+)
 
 logger = logging.getLogger(__name__)
 ALLOW_START_ENVS = ("HAYPILE_BACKEND_HOST_ALLOW_START",)
@@ -76,10 +84,18 @@ class ControlChannelServer:
                 continue
 
             try:
+                authenticate_ipc_connection(
+                    conn,
+                    get_ipc_authkey(),
+                    timeout=0.7,
+                    server=True,
+                )
+                if not conn.poll(0.7):
+                    raise TimeoutError("ipc_request_timeout")
                 payload = conn.recv()
                 response = self._handle_payload(payload)
                 conn.send(response)
-            except (OSError, EOFError):
+            except (AuthenticationError, OSError, EOFError, TimeoutError):
                 continue
             except Exception as exc:
                 logger.warning("Unexpected IPC handling error: error_type=%s", type(exc).__name__)
@@ -123,6 +139,10 @@ def main() -> int:
         )
         return 2
     settings = get_settings()
+    instance_lock = InterProcessFileLock(settings.INDEX_DIR / "backend.instance.lock")
+    if not instance_lock.acquire(timeout=0.1):
+        existing = send_ipc_request({"type": "ping"}, timeout=0.4)
+        return 0 if existing and existing.get("ok") else 2
     from app.main import app as fastapi_app
 
     config = uvicorn.Config(
@@ -134,13 +154,14 @@ def main() -> int:
     )
     server = uvicorn.Server(config)
     control = ControlChannelServer(server=server, host=settings.HOST, port=settings.PORT)
-    if not control.start():
-        return 2
     try:
+        if not control.start():
+            return 2
         server.run()
         return 0
     finally:
         control.shutdown()
+        instance_lock.release()
 
 
 if __name__ == "__main__":

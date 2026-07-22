@@ -43,6 +43,12 @@ class AgentExampleTests(unittest.TestCase):
 
         self.assertEqual(handoff["source"], "haypile")
         self.assertEqual(handoff["handoff_version"], "haypile.asset-handoff.v1")
+        self.assertTrue(handoff["handoff_id"])
+        self.assertTrue(handoff["created_at"])
+        self.assertEqual(handoff["asset_count"], 1)
+        self.assertEqual(handoff["total_matching"], 1)
+        self.assertTrue(handoff["complete"])
+        self.assertIsNone(handoff["next_cursor"])
         self.assertEqual(handoff["assets"][0]["role"], "hero_image")
         self.assertEqual(handoff["assets"][0]["status"], "ready")
         self.assertEqual(handoff["assets"][0]["resolved_url"], "http://127.0.0.1:8010/static/generic/images/hero.png")
@@ -201,6 +207,7 @@ class AgentExampleTests(unittest.TestCase):
         asset = payload["assets"][0]
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["handoff_version"], "haypile.asset-handoff.v1")
+        self.assertEqual(len(payload["manifest_generation"]), 64)
         self.assertEqual(asset["role"], "hero_image")
         self.assertEqual(asset["status"], "ready")
         self.assertTrue(asset["url"].startswith("/static/"))

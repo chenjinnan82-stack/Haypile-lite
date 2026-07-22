@@ -23,20 +23,37 @@ class BundleServiceTests(unittest.TestCase):
 
             bundles = service.list_bundles()
 
+            by_source = {bundle["source_key"]: bundle for bundle in bundles}
+            hero = by_source["generic/images/generic_img_hero_image_abcd.png"]
+            unknown = by_source["generic/images/generic_img_unknown_eeee.png"]
             by_id = {bundle["id"]: bundle for bundle in bundles}
-            self.assertEqual(by_id["generic_img_hero_image_abcd"]["status"], "ready")
-            self.assertEqual(by_id["generic_img_hero_image_abcd"]["role"], "hero_image")
-            self.assertEqual(by_id["generic_img_hero_image_abcd"]["sha256"], "db-sha")
-            self.assertEqual(by_id["generic_img_hero_image_abcd"]["origin_url"], "https://cdn.example.com/hero.png")
-            self.assertEqual(by_id["generic_img_hero_image_abcd"]["ai_suggestions"]["quality"], "high")
-            self.assertEqual(by_id["generic_img_unknown_eeee"]["status"], "pending")
+            self.assertEqual(hero["status"], "ready")
+            self.assertEqual(hero["role"], "hero_image")
+            self.assertEqual(hero["sha256"], hashlib.sha256(b"hero").hexdigest())
+            self.assertEqual(hero["id"], hero["sha256"])
+            self.assertEqual(hero["origin_url"], "https://cdn.example.com")
+            self.assertEqual(hero["ai_suggestions"]["quality"], "high")
+            self.assertEqual(unknown["status"], "pending")
             self.assertEqual(by_id["missing_icon"]["status"], "missing")
             self.assertEqual(by_id["missing_icon"]["sha256"], "")
             self.assertEqual(
                 [bundle["id"] for bundle in service.list_bundles(status="ready")],
-                ["generic_img_hero_image_abcd"],
+                [hero["id"]],
             )
             self.assertEqual(service.list_bundles(role="icon")[0]["id"], "missing_icon")
+
+    def test_bundle_service_reports_quarantined_theme_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            service = _bundle_service(root)
+            (root / "themes" / "generic.json").write_text("{broken", encoding="utf-8")
+
+            bundles = service.list_bundles()
+
+            self.assertTrue(bundles)
+            self.assertEqual(len(service.theme_recoveries), 1)
+            self.assertEqual(service.theme_recoveries[0]["theme_id"], "generic")
+            self.assertTrue(any((root / "quarantine" / "themes").iterdir()))
 
     def test_bundle_service_can_set_bundle_role(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -48,7 +65,7 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(updated["role"], "hero_image")
             self.assertEqual(updated["status"], "ready")
             by_id = {bundle["id"]: bundle for bundle in service.list_bundles(role="hero_image")}
-            self.assertIn("generic_img_unknown_eeee", by_id)
+            self.assertIn(updated["id"], by_id)
             payload = json.loads((Path(raw) / "themes" / "generic.json").read_text(encoding="utf-8"))
             saved_assets = payload["physical_assets"]
             saved = next(value for value in saved_assets.values() if value["url"].endswith("generic_img_unknown_eeee.png"))
@@ -111,7 +128,7 @@ class BundleServiceTests(unittest.TestCase):
             unknown_hash = hashlib.sha256(b"unknown").hexdigest()
             batch_id = runtime.begin_batch()
             runtime.record_batch_asset(batch_id, unknown_hash, 0)
-            runtime.record_batch_asset(batch_id, "db-sha", 1)
+            runtime.record_batch_asset(batch_id, hashlib.sha256(b"hero").hexdigest(), 1)
             runtime.complete_batch(batch_id, accepted_count=1, duplicate_count=1, rejected_count=0)
 
             latest = service.get_latest_batch()
@@ -126,10 +143,10 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(latest["id"], batch_id)
             self.assertEqual(
                 [bundle["id"] for bundle in bundles],
-                ["generic_img_unknown_eeee", "generic_img_hero_image_abcd"],
+                [unknown_hash, hashlib.sha256(b"hero").hexdigest()],
             )
-            self.assertEqual(first_page[0]["id"], "generic_img_unknown_eeee")
-            self.assertEqual(second_page[0]["id"], "generic_img_hero_image_abcd")
+            self.assertEqual(first_page[0]["id"], unknown_hash)
+            self.assertEqual(second_page[0]["id"], hashlib.sha256(b"hero").hexdigest())
             self.assertEqual(service.list_bundles(batch_id="missing"), [])
 
     def test_bundles_api_lists_and_gets_bundles(self) -> None:
@@ -141,6 +158,7 @@ class BundleServiceTests(unittest.TestCase):
             app.dependency_overrides[get_bundle_service] = lambda: service
             app.dependency_overrides[get_batch_bundle_service] = lambda: service
             client = TestClient(app)
+            self.addCleanup(client.close)
 
             listed = client.get("/api/v1/bundles")
             ready = client.get(
@@ -161,17 +179,18 @@ class BundleServiceTests(unittest.TestCase):
             no_batch = client.get("/api/v1/batches/latest")
 
             self.assertEqual(listed.status_code, 200)
-            self.assertTrue(any(item["id"] == "generic_img_hero_image_abcd" for item in listed.json()))
+            hero_hash = hashlib.sha256(b"hero").hexdigest()
+            self.assertTrue(any(item["id"] == hero_hash for item in listed.json()))
             self.assertEqual(ready.status_code, 200)
-            self.assertEqual([item["id"] for item in ready.json()], ["generic_img_hero_image_abcd"])
-            self.assertEqual([item["id"] for item in audio_pending.json()], ["generic_aud_unknown_ffff"])
+            self.assertEqual([item["id"] for item in ready.json()], [hero_hash])
+            self.assertEqual([item["id"] for item in audio_pending.json()], [hashlib.sha256(b"audio").hexdigest()])
             self.assertEqual(audio_pending.json()[0]["audio_tags"]["artist"], "Winter Ridge")
             self.assertEqual(len(first_page.json()), 1)
             self.assertEqual(len(second_page.json()), 1)
             self.assertLess(first_page.json()[0]["source_key"], second_page.json()[0]["source_key"])
             self.assertEqual(one.status_code, 200)
             self.assertEqual(one.json()["access"], "manifest_static")
-            self.assertEqual(one.json()["origin_url"], "https://cdn.example.com/hero.png")
+            self.assertEqual(one.json()["origin_url"], "https://cdn.example.com")
             self.assertEqual(missing.status_code, 404)
             self.assertEqual(no_batch.status_code, 404)
 
@@ -180,7 +199,7 @@ class BundleServiceTests(unittest.TestCase):
             service = _bundle_service(Path(raw))
             runtime = StorageRuntimeDB(service.runtime_db_path)
             batch_id = runtime.begin_batch()
-            runtime.record_batch_asset(batch_id, "db-sha", 0)
+            runtime.record_batch_asset(batch_id, hashlib.sha256(b"hero").hexdigest(), 0)
             runtime.complete_batch(batch_id, accepted_count=0, duplicate_count=1, rejected_count=0)
             app = FastAPI()
             app.include_router(router, prefix="/api/v1")
@@ -188,6 +207,7 @@ class BundleServiceTests(unittest.TestCase):
             app.dependency_overrides[get_bundle_service] = lambda: service
             app.dependency_overrides[get_batch_bundle_service] = lambda: service
             client = TestClient(app)
+            self.addCleanup(client.close)
 
             unfiltered = client.get("/api/v1/bundles").json()
             latest = client.get("/api/v1/bundles", params={"batch_id": "latest"}).json()
@@ -195,7 +215,7 @@ class BundleServiceTests(unittest.TestCase):
             batch = client.get("/api/v1/batches/latest")
 
             self.assertGreater(len(unfiltered), len(latest))
-            self.assertEqual([item["id"] for item in latest], ["generic_img_hero_image_abcd"])
+            self.assertEqual([item["id"] for item in latest], [hashlib.sha256(b"hero").hexdigest()])
             self.assertEqual(concrete, latest)
             self.assertEqual(batch.status_code, 200)
             self.assertEqual(batch.json()["id"], batch_id)
@@ -225,7 +245,7 @@ def _bundle_service(tmp_path: Path) -> BundleService:
             "downloaded_at": "2026-07-06T00:00:00+00:00",
             "temp_file": "/tmp/hero.png",
             "source_key": "generic/images/generic_img_hero_image_abcd.png",
-            "sha256": "db-sha",
+            "sha256": hashlib.sha256(b"hero").hexdigest(),
             "ai_suggestions": {
                 "tags": ["主视觉"],
                 "usage": "hero_image",
@@ -279,7 +299,7 @@ def _bundle_service(tmp_path: Path) -> BundleService:
         encoding="utf-8",
     )
     StorageRuntimeDB(db_path=runtime_db_path).record_link(
-        sha256_hex="db-sha",
+        sha256_hex=hashlib.sha256(b"hero").hexdigest(),
         src_path=hero,
         dst_path=hero,
         strategy="copy",

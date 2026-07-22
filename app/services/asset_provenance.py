@@ -25,37 +25,78 @@ def write_asset_provenance(asset_path: Path, payload: dict[str, Any]) -> None:
 
 
 def sanitize_provenance(payload: dict[str, Any]) -> dict[str, Any]:
-    blocked_keys = {
-        "api_key",
-        "authorization",
-        "credential",
-        "image_bytes",
-        "local_path",
-        "request_body",
-        "source_path",
-        "temp_file",
+    cleaned: dict[str, Any] = {}
+    scalar_limits = {
+        "content_type": 160,
+        "downloaded_at": 64,
+        "source_key": 512,
+        "sha256": 64,
+        "audio_usage": 32,
     }
+    origin_url = public_origin_url(str(payload.get("origin_url") or ""))
+    if origin_url:
+        cleaned["origin_url"] = origin_url
+    for key, limit in scalar_limits.items():
+        value = _bounded_public_string(payload.get(key), limit)
+        if value:
+            cleaned[key] = value
+    suggestions = _sanitize_ai_suggestions(payload.get("ai_suggestions"))
+    if suggestions:
+        cleaned["ai_suggestions"] = suggestions
+    return cleaned
 
-    def clean(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {
-                str(key): cleaned
-                for key, item in value.items()
-                if str(key).strip().lower() not in blocked_keys
-                and (cleaned := clean(item)) is not None
-            }
-        if isinstance(value, list):
-            return [cleaned for item in value if (cleaned := clean(item)) is not None]
-        if isinstance(value, str):
-            text = value.strip()
-            if text and "://" not in text and (
-                Path(text).is_absolute() or PureWindowsPath(text).is_absolute()
-            ):
-                return None
-        return value
 
-    cleaned = clean(payload)
-    return cleaned if isinstance(cleaned, dict) else {}
+def _bounded_public_string(value: Any, limit: int) -> str:
+    text = str(value or "").strip().replace("\x00", "")
+    if not text:
+        return ""
+    if "://" not in text and (
+        Path(text).is_absolute() or PureWindowsPath(text).is_absolute()
+    ):
+        return ""
+    return text[:limit]
+
+
+def _sanitize_ai_suggestions(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    limits = {
+        "source": 64,
+        "usage": 32,
+        "quality": 32,
+        "quality_reason": 80,
+        "agent_summary": 60,
+        "reason": 80,
+        "trust": 32,
+    }
+    for key, limit in limits.items():
+        text = _bounded_public_string(value.get(key), limit)
+        if text:
+            cleaned[key] = text
+    tags = value.get("tags")
+    if isinstance(tags, list):
+        cleaned["tags"] = [
+            text
+            for item in tags[:16]
+            if (text := _bounded_public_string(item, 24))
+        ][:6]
+    confidence = value.get("confidence")
+    if isinstance(confidence, dict):
+        scores: dict[str, float] = {}
+        for key in ("theme", "role"):
+            try:
+                scores[key] = max(0.0, min(1.0, float(confidence[key])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if scores:
+            cleaned["confidence"] = scores
+    if isinstance(value.get("must_not_execute"), bool):
+        cleaned["must_not_execute"] = value["must_not_execute"]
+    if cleaned:
+        cleaned["trust"] = "untrusted_advisory"
+        cleaned["must_not_execute"] = True
+    return cleaned
 
 
 def public_origin_url(value: str) -> str:
@@ -70,4 +111,4 @@ def public_origin_url(value: str) -> str:
     netloc = f"[{host}]" if ":" in host else host
     if port is not None:
         netloc += f":{port}"
-    return urlunsplit((parsed.scheme.lower(), netloc, parsed.path, "", ""))
+    return urlunsplit((parsed.scheme.lower(), netloc, "", "", ""))

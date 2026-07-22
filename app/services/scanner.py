@@ -1,27 +1,68 @@
 from __future__ import annotations
 
 import asyncio
-import re
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree
 
 from mutagen import File as MutagenFile, MutagenError
-from PIL import Image, UnidentifiedImageError
 
 from app.core.config import get_settings
 from app.services.json_io import atomic_write_json
+from app.services.media_validator import MediaValidationError, validate_audio, validate_media
 from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
+from app.services.storage_runtime import StorageRuntimeDB
+
+
+class ManifestReadinessError(RuntimeError):
+    pass
+
+
+def manifest_dirty_path(manifest_path: Path) -> Path:
+    return manifest_path.with_name(f"{manifest_path.name}.dirty")
+
+
+def mark_manifest_dirty(manifest_path: Path) -> None:
+    atomic_write_json(manifest_dirty_path(manifest_path), {"dirty": True})
+
+
+def clear_manifest_dirty(manifest_path: Path) -> None:
+    manifest_dirty_path(manifest_path).unlink(missing_ok=True)
+
+
+def read_manifest_readiness(manifest_path: Path) -> dict[str, str | int]:
+    if manifest_dirty_path(manifest_path).exists():
+        raise ManifestReadinessError("assets manifest projection is dirty")
+    try:
+        raw = manifest_path.read_bytes()
+        payload = json.loads(raw)
+    except FileNotFoundError as exc:
+        raise ManifestReadinessError("assets manifest not found") from exc
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ManifestReadinessError("assets manifest is unreadable") from exc
+    if not isinstance(payload, dict):
+        raise ManifestReadinessError("assets manifest must be a JSON object")
+    return {
+        "manifest_generation": hashlib.sha256(raw).hexdigest(),
+        "asset_count": len(payload),
+    }
 
 
 class AssetScanner:
     IMAGE_EXTENSIONS: set[str] = {".png", ".webp", ".svg", ".jpg", ".jpeg"}
     AUDIO_EXTENSIONS: set[str] = set(SUPPORTED_AUDIO_EXTENSIONS)
 
-    def __init__(self, assets_dir: Path | None = None, manifest_path: Path | None = None) -> None:
-        settings = get_settings()
-        self.assets_dir: Path = assets_dir or settings.ASSETS_DIR
-        self.manifest_path: Path = manifest_path or settings.MANIFEST_PATH
+    def __init__(
+        self,
+        assets_dir: Path | None = None,
+        manifest_path: Path | None = None,
+        runtime_db_path: Path | None = None,
+    ) -> None:
+        settings = get_settings() if assets_dir is None or manifest_path is None else None
+        self.assets_dir = assets_dir or settings.ASSETS_DIR  # type: ignore[union-attr]
+        self.manifest_path = manifest_path or settings.MANIFEST_PATH  # type: ignore[union-attr]
+        self.runtime_db_path = runtime_db_path or (self.manifest_path.parent / "storage_runtime.db")
 
     async def scan_assets_directory(self) -> dict[str, dict[str, Any]]:
         return await asyncio.to_thread(self._scan_assets_directory_sync)
@@ -29,15 +70,23 @@ class AssetScanner:
     def _scan_assets_directory_sync(self) -> dict[str, dict[str, Any]]:
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        mark_manifest_dirty(self.manifest_path)
 
         manifest: dict[str, dict[str, Any]] = {}
         assets_root = self.assets_dir.resolve(strict=False)
+        committed_paths: set[Path] | None = None
+        if self.runtime_db_path.is_file():
+            runtime = StorageRuntimeDB(self.runtime_db_path)
+            committed_paths = runtime.committed_asset_paths(self.assets_dir, verify_hashes=True)
         for path in sorted(self.assets_dir.rglob("*")):
             if path.is_symlink() or not path.is_file():
                 continue
             try:
-                path.resolve(strict=False).relative_to(assets_root)
+                resolved = path.resolve(strict=False)
+                resolved.relative_to(assets_root)
             except ValueError:
+                continue
+            if committed_paths is not None and resolved not in committed_paths:
                 continue
 
             suffix: str = path.suffix.lower()
@@ -51,20 +100,15 @@ class AssetScanner:
                     manifest[self._relative_key(path)] = audio_item
 
         atomic_write_json(self.manifest_path, manifest)
+        clear_manifest_dirty(self.manifest_path)
         return manifest
 
     def _scan_image(self, path: Path) -> dict[str, Any] | None:
         try:
-            width, height = self._read_image_size(path)
-        except (
-            Image.DecompressionBombError,
-            Image.DecompressionBombWarning,
-            UnidentifiedImageError,
-            OSError,
-            ValueError,
-        ):
+            validated = validate_media(path)
+        except MediaValidationError:
             return None
-
+        width, height = int(validated.width or 0), int(validated.height or 0)
         if height == 0:
             return None
 
@@ -78,13 +122,14 @@ class AssetScanner:
 
     def _scan_audio(self, path: Path) -> dict[str, Any] | None:
         try:
+            validated = validate_audio(path)
             audio = MutagenFile(path)
-        except (MutagenError, OSError, ValueError):
+        except (MediaValidationError, MutagenError, OSError, ValueError):
             return None
         if audio is None or audio.info is None:
             return None
 
-        duration_seconds: float = float(getattr(audio.info, "length", 0.0) or 0.0)
+        duration_seconds = float(validated.duration_seconds or 0.0)
         return {
             "type": "audio",
             "duration_seconds": round(duration_seconds, 3),
@@ -136,45 +181,6 @@ class AssetScanner:
             if text:
                 return text[:160]
         return ""
-
-    def _read_image_size(self, path: Path) -> tuple[int, int]:
-        if path.suffix.lower() == ".svg":
-            return self._read_svg_size(path)
-        with Image.open(path) as image:
-            width, height = image.size
-        return int(width), int(height)
-
-    def _read_svg_size(self, path: Path) -> tuple[int, int]:
-        tree = ElementTree.parse(path)
-        root = tree.getroot()
-
-        width_raw: str | None = root.attrib.get("width")
-        height_raw: str | None = root.attrib.get("height")
-
-        width: int | None = self._parse_numeric_dimension(width_raw)
-        height: int | None = self._parse_numeric_dimension(height_raw)
-
-        if width is not None and height is not None:
-            return width, height
-
-        viewbox: str | None = root.attrib.get("viewBox")
-        if viewbox:
-            parts = [part for part in viewbox.replace(",", " ").split() if part]
-            if len(parts) == 4:
-                viewbox_width = float(parts[2])
-                viewbox_height = float(parts[3])
-                return int(viewbox_width), int(viewbox_height)
-
-        raise ValueError(f"Cannot infer SVG dimensions: {path}")
-
-    @staticmethod
-    def _parse_numeric_dimension(value: str | None) -> int | None:
-        if not value:
-            return None
-        matched = re.match(r"^\s*([0-9]*\.?[0-9]+)", value)
-        if not matched:
-            return None
-        return int(float(matched.group(1)))
 
     @staticmethod
     def _format_ratio(value: float) -> str:

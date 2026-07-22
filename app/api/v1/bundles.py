@@ -13,7 +13,7 @@ def get_bundle_service() -> BundleService:
 
 
 @router.get("", response_model=list[BundlePayload])
-async def list_bundles(
+def list_bundles(
     status_filter: str | None = Query(default=None, alias="status"),
     asset_type: str | None = Query(default=None, alias="type"),
     role: str | None = None,
@@ -38,7 +38,7 @@ async def list_bundles(
 
 
 @router.get("/{bundle_id}", response_model=BundlePayload)
-async def get_bundle(
+def get_bundle(
     bundle_id: str,
     bundle_service: BundleService = Depends(get_bundle_service),
 ) -> BundlePayload:

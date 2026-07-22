@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -19,8 +20,8 @@ from app.api.v1.batches import router as batches_router
 from app.api.v1.theme import router as theme_router
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
-from app.services.scanner import AssetScanner
-from app.services.json_io import atomic_write_json
+from app.services.scanner import AssetScanner, manifest_dirty_path, mark_manifest_dirty
+from app.services.storage_runtime import StorageRuntimeDB
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -33,8 +34,11 @@ class ManifestStaticFiles(StaticFiles):
     def __init__(self, *, directory: str, manifest_path: Path, name: str | None = None) -> None:
         super().__init__(directory=directory)
         self.manifest_path = manifest_path
+        self.dirty_path = manifest_dirty_path(manifest_path)
         self.assets_root = Path(directory).resolve(strict=False)
         self.name = name
+        self._manifest_signature: tuple[int, int] | None = None
+        self._cached_manifest_keys: set[str] = set()
 
     def lookup_path(self, path: str):
         normalized = path.replace("\\", "/").lstrip("/")
@@ -61,25 +65,57 @@ class ManifestStaticFiles(StaticFiles):
         return response
 
     def _manifest_keys(self) -> set[str]:
+        if self.dirty_path.exists():
+            self._manifest_signature = None
+            self._cached_manifest_keys = set()
+            return set()
+        try:
+            stat = self.manifest_path.stat()
+        except OSError:
+            self._manifest_signature = None
+            self._cached_manifest_keys = set()
+            return set()
+        signature = (stat.st_mtime_ns, stat.st_size)
+        if signature == self._manifest_signature:
+            return self._cached_manifest_keys
         try:
             payload = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            self._manifest_signature = None
+            self._cached_manifest_keys = set()
             return set()
         if not isinstance(payload, dict):
+            self._manifest_signature = None
+            self._cached_manifest_keys = set()
             return set()
-        return {str(key).replace("\\", "/").lstrip("/") for key in payload}
+        keys = {str(key).replace("\\", "/").lstrip("/") for key in payload}
+        self._manifest_signature = signature
+        self._cached_manifest_keys = keys
+        return keys
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     scanner = AssetScanner()
     try:
+        mark_manifest_dirty(settings.MANIFEST_PATH)
+        runtime = StorageRuntimeDB()
+        await asyncio.to_thread(
+            runtime.recover_incomplete_ingest,
+            assets_dir=settings.ASSETS_DIR,
+            staging_dir=settings.STORAGE_DIR / "staging" / "ingest",
+            quarantine_dir=settings.STORAGE_DIR / "quarantine" / "ingest",
+        )
+        await asyncio.to_thread(runtime.register_legacy_assets, settings.ASSETS_DIR)
+    except Exception as exc:
+        logger.critical("Storage initialization failed: error_type=%s", type(exc).__name__)
+        raise RuntimeError("Haypile storage initialization failed") from exc
+
+    try:
         await scanner.scan_assets_directory()
         logger.info("Assets manifest has been generated.")
     except Exception as exc:
         logger.error("Initial asset scan failed: error_type=%s", type(exc).__name__)
-        if not settings.MANIFEST_PATH.exists():
-            atomic_write_json(settings.MANIFEST_PATH, {})
     yield
 
 

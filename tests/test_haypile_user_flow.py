@@ -7,11 +7,11 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.core.config import get_settings
 from app.services.bundle_service import BundleService
-from app.services.scanner import AssetScanner
+from app.services.scanner import AssetScanner, manifest_dirty_path
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.style_classifier import StyleClassificationResult
 from app_gui import AIBatchWorker, IngestWorker
@@ -110,14 +110,14 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         ai_worker = AIBatchWorker(batch_id, [image_bundle], self.assets_dir)
         ai_worker.style_classifier = _HeroClassifier()
         ai_worker.bundle_service = service
-        ai_finished: list[tuple[str, str, bool]] = []
+        ai_finished: list[tuple[str, str, str]] = []
         ai_worker.finished_signal.connect(
             lambda completed_id, message, ok: ai_finished.append((completed_id, message, ok))
         )
         ai_worker.run()
 
         self.assertEqual(ai_finished[-1][0], batch_id)
-        self.assertTrue(ai_finished[-1][2])
+        self.assertEqual(ai_finished[-1][2], "success")
         ready = service.list_bundles(status="ready")
         handoff = build_handoff(ready)
         payload_text = json.dumps(handoff)
@@ -167,9 +167,9 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
                     "TALB": type("Tag", (), {"text": ["Haypile"]})(),
                 }
 
-        with patch(
-            "app.services.scanner.MutagenFile",
-            side_effect=lambda path: FakeAudio() if Path(path).suffix == ".m4a" else None,
+        fake_audio = lambda path: FakeAudio() if Path(path).suffix == ".m4a" else None
+        with patch("app.services.scanner.MutagenFile", side_effect=fake_audio), patch(
+            "app.services.media_validator.MutagenFile", side_effect=fake_audio
         ):
             manifest = AssetScanner(self.assets_dir, self.manifest_path)._scan_assets_directory_sync()
 
@@ -210,6 +210,26 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         self.assertTrue(finished[-1][1])
         self.assertIn("新增 1", finished[-1][0])
 
+    def test_batch_is_durable_before_manifest_projection(self) -> None:
+        image = self.tmpdir / "durable.svg"
+        image.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>',
+            encoding="utf-8",
+        )
+        observed_batch_ids: list[str] = []
+
+        async def observe_completed_batch(_scanner) -> dict[str, object]:
+            latest = StorageRuntimeDB(self.runtime_db_path).latest_batch()
+            self.assertIsNotNone(latest)
+            observed_batch_ids.append(str(latest["id"]))
+            return {}
+
+        worker = IngestWorker([image], self.assets_dir, ai_enabled=False)
+        with patch.object(AssetScanner, "scan_assets_directory", new=observe_completed_batch):
+            worker.run()
+
+        self.assertEqual(len(observed_batch_ids), 1)
+
     def test_ai_failure_does_not_undo_ingest_or_mark_asset_ready(self) -> None:
         image = self.tmpdir / "pending.svg"
         image.write_text(
@@ -231,6 +251,8 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         ai_worker = AIBatchWorker(batches[0], [bundle], self.assets_dir)
         ai_worker.style_classifier = _FailingClassifier()
         ai_worker.bundle_service = service
+        finished: list[tuple[str, str, str]] = []
+        ai_worker.finished_signal.connect(lambda *values: finished.append(values))
         ai_worker.run()
 
         after = service.get_bundle(bundle["id"])
@@ -238,6 +260,60 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         self.assertEqual(after["status"], "pending")
         self.assertEqual(after["role"], "unknown")
         self.assertEqual(after["ai_suggestions"]["reason"], "model_call_failed")
+        self.assertEqual(finished[-1][2], "failed")
+        self.assertIn("失败", finished[-1][1])
+
+    def test_manifest_projection_failure_preserves_asset_and_pauses_agent_access(self) -> None:
+        image = self.tmpdir / "saved.svg"
+        image.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"></svg>',
+            encoding="utf-8",
+        )
+        worker = IngestWorker([image], self.assets_dir)
+        finished: list[tuple[str, bool]] = []
+        worker.finished_signal.connect(lambda message, ok: finished.append((message, ok)))
+
+        with patch.object(AssetScanner, "scan_assets_directory", side_effect=OSError("projection")):
+            worker.run()
+
+        self.assertFalse(finished[-1][1])
+        self.assertIn("素材已保存", finished[-1][0])
+        self.assertTrue(manifest_dirty_path(self.manifest_path).exists())
+        self.assertEqual(len(list(self.assets_dir.rglob("*.svg"))), 1)
+
+    def test_ai_batch_reports_partial_success_instead_of_complete(self) -> None:
+        classification = StyleClassificationResult(
+            theme_id="generic",
+            theme_confidence=0.0,
+            role_confidence=0.6,
+            role="content_image",
+            source="model",
+            reason="usable",
+        )
+        worker = AIBatchWorker(
+            "batch-partial",
+            [{"id": "one"}, {"id": "two"}],
+            self.assets_dir,
+        )
+        finished: list[tuple[str, str, str]] = []
+        worker.finished_signal.connect(lambda *values: finished.append(values))
+        with patch(
+            "app_gui._classify_registered_bundle",
+            new=AsyncMock(side_effect=[(classification, False), RuntimeError("offline")]),
+        ):
+            worker.run()
+
+        self.assertEqual(finished[-1][2], "partial_success")
+        self.assertIn("部分完成", finished[-1][1])
+
+    def test_ai_batch_reports_cancelled(self) -> None:
+        worker = AIBatchWorker("batch-cancel", [{"id": "one"}], self.assets_dir)
+        finished: list[tuple[str, str, str]] = []
+        worker.finished_signal.connect(lambda *values: finished.append(values))
+        with patch.object(worker, "isInterruptionRequested", return_value=True):
+            worker.run()
+
+        self.assertEqual(finished[-1][2], "cancelled")
 
     @staticmethod
     def _write_wav(path: Path) -> None:

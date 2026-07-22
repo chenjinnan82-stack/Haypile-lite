@@ -13,6 +13,8 @@ dist/
 *.build/
 *.dist/
 *.onefile-build/
+deployment/
+nuitka-crash-report.xml
 private-eval/
 
 storage/*

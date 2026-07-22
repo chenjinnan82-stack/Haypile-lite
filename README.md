@@ -18,18 +18,18 @@ A local-first asset intake for AI creators and independent developers.
 
 </div>
 
-## Download
+## v0.3.0-alpha.2 Safety Seed Build
 
-No Python is required for the desktop test builds.
+For a small seed group testing **drop -> review -> hand off -> Codex reads**:
 
-| Platform | Download | Notes |
-| --- | --- | --- |
-| macOS Apple Silicon | [App ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-macos-arm64.app.zip.sha256) | Ad-hoc signed; right-click **Open** |
-| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip) · [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.2.0-test.8/Haypile-v0.2.0-windows-x64.zip.sha256) | Unsigned preview; SmartScreen may warn |
+- [Download for macOS Apple Silicon](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.2/Haypile-v0.3.0-alpha.2-macos-arm64.app.zip)
+- [Download for Windows x64](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.2/Haypile-v0.3.0-alpha.2-windows-x64.zip)
+- [Release notes and SHA-256 files](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.2)
 
-The repository currently contains the `v0.3.0-alpha.1` source candidate. New
-desktop packages will replace the links above only after macOS and Windows
-validation passes.
+This is a prerelease, not a stable installer. The macOS build is ad-hoc signed
+and not notarized; after extracting it, right-click `Haypile.app` and choose
+**Open**. Haypile keeps controlled local copies, but an Alpha build must not be
+the only backup of material you cannot replace.
 
 ## See It Work
 
@@ -63,7 +63,7 @@ Haypile is local-first by design:
   `gui_state.json`, logs, provenance, or handoff data.
 - Cloud vision requests omit original filenames and local absolute paths.
 
-See [Security Policy](SECURITY.md) for reporting security boundary failures.
+See [Security Policy](SECURITY.md) or [report privately on GitHub](https://github.com/chenjinnan82-stack/Haypile-lite/security/advisories/new).
 
 ## What v0.3 Adds
 
@@ -150,6 +150,9 @@ platform scripts under `scripts/`. The private release gate is documented in
 
 - This repository and its tagged releases are the only public Haypile source.
 - Haypile is not a cloud DAM, multi-user sync service, or agent-write platform.
+- Equal SHA-256 content is one logical asset. Haypile does not yet provide
+  per-project identities, multiple simultaneous roles, or workspace isolation.
+- Haypile keeps controlled copies, but it is not the only backup for valuable source material.
 - Experimental real-project apply/rollback helpers remain disabled and outside
   the public agent surface.
 

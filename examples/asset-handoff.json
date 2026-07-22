@@ -1,11 +1,18 @@
 {
   "handoff_version": "haypile.asset-handoff.v1",
+  "handoff_id": "00000000-0000-4000-8000-000000000000",
+  "created_at": "2026-07-22T00:00:00+00:00",
   "source": "haypile",
   "batch_id": "example-batch-uuid",
   "base_url": "http://127.0.0.1:8010",
+  "manifest_generation": "1111111111111111111111111111111111111111111111111111111111111111",
+  "asset_count": 1,
+  "total_matching": 1,
+  "complete": true,
+  "next_cursor": null,
   "assets": [
     {
-      "id": "generic_img_hero_image_abcd1234",
+      "id": "abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd",
       "theme_id": "generic",
       "type": "image",
       "role": "hero_image",
@@ -29,11 +36,13 @@
           "theme": 0.82,
           "role": 0.88
         },
-        "reason": "主体清晰"
+        "reason": "主体清晰",
+        "trust": "untrusted_advisory",
+        "must_not_execute": true
       },
       "provenance": {
         "source": "haypile",
-        "id": "generic_img_hero_image_abcd1234",
+        "id": "abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd",
         "sha256": "abcd...",
         "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
         "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",

@@ -13,13 +13,13 @@ def get_vault_service() -> VaultService:
 
 
 @router.get("", response_model=list[str])
-async def list_themes(
+def list_themes(
     vault_service: VaultService = Depends(get_vault_service),
 ) -> list[str]:
     return vault_service.list_themes()
 
 @router.get("/{theme_id}", response_model=AestheticPayload)
-async def get_theme_contract(
+def get_theme_contract(
     theme_id: str,
     vault_service: VaultService = Depends(get_vault_service),
 ) -> AestheticPayload:

@@ -5,8 +5,12 @@ import os
 import sys
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from typing import Any
+from uuid import uuid4
+
+from app.services.asset_provenance import sanitize_provenance
 
 BASE_URL = os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010").rstrip("/")
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -34,11 +38,23 @@ def ready_images(role: str | None = None, *, batch_id: str = "latest") -> list[d
     return get_json("/api/v1/bundles?" + urllib.parse.urlencode(query))
 
 
-def build_handoff(bundles: list[dict[str, Any]], *, batch_id: str | None = None) -> dict[str, Any]:
+def build_handoff(
+    bundles: list[dict[str, Any]],
+    *,
+    batch_id: str | None = None,
+    manifest_generation: str = "",
+) -> dict[str, Any]:
     handoff = {
         "handoff_version": "haypile.asset-handoff.v1",
+        "handoff_id": str(uuid4()),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "source": "haypile",
         "base_url": BASE_URL,
+        "manifest_generation": manifest_generation,
+        "asset_count": len(bundles),
+        "total_matching": len(bundles),
+        "complete": True,
+        "next_cursor": None,
         "assets": [_handoff_asset(bundle) for bundle in bundles],
     }
     if batch_id:
@@ -48,6 +64,14 @@ def build_handoff(bundles: list[dict[str, Any]], *, batch_id: str | None = None)
 
 def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
     resolved_url = BASE_URL + bundle["url"]
+    public_metadata = sanitize_provenance(
+        {
+            "origin_url": bundle.get("origin_url", ""),
+            "content_type": bundle.get("content_type", ""),
+            "downloaded_at": bundle.get("downloaded_at", ""),
+            "ai_suggestions": bundle.get("ai_suggestions", {}),
+        }
+    )
     return {
         "id": bundle["id"],
         "theme_id": bundle["theme_id"],
@@ -59,7 +83,7 @@ def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
         "url": bundle["url"],
         "access": bundle["access"],
         "resolved_url": resolved_url,
-        "ai_suggestions": bundle.get("ai_suggestions", {}),
+        "ai_suggestions": public_metadata.get("ai_suggestions", {}),
         "duration_seconds": bundle.get("duration_seconds"),
         "audio_metadata": bundle.get("audio_metadata", {}),
         "audio_tags": bundle.get("audio_tags", {}),
@@ -72,6 +96,9 @@ def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
             "url": bundle["url"],
             "resolved_url": resolved_url,
             "access": bundle["access"],
+            "origin_url": public_metadata.get("origin_url", ""),
+            "content_type": public_metadata.get("content_type", ""),
+            "downloaded_at": public_metadata.get("downloaded_at", ""),
         },
     }
 
@@ -79,11 +106,16 @@ def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
 def main() -> int:
     try:
         get_json("/healthz")
-        get_json("/readyz")
+        readiness = get_json("/readyz")
         batch_id = latest_batch_id()
         handoff = build_handoff(
             ready_images(role=os.environ.get("HAYPILE_ROLE"), batch_id=batch_id) if batch_id else [],
             batch_id=batch_id or None,
+            manifest_generation=(
+                str(readiness.get("manifest_generation") or "")
+                if isinstance(readiness, dict)
+                else ""
+            ),
         )
     except HTTPError as exc:
         print(f"Haypile request failed: HTTP {exc.code} {exc.reason}. Check readiness and try again.", file=sys.stderr)

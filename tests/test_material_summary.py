@@ -103,7 +103,7 @@ class MaterialSummaryTests(unittest.TestCase):
         labels_by_title = {item.title: item.usage_label for item in summary.recent_items}
         origins_by_title = {item.title: item.origin_url for item in summary.recent_items}
         self.assertEqual(labels_by_title["generic_img_hero_image_aaaa.png"], "主视觉")
-        self.assertEqual(origins_by_title["generic_img_hero_image_aaaa.png"], "https://cdn.example.com/hero.png")
+        self.assertEqual(origins_by_title["generic_img_hero_image_aaaa.png"], "https://cdn.example.com")
         self.assertEqual(labels_by_title["generic_img_unknown_bbbb.png"], "未确定")
         self.assertEqual(labels_by_title["generic_aud_unknown_cccc.mp3"], "音频")
         self.assertIn("草堆里有 3 个 bundle", summary.summary_text())
@@ -237,10 +237,19 @@ class MaterialSummaryTests(unittest.TestCase):
             VISION_CLASSIFIER_BASE_URL="http://127.0.0.1:11434",
         )
         material_summary_module._classifier_status_cached.cache_clear()
-        with patch.object(material_summary_module.urllib.request, "urlopen", return_value=FakeResponse()):
+        class FakeOpener:
+            def open(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        with patch.object(
+            material_summary_module.urllib.request,
+            "build_opener",
+            return_value=FakeOpener(),
+        ) as build_opener:
             status = material_summary_module._classifier_status(settings)
 
         self.assertEqual(status, "模型：未安装 qwen3-vl:8b")
+        self.assertEqual(build_opener.call_count, 1)
 
     def test_summary_shows_ready_rehearsal_as_one_plain_status(self) -> None:
         rehearsal_root = self.tmpdir / "rehearsal"

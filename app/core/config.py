@@ -15,7 +15,7 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-APP_VERSION = "0.3.0a1"
+APP_VERSION = "0.3.0a2"
 SOURCE_BASE_DIR = Path(__file__).resolve().parents[2]
 _MODE_FILES = {"backend": "backend_host.py", "mcp": "mcp_server.py"}
 
@@ -305,9 +305,6 @@ class Settings(BaseSettings):
         text = str(value or "").strip()
         if text and text != "haypile-ipc-v1":
             return text
-        admin_key = os.environ.get("ADMIN_API_KEY", "").strip()
-        if admin_key:
-            return admin_key
         return _read_or_create_ipc_authkey()
 
 
