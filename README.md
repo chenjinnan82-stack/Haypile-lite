@@ -18,14 +18,20 @@ A local-first asset intake for AI creators and independent developers.
 
 </div>
 
-## Desktop Downloads Temporarily Paused
+## Desktop Downloads
 
-The `v0.3.0-alpha.2` desktop packages have been superseded while the
-`v0.3.0-alpha.4` safety seed build is verified. The incomplete `alpha.3` and
-other historical releases remain available for provenance, but they are not
-supported downloads for new seed tests.
+`v0.3.0-alpha.4` is a safety seed prerelease for informed testing.
 
-Source testing remains available below. Haypile keeps controlled local copies,
+| Platform | Download | Verify |
+| --- | --- | --- |
+| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.4/Haypile-v0.3.0-alpha.4-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.4/Haypile-v0.3.0-alpha.4-macos-arm64.app.zip.sha256) |
+| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.4/Haypile-v0.3.0-alpha.4-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.4/Haypile-v0.3.0-alpha.4-windows-x64.zip.sha256) |
+
+[Release notes](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.4)
+
+The macOS build is ad-hoc signed and not notarized; right-click the app and
+choose **Open** on first launch. The Windows build is unsigned and portable;
+unzip it before running `Haypile.exe`. Haypile keeps controlled local copies,
 but an Alpha build must not be the only backup of material you cannot replace.
 
 ## See It Work

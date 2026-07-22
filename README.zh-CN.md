@@ -18,14 +18,20 @@
 
 </div>
 
-## 桌面下载暂时暂停
+## 桌面版下载
 
-`v0.3.0-alpha.2` 桌面包已被后续安全修复取代；`v0.3.0-alpha.4`
-安全种子版正在验证中。未完成的 `alpha.3` 与其他历史 Release 仍保留作溯源，
-但不属于受支持的下载，请勿用于新的种子测试。
+`v0.3.0-alpha.4` 是面向知情测试用户的安全种子预览版。
 
-下方源码方式仍可用于测试。Haypile 会保存受控的本地副本，但 Alpha 版本不应
-成为不可替代素材的唯一备份。
+| 平台 | 下载 | 校验 |
+| --- | --- | --- |
+| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.4/Haypile-v0.3.0-alpha.4-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.4/Haypile-v0.3.0-alpha.4-macos-arm64.app.zip.sha256) |
+| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.4/Haypile-v0.3.0-alpha.4-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.4/Haypile-v0.3.0-alpha.4-windows-x64.zip.sha256) |
+
+[版本说明](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.4)
+
+macOS 包采用临时签名且尚未公证，首次启动请右键应用并选择“打开”。Windows
+包尚未签名，请先解压再运行 `Haypile.exe`。Haypile 会保存受控的本地副本，但
+Alpha 版本不应成为不可替代素材的唯一备份。
 
 ## 看它怎么工作
 
