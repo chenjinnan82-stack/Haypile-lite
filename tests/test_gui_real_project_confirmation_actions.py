@@ -5,8 +5,11 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -2891,6 +2894,240 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
             app_gui_module.subprocess.Popen = previous_popen
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_ingest_batch_preflight_rejects_limits_before_storage_changes(self) -> None:
+        storage = self.tmpdir / "storage"
+        storage.mkdir()
+        first = self.tmpdir / "first.bin"
+        second = self.tmpdir / "second.bin"
+        first.write_bytes(b"1234")
+        second.write_bytes(b"56")
+
+        with patch(
+            "app_gui.shutil.disk_usage",
+            return_value=SimpleNamespace(free=1024),
+        ):
+            too_many = app_gui_module._ingest_batch_preflight_error(
+                [first, second], storage, max_files=1, max_bytes=100, reserve_bytes=10
+            )
+            too_large = app_gui_module._ingest_batch_preflight_error(
+                [first], storage, max_files=2, max_bytes=3, reserve_bytes=10
+            )
+            no_space = app_gui_module._ingest_batch_preflight_error(
+                [first], storage, max_files=2, max_bytes=100, reserve_bytes=1021
+            )
+            accepted = app_gui_module._ingest_batch_preflight_error(
+                [first], storage, max_files=2, max_bytes=100, reserve_bytes=10
+            )
+
+        self.assertIn("最多", too_many)
+        self.assertIn("2GB", too_large)
+        self.assertIn("空间不足", no_space)
+        self.assertEqual(accepted, "")
+        self.assertEqual(list(storage.iterdir()), [])
+
+    def test_worker_shutdown_requests_interruption_without_forcing_thread(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+
+        class FakeWorker:
+            requested = False
+
+            def isRunning(self):
+                return True
+
+            def requestInterruption(self):
+                self.requested = True
+
+        ball = app_gui_module.HaypileFloatingBall()
+        worker = FakeWorker()
+        refresh_worker = FakeWorker()
+        ball.worker = worker
+        ball.material_panel.ai_refresh_worker = refresh_worker
+        try:
+            ball._shutdown_worker()
+            ball._shutdown_ai_refresh_worker()
+            self.assertTrue(worker.requested)
+            self.assertTrue(refresh_worker.requested)
+            self.assertIs(ball.worker, worker)
+            self.assertIs(ball.material_panel.ai_refresh_worker, refresh_worker)
+        finally:
+            ball.worker = None
+            ball.material_panel.ai_refresh_worker = None
+            ball._cleanup_done = True
+            ball.close()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_remote_worker_cleans_downloaded_files_when_cancelled(self) -> None:
+        incoming = self.tmpdir / "incoming"
+        incoming.mkdir()
+        downloaded = incoming / "downloaded.png"
+        downloaded.write_bytes(b"temporary")
+        worker = app_gui_module.RemoteDownloadWorker([], incoming)
+
+        def cancel_after_download(paths):
+            paths.append(downloaded)
+            worker.requestInterruption()
+
+        worker._run_downloads = cancel_after_download
+        worker.start()
+        self.assertTrue(worker.wait(2000))
+
+        self.assertFalse(downloaded.exists())
+
+    def test_backend_identity_and_graceful_deadline(self) -> None:
+        self.assertTrue(
+            app_gui_module.HaypileFloatingBall._is_haypile_backend(
+                {
+                    "ok": True,
+                    "product": "haypile",
+                    "protocol_version": 1,
+                    "ready": True,
+                },
+                require_ready=True,
+            )
+        )
+        self.assertFalse(
+            app_gui_module.HaypileFloatingBall._is_haypile_backend(
+                {"ok": True, "ready": True},
+                require_ready=True,
+            )
+        )
+
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+
+        class FakeProcess:
+            pid = 123
+            terminated = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                raise AssertionError("kill must not run at the graceful deadline")
+
+        ball = app_gui_module.HaypileFloatingBall()
+        process = FakeProcess()
+        ball.api_process = process
+        ball.api_owned_by_gui = True
+        try:
+            configured = {
+                "ok": True,
+                "product": "haypile",
+                "protocol_version": 1,
+                "host": ball.settings.HOST,
+                "port": ball.settings.PORT,
+                "pid": process.pid,
+                "ready": True,
+            }
+            self.assertTrue(
+                ball._is_configured_haypile_backend(
+                    configured,
+                    require_ready=True,
+                    expected_pid=process.pid,
+                )
+            )
+            self.assertFalse(
+                ball._is_configured_haypile_backend(
+                    {**configured, "port": ball.settings.PORT + 1},
+                    require_ready=True,
+                )
+            )
+            self.assertFalse(
+                ball._is_configured_haypile_backend(
+                    configured,
+                    require_ready=True,
+                    expected_pid=process.pid + 1,
+                )
+            )
+            with patch("app_gui.send_ipc_request", return_value={"ok": True}):
+                ball.stop_api_server()
+            self.assertFalse(process.terminated)
+            ball._backend_phase_started_at = time.monotonic() - 10.1
+            ball._poll_api_server()
+            self.assertTrue(process.terminated)
+            self.assertEqual(ball._backend_phase, "terminating")
+        finally:
+            ball.api_process = None
+            ball.api_owned_by_gui = False
+            ball._cleanup_done = True
+            ball.close()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_slow_backend_start_is_not_terminated_after_five_seconds(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+
+        class FakeProcess:
+            terminated = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+        ball = app_gui_module.HaypileFloatingBall()
+        process = FakeProcess()
+        notices: list[str] = []
+        ball.api_process = process
+        ball.api_owned_by_gui = True
+        ball._backend_phase = "starting"
+        ball._backend_phase_started_at = time.monotonic() - 5.1
+        ball._probe_backend_response = lambda: None
+        ball.show_toast = lambda message, success=True: notices.append(message)
+        try:
+            ball._poll_api_server()
+
+            self.assertFalse(process.terminated)
+            self.assertEqual(ball._backend_phase, "starting")
+            self.assertTrue(notices)
+        finally:
+            ball.api_process = None
+            ball.api_owned_by_gui = False
+            ball._cleanup_done = True
+            ball.close()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_backend_restart_clears_finished_process_before_probe(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        finished: list[bool] = []
+
+        class FinishedProcess:
+            @staticmethod
+            def poll():
+                return 0
+
+        ball.api_process = FinishedProcess()
+        ball._finish_api_process = lambda: (
+            finished.append(True),
+            setattr(ball, "api_process", None),
+        )
+        ball._probe_backend_response = lambda: {
+            "ok": True,
+            "product": "haypile",
+            "protocol_version": 1,
+            "host": ball.settings.HOST,
+            "port": ball.settings.PORT,
+            "pid": 999,
+            "ready": True,
+        }
+        try:
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+            ball.start_api_server()
+            self.assertEqual(finished, [True])
+            self.assertIsNone(ball.api_process)
+            self.assertEqual(ball._backend_phase, "ready")
+        finally:
+            ball._cleanup_done = True
+            ball.close()
             app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_ingest_finish_refreshes_visible_panel_and_triggers_feedback(self) -> None:

@@ -196,6 +196,24 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
 
         self.assertEqual(index, {"known-sha": existing.resolve()})
 
+    def test_rejected_drop_does_not_create_batch_or_dirty_manifest(self) -> None:
+        image = self.tmpdir / "too-many.svg"
+        image.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>',
+            encoding="utf-8",
+        )
+        worker = IngestWorker([image], self.assets_dir, ai_enabled=False)
+        worker.MAX_DROP_FILES = 0
+        finished: list[tuple[str, bool]] = []
+        worker.finished_signal.connect(lambda message, ok: finished.append((message, ok)))
+
+        worker.run()
+
+        self.assertFalse(finished[-1][1])
+        self.assertIsNone(StorageRuntimeDB(self.runtime_db_path).latest_batch())
+        self.assertFalse(manifest_dirty_path(self.manifest_path).exists())
+        self.assertFalse(any(self.assets_dir.rglob("*")))
+
     def test_ai_toggle_disabled_skips_visual_classifier(self) -> None:
         image = self.tmpdir / "plain.svg"
         image.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>', encoding="utf-8")
@@ -218,7 +236,12 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         )
         observed_batch_ids: list[str] = []
 
-        async def observe_completed_batch(_scanner) -> dict[str, object]:
+        async def observe_completed_batch(
+            _scanner,
+            *,
+            should_stop=None,
+        ) -> dict[str, object]:
+            self.assertFalse(should_stop())
             latest = StorageRuntimeDB(self.runtime_db_path).latest_batch()
             self.assertIsNotNone(latest)
             observed_batch_ids.append(str(latest["id"]))

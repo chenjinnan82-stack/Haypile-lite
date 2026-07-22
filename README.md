@@ -18,18 +18,14 @@ A local-first asset intake for AI creators and independent developers.
 
 </div>
 
-## v0.3.0-alpha.2 Safety Seed Build
+## Desktop Downloads Temporarily Paused
 
-For a small seed group testing **drop -> review -> hand off -> Codex reads**:
+The `v0.3.0-alpha.2` desktop packages have been superseded while the
+`v0.3.0-alpha.3` safety seed build is verified. Historical releases remain
+available for provenance, but please do not use them for new seed tests.
 
-- [Download for macOS Apple Silicon](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.2/Haypile-v0.3.0-alpha.2-macos-arm64.app.zip)
-- [Download for Windows x64](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.2/Haypile-v0.3.0-alpha.2-windows-x64.zip)
-- [Release notes and SHA-256 files](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.2)
-
-This is a prerelease, not a stable installer. The macOS build is ad-hoc signed
-and not notarized; after extracting it, right-click `Haypile.app` and choose
-**Open**. Haypile keeps controlled local copies, but an Alpha build must not be
-the only backup of material you cannot replace.
+Source testing remains available below. Haypile keeps controlled local copies,
+but an Alpha build must not be the only backup of material you cannot replace.
 
 ## See It Work
 

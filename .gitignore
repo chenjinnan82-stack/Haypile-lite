@@ -8,6 +8,7 @@ __pycache__/
 *.log
 .DS_Store
 .build-venv/
+.venv/
 build/
 dist/
 *.build/

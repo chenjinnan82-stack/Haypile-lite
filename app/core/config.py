@@ -14,8 +14,10 @@ from urllib.parse import urlparse
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.file_lock import InterProcessFileLock
 
-APP_VERSION = "0.3.0a2"
+
+APP_VERSION = "0.3.0a3"
 SOURCE_BASE_DIR = Path(__file__).resolve().parents[2]
 _MODE_FILES = {"backend": "backend_host.py", "mcp": "mcp_server.py"}
 
@@ -331,18 +333,11 @@ def _read_or_create_ipc_authkey() -> str:
         )
     )
     _ensure_private_directory(key_path.parent)
+    lock = InterProcessFileLock(key_path.with_name(f"{key_path.name}.lock"))
+    if not lock.acquire(timeout=8.0):
+        raise RuntimeError("Could not lock the Haypile IPC key file")
+    temp_path: Path | None = None
     try:
-        existing = key_path.read_text(encoding="utf-8").strip()
-        if existing and existing != "haypile-ipc-v1":
-            if os.name != "nt":
-                key_path.chmod(0o600)
-            return existing
-    except OSError:
-        pass
-    token = secrets.token_hex(32)
-    try:
-        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
         try:
             existing = key_path.read_text(encoding="utf-8").strip()
         except OSError:
@@ -351,11 +346,30 @@ def _read_or_create_ipc_authkey() -> str:
             if os.name != "nt":
                 key_path.chmod(0o600)
             return existing
-        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="ascii") as target:
-        target.write(token)
-    try:
-        key_path.chmod(0o600)
-    except OSError:
-        pass
-    return token
+
+        token = secrets.token_hex(32)
+        temp_path = key_path.with_name(
+            f".{key_path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+        )
+        fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as target:
+            target.write(token)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temp_path, key_path)
+        temp_path = None
+        if os.name != "nt":
+            key_path.chmod(0o600)
+            try:
+                parent_fd = os.open(str(key_path.parent), os.O_RDONLY)
+                try:
+                    os.fsync(parent_fd)
+                finally:
+                    os.close(parent_fd)
+            except OSError:
+                pass
+        return token
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        lock.release()

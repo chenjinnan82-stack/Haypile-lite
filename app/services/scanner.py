@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from mutagen import File as MutagenFile, MutagenError
@@ -16,7 +17,9 @@ from app.services.storage_runtime import StorageRuntimeDB
 
 
 class ManifestReadinessError(RuntimeError):
-    pass
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def manifest_dirty_path(manifest_path: Path) -> Path:
@@ -31,22 +34,45 @@ def clear_manifest_dirty(manifest_path: Path) -> None:
     manifest_dirty_path(manifest_path).unlink(missing_ok=True)
 
 
-def read_manifest_readiness(manifest_path: Path) -> dict[str, str | int]:
+def read_manifest_snapshot(manifest_path: Path) -> tuple[dict[str, Any], dict[str, str | int]]:
     if manifest_dirty_path(manifest_path).exists():
-        raise ManifestReadinessError("assets manifest projection is dirty")
+        raise ManifestReadinessError(
+            "catalog_projection_dirty",
+            "assets manifest projection is dirty",
+        )
     try:
         raw = manifest_path.read_bytes()
         payload = json.loads(raw)
     except FileNotFoundError as exc:
-        raise ManifestReadinessError("assets manifest not found") from exc
+        raise ManifestReadinessError(
+            "catalog_projection_missing",
+            "assets manifest not found",
+        ) from exc
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ManifestReadinessError("assets manifest is unreadable") from exc
+        raise ManifestReadinessError(
+            "catalog_projection_unreadable",
+            "assets manifest is unreadable",
+        ) from exc
     if not isinstance(payload, dict):
-        raise ManifestReadinessError("assets manifest must be a JSON object")
-    return {
+        raise ManifestReadinessError(
+            "catalog_projection_unreadable",
+            "assets manifest must be a JSON object",
+        )
+    if manifest_dirty_path(manifest_path).exists():
+        raise ManifestReadinessError(
+            "catalog_projection_dirty",
+            "assets manifest projection became dirty while reading",
+        )
+    readiness = {
         "manifest_generation": hashlib.sha256(raw).hexdigest(),
         "asset_count": len(payload),
     }
+    return payload, readiness
+
+
+def read_manifest_readiness(manifest_path: Path) -> dict[str, str | int]:
+    _payload, readiness = read_manifest_snapshot(manifest_path)
+    return readiness
 
 
 class AssetScanner:
@@ -64,10 +90,18 @@ class AssetScanner:
         self.manifest_path = manifest_path or settings.MANIFEST_PATH  # type: ignore[union-attr]
         self.runtime_db_path = runtime_db_path or (self.manifest_path.parent / "storage_runtime.db")
 
-    async def scan_assets_directory(self) -> dict[str, dict[str, Any]]:
-        return await asyncio.to_thread(self._scan_assets_directory_sync)
+    async def scan_assets_directory(
+        self,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        return await asyncio.to_thread(self._scan_assets_directory_sync, should_stop)
 
-    def _scan_assets_directory_sync(self) -> dict[str, dict[str, Any]]:
+    def _scan_assets_directory_sync(
+        self,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        stop_requested = should_stop or (lambda: False)
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
         mark_manifest_dirty(self.manifest_path)
@@ -79,6 +113,8 @@ class AssetScanner:
             runtime = StorageRuntimeDB(self.runtime_db_path)
             committed_paths = runtime.committed_asset_paths(self.assets_dir, verify_hashes=True)
         for path in sorted(self.assets_dir.rglob("*")):
+            if stop_requested():
+                raise InterruptedError("manifest_scan_interrupted")
             if path.is_symlink() or not path.is_file():
                 continue
             try:
@@ -99,6 +135,8 @@ class AssetScanner:
                 if audio_item:
                     manifest[self._relative_key(path)] = audio_item
 
+        if stop_requested():
+            raise InterruptedError("manifest_scan_interrupted")
         atomic_write_json(self.manifest_path, manifest)
         clear_manifest_dirty(self.manifest_path)
         return manifest

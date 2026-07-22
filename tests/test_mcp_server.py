@@ -16,6 +16,43 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class McpServerTests(unittest.TestCase):
+    def test_mcp_base_url_is_local_unless_remote_https_is_explicitly_allowed(self) -> None:
+        self.assertEqual(
+            mcp_server._validate_base_url("http://127.0.0.1:8010/"),
+            "http://127.0.0.1:8010",
+        )
+        self.assertEqual(
+            mcp_server._validate_base_url("http://[::1]:8010"),
+            "http://[::1]:8010",
+        )
+        with self.assertRaises(RuntimeError):
+            mcp_server._validate_base_url("http://user:secret@127.0.0.1:8010")
+        with self.assertRaises(RuntimeError):
+            mcp_server._validate_base_url("http://127.0.0.1:8010?token=secret")
+        with self.assertRaises(RuntimeError):
+            mcp_server._validate_base_url("http://127.0.0.1:8010\n")
+        with self.assertRaises(RuntimeError):
+            mcp_server._validate_base_url("https://agent.example.com")
+        with patch.dict("os.environ", {"HAYPILE_ALLOW_REMOTE_BASE_URL": "1"}, clear=False):
+            self.assertEqual(
+                mcp_server._validate_base_url("https://agent.example.com:8443"),
+                "https://agent.example.com:8443",
+            )
+            with self.assertRaises(RuntimeError):
+                mcp_server._validate_base_url("http://agent.example.com:8010")
+
+    def test_mcp_http_opener_does_not_follow_redirects(self) -> None:
+        self.assertIsNone(
+            mcp_server._NoRedirectHandler().redirect_request(
+                None,
+                None,
+                302,
+                "Found",
+                {},
+                "https://example.com/redirected",
+            )
+        )
+
     def test_mcp_heartbeat_is_private_and_contains_no_asset_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             index_dir = Path(tmp) / "index"
@@ -78,7 +115,7 @@ class McpServerTests(unittest.TestCase):
         )
 
         response = json.loads(process.stdout)
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.2")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.3")
         self.assertNotIn("PySide6", process.stderr)
 
     def test_lists_haypile_tools(self) -> None:
@@ -363,7 +400,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "haypile")
-        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.2")
+        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.3")
         names = [tool["name"] for tool in responses[1]["result"]["tools"]]
         self.assertIn("haypile_copy_handoff", names)
 
@@ -387,7 +424,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual([responses[0]["error"]["code"], responses[1]["error"]["code"]], [-32700, -32700])
-        self.assertEqual(responses[2]["result"]["serverInfo"]["version"], "0.3.0-alpha.2")
+        self.assertEqual(responses[2]["result"]["serverInfo"]["version"], "0.3.0-alpha.3")
         self.assertIn("tools", responses[3]["result"])
 
 
