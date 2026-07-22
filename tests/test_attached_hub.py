@@ -10,7 +10,7 @@ from unittest.mock import patch
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QEvent, QRect, Qt
-    from PySide6.QtTest import QTest
+    from PySide6.QtTest import QSignalSpy, QTest
     from PySide6.QtWidgets import QApplication
 
     import app_gui
@@ -211,22 +211,26 @@ class AttachedHubTests(unittest.TestCase):
         previous_platform = os.environ.get("QT_QPA_PLATFORM")
         os.environ["QT_QPA_PLATFORM"] = "animation-test"
         try:
-            self.ball._handle_quick_menu_action("assets")
             menu = self.ball.quick_menu
+            drawer_opened = QSignalSpy(menu._drawer_motion.finished)
+            self.ball._handle_quick_menu_action("assets")
             self.assertEqual(menu._drawer_motion.duration(), 150)
             self.assertNotEqual(menu._drawer_motion.startValue(), menu._drawer_motion.endValue())
-            QTest.qWait(170)
+            self.assertTrue(drawer_opened.wait(1000))
             self.assertEqual(menu.drawer_shell.pos(), menu._drawer_motion.endValue())
 
+            page_settled = QSignalSpy(menu._page_slide.finished)
             self.ball._handle_quick_menu_action("agent")
             self.ball._handle_quick_menu_action("settings")
             final_page_position = menu._page_slide.endValue()
-            QTest.qWait(180)
+            self.assertTrue(page_settled.wait(1000))
             self.assertEqual(menu.drawer_stack.pos(), final_page_position)
 
+            menu_closed = QSignalSpy(menu._fade_animation.finished)
             self.ball._toggle_quick_menu()
             self.assertEqual(menu._drawer_motion.duration(), 150)
-            QTest.qWait(210)
+            self.assertTrue(menu_closed.wait(1000))
+            self.app.processEvents()
             self.assertFalse(menu.isVisible())
             self.assertFalse(menu.drawer_shell.isVisible())
             self.assertFalse(menu._hide_finalize_timer.isActive())
