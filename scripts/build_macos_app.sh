@@ -18,8 +18,8 @@ DEPLOY_LOG="$BUILD_DIR/pyside6-deploy.log"
 ICONSET="$BUILD_DIR/Haypile.iconset"
 APP="$DIST_DIR/Haypile.app"
 BIN="$APP/Contents/MacOS/Haypile"
-ZIP="$DIST_DIR/Haypile-v0.3.0-alpha.3-macos-arm64.app.zip"
-MACOS_BUILD_VERSION="3002"
+ZIP="$DIST_DIR/Haypile-v0.3.0-alpha.4-macos-arm64.app.zip"
+MACOS_BUILD_VERSION="3004"
 SPEC="$ROOT/pysidedeploy.spec"
 ICON_SOURCE="$ROOT/assets/haypile-app-icon.png"
 SPEC_BACKUP=""
@@ -88,7 +88,7 @@ test -f "$APP/Contents/MacOS/ui_assets/drop-leaf-frame.svg"
 test -f "$APP/Contents/MacOS/assets/haypile-app-icon.png"
 BUILD_COMMIT="$(git rev-parse HEAD)"
 GITHUB_RUN_ID="${GITHUB_RUN_ID:-local}"
-/usr/bin/python3 -c 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps({"version":"0.3.0-alpha.3","commit":sys.argv[2],"platform":"macos-arm64","workflow_run":sys.argv[3]}, indent=2, sort_keys=True)+"\n")' \
+/usr/bin/python3 -c 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps({"version":"0.3.0-alpha.4","commit":sys.argv[2],"platform":"macos-arm64","workflow_run":sys.argv[3]}, indent=2, sort_keys=True)+"\n")' \
   "$APP/Contents/Resources/BUILD_INFO.json" "$BUILD_COMMIT" "$GITHUB_RUN_ID"
 test -f "$APP/Contents/Resources/BUILD_INFO.json"
 forbidden_runtime_path="$({
@@ -128,7 +128,7 @@ MCP_SMOKE_OUTPUT="$(printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   | "$BIN" --mcp)"
-grep -q '"version": "0.3.0-alpha.3"' <<<"$MCP_SMOKE_OUTPUT"
+grep -q '"version": "0.3.0-alpha.4"' <<<"$MCP_SMOKE_OUTPUT"
 
 SMOKE_ROOT="$(mktemp -d)"
 SMOKE_PORT="${HAYPILE_SMOKE_PORT:-18010}"

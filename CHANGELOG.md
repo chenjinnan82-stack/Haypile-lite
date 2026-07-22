@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.0-alpha.4 (seed safety candidate)
+
+- Keep the published `alpha.3` tag immutable after its Windows package smoke
+  check exposed a stale `alpha.2` version matcher.
+- Use one Windows release-version variable for archive naming, build metadata,
+  MCP package validation, and future prerelease updates.
+- Rebuild both desktop platforms from one corrected source commit before
+  restoring seed-user downloads.
+
 ## v0.3.0-alpha.3 (seed safety candidate)
 
 - Replace forced Qt thread termination with cooperative cancellation and a

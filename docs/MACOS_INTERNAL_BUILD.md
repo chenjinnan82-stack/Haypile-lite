@@ -26,8 +26,8 @@ Outputs:
 
 ```text
 dist/Haypile.app
-dist/Haypile-v0.3.0-alpha.3-macos-arm64.app.zip
-dist/Haypile-v0.3.0-alpha.3-macos-arm64.app.zip.sha256
+dist/Haypile-v0.3.0-alpha.4-macos-arm64.app.zip
+dist/Haypile-v0.3.0-alpha.4-macos-arm64.app.zip.sha256
 ```
 
 Build outputs are intentionally ignored by Git.

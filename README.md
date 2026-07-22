@@ -21,8 +21,9 @@ A local-first asset intake for AI creators and independent developers.
 ## Desktop Downloads Temporarily Paused
 
 The `v0.3.0-alpha.2` desktop packages have been superseded while the
-`v0.3.0-alpha.3` safety seed build is verified. Historical releases remain
-available for provenance, but please do not use them for new seed tests.
+`v0.3.0-alpha.4` safety seed build is verified. The incomplete `alpha.3` and
+other historical releases remain available for provenance, but they are not
+supported downloads for new seed tests.
 
 Source testing remains available below. Haypile keeps controlled local copies,
 but an Alpha build must not be the only backup of material you cannot replace.

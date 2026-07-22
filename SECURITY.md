@@ -20,7 +20,7 @@ which is enabled for this repository, or email the maintainer. Include:
 
 ## Supported Version
 
-New desktop downloads are paused while `v0.3.0-alpha.3` safety fixes are verified.
+New desktop downloads are paused while `v0.3.0-alpha.4` safety fixes are verified.
 Historical `v0.2.x` test assets remain available for provenance but are not the
 supported seed-user path. Include the exact commit when reporting source issues.
 

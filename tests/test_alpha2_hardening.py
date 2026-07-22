@@ -776,6 +776,18 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
                 self.assertIn(forbidden_name, text, f"{relative}: {forbidden_name}")
             self.assertIn("BUILD_INFO.json", text)
 
+    def test_windows_build_mcp_smoke_uses_the_server_release_version(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        build_text = (root / "scripts/build_windows_app.ps1").read_text(encoding="utf-8")
+        server_text = (root / "mcp_server.py").read_text(encoding="utf-8")
+        build_version = re.search(r'^\$ReleaseVersion = "([^"]+)"$', build_text, re.MULTILINE)
+        server_version = re.search(r'^SERVER_VERSION = "([^"]+)"$', server_text, re.MULTILINE)
+        self.assertIsNotNone(build_version)
+        self.assertIsNotNone(server_version)
+        self.assertEqual(build_version.group(1), server_version.group(1))
+        self.assertEqual(build_text.count(build_version.group(1)), 1)
+        self.assertIn("[regex]::Escape($ReleaseVersion)", build_text)
+
     def test_macos_build_owns_pyside_deployment_cleanup(self) -> None:
         root = Path(__file__).resolve().parents[1]
         text = (root / "scripts/build_macos_app.sh").read_text(encoding="utf-8")
@@ -783,7 +795,7 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
         self.assertIn('DEPLOY_DIR="$ROOT/deployment"', text)
         self.assertIn('rm -rf "$DEPLOY_DIR"', text)
         self.assertIn('DEPLOY_LOG="$BUILD_DIR/pyside6-deploy.log"', text)
-        self.assertIn('MACOS_BUILD_VERSION="3002"', text)
+        self.assertIn('MACOS_BUILD_VERSION="3004"', text)
         self.assertIn("Add :CFBundleVersion string", text)
 
 

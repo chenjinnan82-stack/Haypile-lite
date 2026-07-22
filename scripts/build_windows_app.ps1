@@ -6,6 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ReleaseVersion = "0.3.0-alpha.4"
 
 if ($env:OS -ne "Windows_NT") {
     throw "Haypile Windows builds must run on Windows."
@@ -22,7 +23,7 @@ $BuildDir = Join-Path $Root "build"
 $WindowsDeployDir = Join-Path $BuildDir "windows-deploy"
 $DistDir = Join-Path $Root "dist"
 $PortableDir = Join-Path $DistDir "Haypile"
-$Zip = Join-Path $DistDir "Haypile-v0.3.0-alpha.3-windows-x64.zip"
+$Zip = Join-Path $DistDir "Haypile-v$ReleaseVersion-windows-x64.zip"
 $Checksum = "$Zip.sha256"
 $IconSource = Join-Path $Root "assets/haypile-app-icon.png"
 $Icon = Join-Path $BuildDir "Haypile.ico"
@@ -111,7 +112,7 @@ try {
         throw "Missing Qt Windows platform plugin qwindows.dll."
     }
     $BuildInfo = [ordered]@{
-        version = "0.3.0-alpha.3"
+        version = $ReleaseVersion
         commit = (git rev-parse HEAD).Trim()
         platform = "windows-x64"
         workflow_run = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { "local" }
@@ -145,8 +146,9 @@ try {
     if ($McpProcess.ExitCode -ne 0) {
         throw "Haypile.exe --mcp failed: $McpError"
     }
-    if ($McpOutput -notmatch '"version"\s*:\s*"0\.3\.0-alpha\.2"') {
-        throw "Haypile.exe --mcp did not return server version 0.3.0-alpha.3."
+    $McpVersionPattern = [regex]::Escape($ReleaseVersion)
+    if ($McpOutput -notmatch ('"version"\s*:\s*"' + $McpVersionPattern + '"')) {
+        throw "Haypile.exe --mcp did not return server version $ReleaseVersion."
     }
     $ExpectedMcpKey = Join-Path $SmokeRoot "Haypile/storage/ipc_authkey"
     if (-not (Test-Path $ExpectedMcpKey -PathType Leaf)) {
