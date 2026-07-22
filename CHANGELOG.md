@@ -20,6 +20,8 @@
   synchronous disk-heavy API reads in FastAPI's thread pool.
 - Make attached-drawer closure deterministic after rapid page switches without
   allowing stale animation callbacks to close a newly reopened drawer.
+- Upload prerelease assets with explicit repository context from checkout-free
+  release jobs.
 - Mark Alpha storage as a controlled copy, not a user's only backup.
 
 ## v0.3.0-alpha.1 (candidate)

@@ -89,6 +89,6 @@ jobs:
         run: |
           tag_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)"
           test "$SOURCE_COMMIT" = "$tag_commit"
-          gh release upload "$RELEASE_TAG" \
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             dist/Haypile-v0.3.0-alpha.2-macos-arm64.app.zip \
             dist/Haypile-v0.3.0-alpha.2-macos-arm64.app.zip.sha256
