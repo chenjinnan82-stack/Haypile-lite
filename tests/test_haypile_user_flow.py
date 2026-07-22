@@ -11,10 +11,11 @@ from unittest.mock import AsyncMock, patch
 
 from app.core.config import get_settings
 from app.services.bundle_service import BundleService
+from app.services.asset_provenance import read_asset_provenance, write_asset_provenance
 from app.services.scanner import AssetScanner, manifest_dirty_path
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.style_classifier import StyleClassificationResult
-from app_gui import AIBatchWorker, IngestWorker
+from app_gui import AIBatchWorker, IngestWorker, _persist_ai_failure
 from examples.use_haypile_http import build_handoff
 
 
@@ -195,6 +196,62 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             index = worker._build_hash_index()
 
         self.assertEqual(index, {"known-sha": existing.resolve()})
+
+    def test_duplicate_imports_keep_each_browser_origin_in_batch_history(self) -> None:
+        first = self.tmpdir / "first.svg"
+        second = self.tmpdir / "second.svg"
+        payload = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>'
+        first.write_text(payload, encoding="utf-8")
+        second.write_text(payload, encoding="utf-8")
+        write_asset_provenance(first, {"origin_url": "https://one.example/path.svg"})
+        write_asset_provenance(second, {"origin_url": "https://two.example/path.svg"})
+
+        IngestWorker([first, second], self.assets_dir, ai_enabled=False).run()
+
+        runtime = StorageRuntimeDB(self.runtime_db_path)
+        with runtime.get_connection() as conn:
+            origins = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT origin_url FROM ingest_batch_items ORDER BY ordinal"
+                ).fetchall()
+            ]
+        self.assertEqual(origins, ["https://one.example", "https://two.example"])
+
+    def test_same_role_assets_keep_distinct_theme_keys(self) -> None:
+        worker = IngestWorker([], self.assets_dir, ai_enabled=False)
+        first = self.assets_dir / "generic/images/first.png"
+        second = self.assets_dir / "generic/images/second.png"
+        first.parent.mkdir(parents=True)
+
+        worker._upsert_theme_contract_for_image(first, "generic", "hero_image")
+        worker._upsert_theme_contract_for_image(second, "generic", "hero_image")
+
+        contract = json.loads((self.themes_dir / "generic.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(contract["physical_assets"]), {"first", "second"})
+
+    def test_ai_failure_does_not_replace_last_successful_suggestion(self) -> None:
+        asset = self.assets_dir / "generic/images/hero.png"
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"image")
+        write_asset_provenance(
+            asset,
+            {
+                "ai_suggestions": {
+                    "source": "model",
+                    "usage": "hero_image",
+                    "confidence": {"role": 0.9},
+                }
+            },
+        )
+
+        _persist_ai_failure(
+            {"source_key": "generic/images/hero.png", "sha256": "abc"},
+            self.assets_dir,
+            "offline",
+        )
+
+        self.assertEqual(read_asset_provenance(asset)["ai_suggestions"]["usage"], "hero_image")
 
     def test_rejected_drop_does_not_create_batch_or_dirty_manifest(self) -> None:
         image = self.tmpdir / "too-many.svg"

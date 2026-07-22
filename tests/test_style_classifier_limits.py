@@ -79,6 +79,18 @@ class StyleClassifierPowerTests(unittest.TestCase):
         self.assertEqual(result.ai_suggestions()["trust"], "untrusted_advisory")
         self.assertTrue(result.ai_suggestions()["must_not_execute"])
 
+    def test_model_json_rejects_nonfinite_numbers(self) -> None:
+        for payload in (
+            '{"role": "logo", "role_confidence": NaN}',
+            '{"role": "logo", "role_confidence": Infinity}',
+            '{"role": "logo", "role_confidence": 1e309}',
+            'prefix {"role": "logo", "tags": [NaN]} suffix',
+        ):
+            with self.subTest(payload=payload):
+                self.assertIsNone(StyleClassifier._parse_model_json(payload))
+
+        self.assertEqual(StyleClassifier._to_confidence(float("nan")), 0.0)
+
     def test_prompt_is_role_only(self) -> None:
         classifier = StyleClassifier.__new__(StyleClassifier)
         prompt = classifier._build_prompt(["generic", "forest"], {"width": 800})

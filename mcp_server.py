@@ -63,7 +63,7 @@ BASE_URL = _validate_base_url(
 )
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = {PROTOCOL_VERSION, "2024-11-05"}
-SERVER_VERSION = "0.3.0-alpha.4"
+SERVER_VERSION = "0.3.0-alpha.5"
 MAX_LINE_BYTES = 1024 * 1024
 LOCAL_OPENER = urllib.request.build_opener(
     urllib.request.ProxyHandler({}),
@@ -276,12 +276,13 @@ def _ready_manifest_generation() -> str:
 
 def call_tool(name: str, arguments: dict[str, Any]) -> Any:
     arguments = _validate_tool_arguments(name, arguments)
+    asset_type = None if arguments.get("type") == "asset" else arguments.get("type")
     if name == "haypile_health":
         return {"health": get_status_json("/healthz"), "ready": get_status_json("/readyz")}
     if name == "haypile_list_bundles":
         return list_bundles(
             status=arguments.get("status", "ready"),
-            asset_type=arguments.get("type"),
+            asset_type=asset_type,
             role=arguments.get("role"),
             theme_id=arguments.get("theme_id"),
             audio_usage=arguments.get("audio_usage"),
@@ -298,7 +299,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         generation_before = _ready_manifest_generation()
         bundles = list_bundles(
             status=arguments.get("status", "ready"),
-            asset_type=arguments.get("type"),
+            asset_type=asset_type,
             role=arguments.get("role"),
             theme_id=arguments.get("theme_id"),
             audio_usage=arguments.get("audio_usage"),
@@ -527,8 +528,27 @@ def handle(
             if not isinstance(params, dict):
                 return _error(message_id, -32602, "Invalid params")
             arguments = params["arguments"] if "arguments" in params else {}
-            payload = call_tool(str(params.get("name") or ""), arguments)
-            result = {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
+            tool_name = str(params.get("name") or "")
+            try:
+                _validate_tool_arguments(tool_name, arguments)
+            except ValueError as exc:
+                return _error(message_id, -32602, str(exc))
+            try:
+                payload = call_tool(tool_name, arguments)
+                result = {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(payload, ensure_ascii=False, allow_nan=False),
+                        }
+                    ],
+                    "isError": False,
+                }
+            except (ValueError, urllib.error.URLError, TimeoutError) as exc:
+                result = {
+                    "content": [{"type": "text", "text": str(exc)[:500]}],
+                    "isError": True,
+                }
         elif message_id is None:
             return None
         else:
@@ -560,20 +580,26 @@ def main() -> None:
             if encoded_length > MAX_LINE_BYTES:
                 while raw_line and not raw_line.endswith(b"\n" if isinstance(raw_line, bytes) else "\n"):
                     raw_line = stream.readline(MAX_LINE_BYTES + 1)
-                print(json.dumps(_error(None, -32700, "Parse error: message exceeds 1MB")), flush=True)
+                print(
+                    json.dumps(
+                        _error(None, -32700, "Parse error: message exceeds 1MB"),
+                        allow_nan=False,
+                    ),
+                    flush=True,
+                )
                 continue
             if isinstance(raw_line, bytes):
                 try:
                     line = raw_line.decode("utf-8", errors="strict")
                 except UnicodeDecodeError:
-                    print(json.dumps(_error(None, -32700, "Parse error")), flush=True)
+                    print(json.dumps(_error(None, -32700, "Parse error"), allow_nan=False), flush=True)
                     continue
             if not line.strip():
                 continue
             try:
                 message = json.loads(line)
             except (UnicodeDecodeError, json.JSONDecodeError):
-                print(json.dumps(_error(None, -32700, "Parse error")), flush=True)
+                print(json.dumps(_error(None, -32700, "Parse error"), allow_nan=False), flush=True)
                 continue
             if not isinstance(message, dict):
                 response = _error(None, -32600, "Invalid Request")
@@ -584,7 +610,7 @@ def main() -> None:
             if heartbeat is not None:
                 heartbeat.touch()
             if response is not None:
-                print(json.dumps(response, ensure_ascii=False), flush=True)
+                print(json.dumps(response, ensure_ascii=False, allow_nan=False), flush=True)
     finally:
         if heartbeat is not None:
             heartbeat.stop()

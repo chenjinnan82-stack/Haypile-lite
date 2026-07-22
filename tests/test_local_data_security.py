@@ -63,6 +63,11 @@ class LocalDataSecurityTests(unittest.TestCase):
         self.assertNotIn("unexpected", payload["ai_suggestions"])
         self.assertTrue(payload["ai_suggestions"]["must_not_execute"])
 
+        nonfinite = sanitize_provenance(
+            {"ai_suggestions": {"confidence": {"role": float("nan")}}}
+        )
+        self.assertNotIn("ai_suggestions", nonfinite)
+
     def test_ipc_start_failure_does_not_log_local_socket_path(self) -> None:
         private_path = "/Users/tester/Library/Application Support/Haypile/storage/ipc.sock"
         channel = ControlChannelServer(object(), "127.0.0.1", 8010)

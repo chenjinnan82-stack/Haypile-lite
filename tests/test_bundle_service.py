@@ -81,6 +81,15 @@ class BundleServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 service.set_bundle_role("generic_img_unknown_eeee", "sidebar")
 
+    def test_bundle_service_rejects_role_for_wrong_media_type(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            service = _bundle_service(Path(raw))
+
+            with self.assertRaisesRegex(ValueError, "incompatible"):
+                service.set_bundle_role("generic_aud_unknown_ffff", "hero_image")
+            with self.assertRaisesRegex(ValueError, "incompatible"):
+                service.set_bundle_role("generic_img_unknown_eeee", "audio")
+
     def test_bundle_service_confirms_audio_usage_and_projects_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             service = _bundle_service(Path(raw))
@@ -196,6 +205,13 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(one.json()["origin_url"], "https://cdn.example.com")
             self.assertEqual(missing.status_code, 404)
             self.assertEqual(no_batch.status_code, 404)
+
+            from app.services.scanner import mark_manifest_dirty
+
+            mark_manifest_dirty(service.manifest_path)
+            dirty_batch = client.get("/api/v1/batches/latest")
+            self.assertEqual(dirty_batch.status_code, 503)
+            self.assertEqual(dirty_batch.json()["detail"]["code"], "catalog_projection_dirty")
 
     def test_missing_physical_asset_is_never_ready(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

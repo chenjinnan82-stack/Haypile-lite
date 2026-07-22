@@ -10,6 +10,7 @@ from typing import Any
 from mutagen import File as MutagenFile, MutagenError
 
 from app.core.config import get_settings
+from app.core.file_lock import InterProcessFileLock
 from app.services.json_io import atomic_write_json
 from app.services.media_validator import MediaValidationError, validate_audio, validate_media
 from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
@@ -98,6 +99,14 @@ class AssetScanner:
         return await asyncio.to_thread(self._scan_assets_directory_sync, should_stop)
 
     def _scan_assets_directory_sync(
+        self,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        lock_path = self.manifest_path.with_name(f"{self.manifest_path.name}.projection.lock")
+        with InterProcessFileLock(lock_path):
+            return self._scan_assets_directory_locked(should_stop)
+
+    def _scan_assets_directory_locked(
         self,
         should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, dict[str, Any]]:

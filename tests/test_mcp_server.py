@@ -115,7 +115,7 @@ class McpServerTests(unittest.TestCase):
         )
 
         response = json.loads(process.stdout)
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.4")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.5")
         self.assertNotIn("PySide6", process.stderr)
 
     def test_lists_haypile_tools(self) -> None:
@@ -162,6 +162,27 @@ class McpServerTests(unittest.TestCase):
             "/api/v1/bundles?status=ready&limit=2&cursor=generic%2Fimages%2Fhero.png"
         )
         self.assertEqual(json.loads(response["result"]["content"][0]["text"]), [{"id": "next"}])
+
+    def test_asset_type_compatibility_value_lists_all_media(self) -> None:
+        with patch.object(mcp_server, "list_bundles", return_value=[]) as list_bundles:
+            mcp_server.call_tool("haypile_list_bundles", {"type": "asset"})
+
+        self.assertIsNone(list_bundles.call_args.kwargs["asset_type"])
+
+    def test_tool_execution_failure_is_returned_without_protocol_failure(self) -> None:
+        with patch.object(mcp_server, "call_tool", side_effect=ValueError("invalid cursor")):
+            response = mcp_server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 21,
+                    "method": "tools/call",
+                    "params": {"name": "haypile_copy_handoff", "arguments": {}},
+                }
+            )
+
+        self.assertNotIn("error", response)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("invalid cursor", response["result"]["content"][0]["text"])
 
     def test_health_keeps_ready_status(self) -> None:
         with patch.object(
@@ -400,7 +421,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "haypile")
-        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.4")
+        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.5")
         names = [tool["name"] for tool in responses[1]["result"]["tools"]]
         self.assertIn("haypile_copy_handoff", names)
 
@@ -424,7 +445,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual([responses[0]["error"]["code"], responses[1]["error"]["code"]], [-32700, -32700])
-        self.assertEqual(responses[2]["result"]["serverInfo"]["version"], "0.3.0-alpha.4")
+        self.assertEqual(responses[2]["result"]["serverInfo"]["version"], "0.3.0-alpha.5")
         self.assertIn("tools", responses[3]["result"])
 
 

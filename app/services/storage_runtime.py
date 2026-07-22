@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
 import shutil
 import sqlite3
@@ -17,6 +18,7 @@ from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
 
 
 STORAGE_FORMAT_VERSION = 2
+logger = logging.getLogger(__name__)
 
 
 class StorageRuntimeDB:
@@ -42,6 +44,7 @@ class StorageRuntimeDB:
             timeout=8.0,
             check_same_thread=False,
         )
+        conn.execute("PRAGMA foreign_keys=ON;")
         # Concurrency unlock for mixed read/write traffic.
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
@@ -140,6 +143,7 @@ class StorageRuntimeDB:
                     );
                     """
                 )
+                self._ensure_item_columns(conn)
                 conn.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_ingest_batch_items_state
@@ -161,6 +165,9 @@ class StorageRuntimeDB:
                     ON ingest_batch_assets(sha256);
                     """
                 )
+                violation = conn.execute("PRAGMA foreign_key_check").fetchone()
+                if violation is not None:
+                    raise RuntimeError("Haypile storage contains invalid foreign-key references")
                 conn.commit()
             self._ensure_storage_format()
             if previous_version is not None:
@@ -209,6 +216,7 @@ class StorageRuntimeDB:
         ordinal: int,
         source_name: str,
         media_kind: str | None = None,
+        origin_url: str = "",
     ) -> None:
         self.ensure_ready()
         now = datetime.now(timezone.utc).isoformat()
@@ -216,14 +224,24 @@ class StorageRuntimeDB:
             conn.execute(
                 """
                 INSERT INTO ingest_batch_items (
-                    batch_id, ordinal, source_name, media_kind, state, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'discovered', ?, ?)
+                    batch_id, ordinal, source_name, media_kind, origin_url,
+                    state, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'discovered', ?, ?)
                 ON CONFLICT(batch_id, ordinal) DO UPDATE SET
                     source_name = excluded.source_name,
                     media_kind = COALESCE(excluded.media_kind, ingest_batch_items.media_kind),
+                    origin_url = excluded.origin_url,
                     updated_at = excluded.updated_at
                 """,
-                (batch_id, int(ordinal), Path(source_name).name, media_kind, now, now),
+                (
+                    batch_id,
+                    int(ordinal),
+                    Path(source_name).name,
+                    media_kind,
+                    str(origin_url or "").strip()[:512],
+                    now,
+                    now,
+                ),
             )
             conn.commit()
 
@@ -680,38 +698,11 @@ class StorageRuntimeDB:
         return quarantined
 
     def _invalidate_committed_asset(self, sha256_hex: str, reason: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
         with closing(self.get_connection()) as conn:
             conn.execute("BEGIN IMMEDIATE")
-            batch_ids = [
-                str(row[0])
-                for row in conn.execute(
-                    """
-                    SELECT DISTINCT batch_id FROM ingest_batch_items
-                    WHERE sha256 = ? AND state = 'committed'
-                    """,
-                    (sha256_hex,),
-                ).fetchall()
-            ]
             conn.execute("DELETE FROM vfs_asset_links WHERE sha256 = ?", (sha256_hex,))
-            conn.execute(
-                """
-                UPDATE ingest_batch_items
-                SET state = 'interrupted', reason = ?, updated_at = ?
-                WHERE sha256 = ? AND state = 'committed'
-                """,
-                (reason, now, sha256_hex),
-            )
-            for batch_id in batch_ids:
-                conn.execute(
-                    """
-                    UPDATE ingest_batches
-                    SET state = 'interrupted', completed_at = COALESCE(completed_at, ?)
-                    WHERE id = ?
-                    """,
-                    (now, batch_id),
-                )
             conn.commit()
+        logger.warning("Committed asset became unavailable: reason=%s sha256=%s", reason, sha256_hex)
 
     def _finalize_recovered_batch(self, batch_id: str) -> None:
         with closing(self.get_connection()) as conn:
@@ -756,7 +747,15 @@ class StorageRuntimeDB:
             return {}
         try:
             with closing(sqlite3.connect(str(db_path))) as conn:
-                rows = conn.execute("SELECT sha256, dst_path FROM vfs_asset_links").fetchall()
+                rows = conn.execute(
+                    """
+                    SELECT sha256, dst_path FROM vfs_asset_links
+                    UNION
+                    SELECT sha256, destination_path FROM ingest_batch_items
+                    WHERE state = 'committed' AND sha256 IS NOT NULL
+                      AND destination_path IS NOT NULL
+                    """
+                ).fetchall()
         except sqlite3.Error:
             return {}
         root = assets_dir.resolve(strict=False)
@@ -844,6 +843,12 @@ class StorageRuntimeDB:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(ingest_batches)")}
         if "state" not in columns:
             conn.execute("ALTER TABLE ingest_batches ADD COLUMN state TEXT NOT NULL DEFAULT 'open'")
+
+    @staticmethod
+    def _ensure_item_columns(conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(ingest_batch_items)")}
+        if "origin_url" not in columns:
+            conn.execute("ALTER TABLE ingest_batch_items ADD COLUMN origin_url TEXT NOT NULL DEFAULT ''")
 
     @staticmethod
     def _upsert_link(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -86,9 +87,11 @@ def _sanitize_ai_suggestions(value: Any) -> dict[str, Any]:
         scores: dict[str, float] = {}
         for key in ("theme", "role"):
             try:
-                scores[key] = max(0.0, min(1.0, float(confidence[key])))
+                score = float(confidence[key])
             except (KeyError, TypeError, ValueError):
                 continue
+            if math.isfinite(score):
+                scores[key] = max(0.0, min(1.0, score))
         if scores:
             cleaned["confidence"] = scores
     if isinstance(value.get("must_not_execute"), bool):

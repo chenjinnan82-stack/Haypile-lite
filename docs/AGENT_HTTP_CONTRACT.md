@@ -153,7 +153,8 @@ Status meanings:
 
 - `ready`: registered and classified for use.
 - `pending`: registered but still `unknown`; audio also stays pending until its `audio_usage` is confirmed.
-- `missing`: referenced by a theme contract but absent from the manifest.
+- `missing`: registered in the current manifest projection, but the controlled
+  physical copy is unavailable. Theme-only references are not Agent bundles.
 
 ## Theme Vault API
 

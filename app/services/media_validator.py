@@ -37,7 +37,13 @@ MAX_RASTER_FRAMES = 100
 MAX_SVG_BYTES = 5 * 1024 * 1024
 MAX_SVG_NODES = 10_000
 MAX_SVG_DEPTH = 64
+MAX_SVG_DIMENSION = 32_768
+MAX_SVG_VIEWBOX_AREA = 80_000_000
+MAX_SVG_ABS_COORDINATE = 1_000_000
 _URL_REFERENCE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
+_SVG_NUMBER = re.compile(
+    r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+)
 
 
 def validate_media(path: Path) -> MediaValidation:
@@ -177,27 +183,51 @@ def _svg_dimensions(root: Any) -> tuple[int, int]:
     height = _numeric_dimension(root.attrib.get("height"))
     if width and height:
         return width, height
-    viewbox = str(root.attrib.get("viewBox") or "").replace(",", " ").split()
+    raw_viewbox = str(root.attrib.get("viewBox") or "")
+    viewbox = raw_viewbox.replace(",", " ").split()
+    if raw_viewbox and (len(raw_viewbox) > 512 or len(viewbox) != 4):
+        raise MediaValidationError("invalid_svg_viewbox")
     if len(viewbox) == 4:
         try:
-            width = int(float(viewbox[2]))
-            height = int(float(viewbox[3]))
-        except ValueError:
-            pass
-        else:
-            if width > 0 and height > 0:
-                return width, height
+            x, y, raw_width, raw_height = (float(item) for item in viewbox)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise MediaValidationError("invalid_svg_viewbox") from exc
+        if not all(math.isfinite(item) for item in (x, y, raw_width, raw_height)):
+            raise MediaValidationError("invalid_svg_viewbox")
+        if raw_width <= 0 or raw_height <= 0:
+            raise MediaValidationError("invalid_svg_viewbox")
+        if max(abs(x), abs(y), raw_width, raw_height) > MAX_SVG_ABS_COORDINATE:
+            raise MediaValidationError("svg_coordinate_limit")
+        if raw_width > MAX_SVG_DIMENSION or raw_height > MAX_SVG_DIMENSION:
+            raise MediaValidationError("svg_dimension_limit")
+        if raw_width * raw_height > MAX_SVG_VIEWBOX_AREA:
+            raise MediaValidationError("svg_viewbox_area_limit")
+        return max(1, int(raw_width)), max(1, int(raw_height))
     # SVG's intrinsic fallback viewport is 300x150 when width, height, and
     # viewBox are all absent.
     return 300, 150
 
 
 def _numeric_dimension(value: object) -> int | None:
-    match = re.match(r"^\s*([0-9]*\.?[0-9]+)", str(value or ""))
-    if not match:
+    text = str(value or "")
+    if not text.strip():
         return None
-    parsed = int(float(match.group(1)))
-    return parsed if parsed > 0 else None
+    if len(text) > 128:
+        raise MediaValidationError("invalid_svg_dimensions")
+    match = _SVG_NUMBER.match(text)
+    if not match:
+        if text.strip().lower() == "auto":
+            return None
+        raise MediaValidationError("invalid_svg_dimensions")
+    try:
+        raw = float(match.group(1))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise MediaValidationError("invalid_svg_dimensions") from exc
+    if not math.isfinite(raw) or raw <= 0:
+        raise MediaValidationError("invalid_svg_dimensions")
+    if raw > MAX_SVG_DIMENSION:
+        raise MediaValidationError("svg_dimension_limit")
+    return max(1, int(raw))
 
 
 def validate_audio(path: Path) -> MediaValidation:
