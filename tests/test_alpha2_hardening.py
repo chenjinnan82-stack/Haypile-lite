@@ -795,7 +795,7 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
         self.assertIn('DEPLOY_DIR="$ROOT/deployment"', text)
         self.assertIn('rm -rf "$DEPLOY_DIR"', text)
         self.assertIn('DEPLOY_LOG="$BUILD_DIR/pyside6-deploy.log"', text)
-        self.assertIn('MACOS_BUILD_VERSION="3002"', text)
+        self.assertIn('MACOS_BUILD_VERSION="3004"', text)
         self.assertIn("Add :CFBundleVersion string", text)
 
 
