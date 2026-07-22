@@ -34,6 +34,13 @@ choose **Open** on first launch. The Windows build is unsigned and portable;
 unzip it before running `Haypile.exe`. Haypile keeps controlled local copies,
 but an Alpha build must not be the only backup of material you cannot replace.
 
+## 60-Second Overview
+
+[![Watch the Haypile product overview](docs/haypile-overview-poster.webp)](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-product-overview-zh.mp4)
+
+This is a Chinese-captioned product overview. The GIF below shows the current
+Qt desktop interaction.
+
 ## See It Work
 
 ![Haypile desktop workflow](docs/haypile-demo.gif)
