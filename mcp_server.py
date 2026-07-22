@@ -11,8 +11,10 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.core.config import get_settings
+from app.services.asset_provenance import sanitize_provenance
 
 BASE_URL = os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010").rstrip("/")
 PROTOCOL_VERSION = "2025-06-18"
@@ -145,11 +147,26 @@ def list_bundles(
     return get_json("/api/v1/bundles" + (f"?{encoded}" if encoded else ""))
 
 
-def build_handoff(bundles: list[dict[str, Any]], *, batch_id: str | None = None) -> dict[str, Any]:
+def build_handoff(
+    bundles: list[dict[str, Any]],
+    *,
+    batch_id: str | None = None,
+    manifest_generation: str = "",
+    total_matching: int | None = None,
+    complete: bool = True,
+    next_cursor: str | None = None,
+) -> dict[str, Any]:
     handoff = {
         "handoff_version": "haypile.asset-handoff.v1",
+        "handoff_id": str(uuid4()),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "source": "haypile",
         "base_url": BASE_URL,
+        "manifest_generation": manifest_generation,
+        "asset_count": len(bundles),
+        "total_matching": len(bundles) if total_matching is None else int(total_matching),
+        "complete": bool(complete),
+        "next_cursor": next_cursor,
         "assets": [_handoff_asset(bundle) for bundle in bundles],
     }
     if batch_id:
@@ -159,6 +176,14 @@ def build_handoff(bundles: list[dict[str, Any]], *, batch_id: str | None = None)
 
 def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
     resolved_url = BASE_URL + bundle["url"]
+    public_metadata = sanitize_provenance(
+        {
+            "origin_url": bundle.get("origin_url", ""),
+            "content_type": bundle.get("content_type", ""),
+            "downloaded_at": bundle.get("downloaded_at", ""),
+            "ai_suggestions": bundle.get("ai_suggestions", {}),
+        }
+    )
     return {
         "id": bundle["id"],
         "theme_id": bundle["theme_id"],
@@ -170,7 +195,7 @@ def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
         "url": bundle["url"],
         "access": bundle["access"],
         "resolved_url": resolved_url,
-        "ai_suggestions": bundle.get("ai_suggestions", {}),
+        "ai_suggestions": public_metadata.get("ai_suggestions", {}),
         "duration_seconds": bundle.get("duration_seconds"),
         "audio_metadata": bundle.get("audio_metadata", {}),
         "audio_tags": bundle.get("audio_tags", {}),
@@ -183,8 +208,23 @@ def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
             "url": bundle["url"],
             "resolved_url": resolved_url,
             "access": bundle["access"],
+            "origin_url": public_metadata.get("origin_url", ""),
+            "content_type": public_metadata.get("content_type", ""),
+            "downloaded_at": public_metadata.get("downloaded_at", ""),
         },
     }
+
+
+def _ready_manifest_generation() -> str:
+    readiness = get_json("/readyz")
+    generation = (
+        str(readiness.get("manifest_generation") or "").strip()
+        if isinstance(readiness, dict)
+        else ""
+    )
+    if not generation:
+        raise ValueError("Haypile manifest generation is unavailable")
+    return generation
 
 
 def call_tool(name: str, arguments: dict[str, Any]) -> Any:
@@ -208,6 +248,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         if requested_batch_id == "latest":
             latest = get_json("/api/v1/batches/latest")
             resolved_batch_id = str(latest.get("id") or "").strip() if isinstance(latest, dict) else None
+        generation_before = _ready_manifest_generation()
         bundles = list_bundles(
             status=arguments.get("status", "ready"),
             asset_type=arguments.get("type"),
@@ -215,10 +256,40 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             theme_id=arguments.get("theme_id"),
             audio_usage=arguments.get("audio_usage"),
             batch_id=resolved_batch_id,
-            limit=arguments.get("limit", 100),
-            cursor=arguments.get("cursor"),
         )
-        return build_handoff(bundles, batch_id=resolved_batch_id)
+        if not isinstance(bundles, list):
+            raise ValueError("bundle response must be a list")
+        limit = int(arguments.get("limit", 100))
+        cursor = str(arguments.get("cursor") or "").strip()
+        start = 0
+        if cursor:
+            cursor_index = next(
+                (
+                    index
+                    for index, bundle in enumerate(bundles)
+                    if isinstance(bundle, dict) and bundle.get("source_key") == cursor
+                ),
+                -1,
+            )
+            if cursor_index < 0:
+                raise ValueError("invalid cursor")
+            start = cursor_index + 1
+        page = bundles[start : start + limit]
+        complete = start + len(page) >= len(bundles)
+        next_cursor = None
+        if not complete and page:
+            next_cursor = str(page[-1].get("source_key") or "") or None
+        generation_after = _ready_manifest_generation()
+        if generation_after != generation_before:
+            raise ValueError("Haypile manifest changed during handoff; retry")
+        return build_handoff(
+            page,
+            batch_id=resolved_batch_id,
+            manifest_generation=generation_after,
+            total_matching=len(bundles),
+            complete=complete,
+            next_cursor=next_cursor,
+        )
     if name == "haypile_get_bundle":
         bundle_id = str(arguments.get("bundle_id") or "").strip()
         if not bundle_id:

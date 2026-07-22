@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,40 @@ from app.services.json_io import atomic_write_json
 from app.services.media_validator import MediaValidationError, validate_audio, validate_media
 from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
 from app.services.storage_runtime import StorageRuntimeDB
+
+
+class ManifestReadinessError(RuntimeError):
+    pass
+
+
+def manifest_dirty_path(manifest_path: Path) -> Path:
+    return manifest_path.with_name(f"{manifest_path.name}.dirty")
+
+
+def mark_manifest_dirty(manifest_path: Path) -> None:
+    atomic_write_json(manifest_dirty_path(manifest_path), {"dirty": True})
+
+
+def clear_manifest_dirty(manifest_path: Path) -> None:
+    manifest_dirty_path(manifest_path).unlink(missing_ok=True)
+
+
+def read_manifest_readiness(manifest_path: Path) -> dict[str, str | int]:
+    if manifest_dirty_path(manifest_path).exists():
+        raise ManifestReadinessError("assets manifest projection is dirty")
+    try:
+        raw = manifest_path.read_bytes()
+        payload = json.loads(raw)
+    except FileNotFoundError as exc:
+        raise ManifestReadinessError("assets manifest not found") from exc
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ManifestReadinessError("assets manifest is unreadable") from exc
+    if not isinstance(payload, dict):
+        raise ManifestReadinessError("assets manifest must be a JSON object")
+    return {
+        "manifest_generation": hashlib.sha256(raw).hexdigest(),
+        "asset_count": len(payload),
+    }
 
 
 class AssetScanner:
@@ -34,6 +70,7 @@ class AssetScanner:
     def _scan_assets_directory_sync(self) -> dict[str, dict[str, Any]]:
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        mark_manifest_dirty(self.manifest_path)
 
         manifest: dict[str, dict[str, Any]] = {}
         assets_root = self.assets_dir.resolve(strict=False)
@@ -63,6 +100,7 @@ class AssetScanner:
                     manifest[self._relative_key(path)] = audio_item
 
         atomic_write_json(self.manifest_path, manifest)
+        clear_manifest_dirty(self.manifest_path)
         return manifest
 
     def _scan_image(self, path: Path) -> dict[str, Any] | None:

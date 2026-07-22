@@ -18,12 +18,17 @@
 
 </div>
 
-## 安全 Alpha
+## v0.3.0-alpha.2 安全种子版
 
-`v0.3.0-alpha.2` 正在完成存储、媒体、IPC 和发布链加固，新的桌面下载暂时
-停止分发。历史测试 Release 仍保留用于追溯，但不建议新的种子用户继续安装。
+面向小范围种子用户，验证 **拖入 → 检查 → 交付 → Codex 读取**：
 
-Haypile 会保存受控的本地副本，但 Alpha 版本不应成为不可替代素材的唯一备份。
+- [下载 macOS Apple Silicon 版](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.2/Haypile-v0.3.0-alpha.2-macos-arm64.app.zip)
+- [下载 Windows x64 版](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.2/Haypile-v0.3.0-alpha.2-windows-x64.zip)
+- [版本说明与 SHA-256 校验文件](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.2)
+
+这是 prerelease，不是稳定安装版。macOS 包仅做 ad-hoc 签名、尚未经过苹果
+公证；解压后请右键点击 `Haypile.app` 并选择“打开”。Haypile 会保存受控的
+本地副本，但 Alpha 版本不应成为不可替代素材的唯一备份。
 
 ## 看它怎么工作
 
@@ -142,6 +147,8 @@ macOS 构建说明见 [MACOS_INTERNAL_BUILD.md](docs/MACOS_INTERNAL_BUILD.md)，
 
 - 本仓库及其 Git tag / Release 是 Haypile 唯一公开源头。
 - Haypile 不是云端 DAM、多用户同步服务或 Agent 写入平台。
+- 相同 SHA-256 内容仍视为同一个逻辑素材；当前不支持项目级身份、多角色上下文或 workspace 隔离。
+- Haypile 保存受控副本，但不能作为重要原始素材的唯一备份。
 - 实验性的真实项目投放/撤回 helper 默认关闭，不属于公开 Agent 接入面。
 
 问题和可复现的体验反馈请提交到

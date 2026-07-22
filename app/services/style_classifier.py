@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -13,13 +14,6 @@ from uuid import uuid4
 
 import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
-
 from app.core.config import get_settings
 from app.core.exceptions import ResourceExhaustedError
 from app.core.limiter import ConcurrencyLimiter
@@ -32,14 +26,6 @@ from app.services.ai_provider import (
 from app.services.media_validator import MediaValidationError, validate_raster, validate_svg
 
 logger = logging.getLogger(__name__)
-
-
-def _log_timeout_retry(retry_state: Any) -> None:
-    attempt_no = retry_state.attempt_number + 1
-    logger.warning(
-        "[StyleClassifier] Ollama 响应超时，正在准备第 %s 次重试... 模型加载中请耐心等待",
-        attempt_no,
-    )
 
 
 @dataclass(slots=True)
@@ -74,9 +60,9 @@ class StyleClassificationResult:
                 "role": self.role_confidence,
             },
             "reason": self.reason,
+            "trust": "untrusted_advisory",
+            "must_not_execute": True,
         }
-        if self.runtime_receipt:
-            suggestions["runtime_receipt"] = self.runtime_receipt
         return suggestions
 
 
@@ -91,8 +77,6 @@ class StyleClassifier:
     """
 
     ALLOWED_IMAGE_SUFFIXES: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
-    HTTP_TIMEOUT = httpx.Timeout(120.0, connect=2.0, read=115.0, pool=2.0)
-
     def __init__(self, provider: AIProviderConfig | None = None) -> None:
         settings = get_settings()
         self.low_power_mode: bool = bool(settings.HAYPILE_LOW_POWER_MODE)
@@ -206,7 +190,13 @@ class StyleClassifier:
             media_type=preview_media_type,
         )
 
-        raw, runtime_receipt = await self._call_model(payload)
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                raw, runtime_receipt = await self._call_model(payload)
+        except TimeoutError as exc:
+            raise httpx.TimeoutException(
+                f"vision classification exceeded {self.timeout_seconds:.3f}s"
+            ) from exc
         if not raw:
             result = self._fallback_result(
                 reason="model_call_failed",
@@ -229,21 +219,6 @@ class StyleClassifier:
         result = self._normalize_result(parsed, normalized_candidates)
         result.quality, result.quality_reason = self.technical_quality(image_path, result.role)
         result.runtime_receipt = runtime_receipt
-        if result.theme_confidence < self.confidence_threshold:
-            return StyleClassificationResult(
-                theme_id=self.fallback_theme,
-                theme_confidence=result.theme_confidence,
-                role_confidence=result.role_confidence,
-                role=result.role,
-                source="threshold_theme_fallback",
-                reason=f"low_theme_confidence:{result.theme_confidence:.3f}",
-                tags=result.tags,
-                quality=result.quality,
-                quality_reason=result.quality_reason,
-                agent_summary=result.agent_summary,
-                runtime_receipt=runtime_receipt,
-            )
-
         return result
 
     def _normalize_candidate_themes(
@@ -301,21 +276,19 @@ class StyleClassifier:
     def _build_prompt(
         self, candidate_themes: list[str], metadata: dict[str, Any]
     ) -> str:
-        themes_text = ", ".join(candidate_themes)
+        _ = candidate_themes
         metadata_text = self._format_metadata_text(metadata)
         return (
             "你是 Haypile 入库视觉分拣官（Visual Intake Curator）。\n"
-            "目标：对单张图片给出【主题归属 + 资产角色】，服务后续自动入库与主题合成。\n"
-            "你必须保守判断：宁可降低置信度，也不要编造主题或角色。\n"
+            "目标：对单张图片给出资产用途建议，服务后续 Agent 使用。\n"
+            "你必须保守判断：宁可降低置信度，也不要编造用途。\n"
             "\n"
             "硬性规则：\n"
-            "1) theme_id 只能从候选主题里选；禁止创造新主题名。\n"
-            "2) 若无法稳定判断主题，theme_id 必须返回 fallback 主题。\n"
-            "3) role 只能是：main_background | hero_image | logo | icon | content_image | texture | unknown。\n"
-            "4) theme_confidence 与 role_confidence 都必须是 0.0~1.0 的浮点数。\n"
-            "5) reason 必须是简短中文短语，说明判定依据，不超过20字。\n"
-            "6) tags 给 2~6 个短标签，描述内容/风格/色彩/用途。\n"
-            "7) agent_summary 用一句中文告诉 agent 这个素材适合怎么用，不超过60字。\n"
+            "1) role 只能是：main_background | hero_image | logo | icon | content_image | texture | unknown。\n"
+            "2) role_confidence 必须是 0.0~1.0 的浮点数。\n"
+            "3) reason 必须是简短短语，说明判定依据，不超过80字。\n"
+            "4) tags 给 2~6 个短标签，描述内容、风格、色彩或用途。\n"
+            "5) agent_summary 用一句话告诉 agent 这个素材适合怎么用，不超过60字。\n"
             "\n"
             "角色判定边界：\n"
             "- main_background：大面积环境底图/场景背景，适合铺底。\n"
@@ -329,8 +302,6 @@ class StyleClassifier:
             "输出必须是严格 JSON，不要输出任何解释、代码块或额外文本。\n"
             "JSON schema:\n"
             "{\n"
-            '  "theme_id": "<candidate_theme_id>",\n'
-            '  "theme_confidence": 0.0,\n'
             '  "role_confidence": 0.0,\n'
             '  "role": "main_background|hero_image|logo|icon|content_image|texture|unknown",\n'
             '  "reason": "short rationale",\n'
@@ -339,8 +310,6 @@ class StyleClassifier:
             "}\n"
             "图片元数据:\n"
             f"{metadata_text}\n"
-            f"候选主题: [{themes_text}]\n"
-            f"fallback 主题: {self.fallback_theme}\n"
         )
 
     def _build_request_payload(
@@ -397,19 +366,13 @@ class StyleClassifier:
             payload["keep_alive"] = self.keep_alive
         return payload
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=4, max=10),
-        retry=retry_if_exception_type(httpx.ReadTimeout),
-        before_sleep=_log_timeout_retry,
-        reraise=True,
-    )
     async def _post_ollama_with_retry(
         self,
         endpoint: str,
         payload: dict[str, Any],
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
+        # Compatibility method name; alpha.2 performs exactly one bounded request.
         return await self._post_model_once(endpoint, payload, headers=headers)
 
     async def _post_model_once(
@@ -420,7 +383,10 @@ class StyleClassifier:
     ) -> httpx.Response:
         async with self._limiter:
             async with httpx.AsyncClient(
-                timeout=self.HTTP_TIMEOUT,
+                timeout=httpx.Timeout(
+                    self.timeout_seconds,
+                    connect=min(2.0, self.timeout_seconds),
+                ),
                 trust_env=False,
                 follow_redirects=False,
             ) as client:
@@ -463,13 +429,6 @@ class StyleClassifier:
                 )
                 return "", receipt
             data = response.json()
-        except httpx.ReadTimeout as exc:
-            logger.error(
-                "Style classifier model call timeout after retries: model=%s error_type=%s",
-                self.model,
-                type(exc).__name__,
-            )
-            raise
         except ResourceExhaustedError:
             raise
         except httpx.TimeoutException as exc:
@@ -591,29 +550,23 @@ class StyleClassifier:
         payload: dict[str, Any],
         candidate_themes: list[str],
     ) -> StyleClassificationResult:
-        theme_id = str(payload.get("theme_id", "")).strip().lower()
-        if theme_id not in candidate_themes:
-            theme_id = self.fallback_theme
-
-        theme_confidence = self._to_confidence(
-            payload.get("theme_confidence", payload.get("confidence"))
-        )
+        _ = candidate_themes
         role_confidence = self._to_confidence(
             payload.get("role_confidence", payload.get("confidence"))
         )
         role = self._normalize_role(payload.get("role"))
-        reason = str(payload.get("reason", "")).strip() or "model_classification"
+        reason = self._short_text(payload.get("reason"), 80) or "model_classification"
 
         return StyleClassificationResult(
-            theme_id=theme_id,
-            theme_confidence=theme_confidence,
+            theme_id=self.fallback_theme,
+            theme_confidence=0.0,
             role_confidence=role_confidence,
             role=role,
             source="model",
             reason=reason,
             tags=self._normalize_tags(payload.get("tags")),
             quality="unknown",
-            agent_summary=self._short_text(payload.get("agent_summary"), 120),
+            agent_summary=self._short_text(payload.get("agent_summary"), 60),
         )
 
     @staticmethod
@@ -645,7 +598,7 @@ class StyleClassifier:
     @staticmethod
     def is_auto_ready(result: StyleClassificationResult) -> bool:
         return (
-            result.source in {"model", "threshold_theme_fallback"}
+            result.source == "model"
             and result.role != "unknown"
             and result.role_confidence >= 0.85
             and result.quality in {"high", "medium"}

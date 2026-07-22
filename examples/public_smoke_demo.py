@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services.bundle_service import BundleService
-from app.services.scanner import AssetScanner
+from app.services.scanner import AssetScanner, read_manifest_readiness
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.theme_registry import ThemeRegistry
 from app.services.vfs_storage import VFSStorage
@@ -64,7 +64,11 @@ def main() -> int:
         themes_dir=themes,
         runtime_db_path=runtime_db,
     )
-    handoff = build_handoff(service.list_bundles(status="ready"))
+    readiness = read_manifest_readiness(manifest)
+    handoff = build_handoff(
+        service.list_bundles(status="ready"),
+        manifest_generation=str(readiness["manifest_generation"]),
+    )
     (root / "asset-handoff.json").write_text(
         json.dumps(handoff, ensure_ascii=False, indent=2),
         encoding="utf-8",

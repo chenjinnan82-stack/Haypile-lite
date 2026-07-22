@@ -39,15 +39,29 @@ class LocalDataSecurityTests(unittest.TestCase):
                 "api_key": "secret",
                 "request_body": {"image_bytes": "encoded"},
                 "nested": {"local_path": "C:\\Users\\tester\\hero.png"},
+                "ai_suggestions": {
+                    "source": "model",
+                    "reason": "r" * 200,
+                    "agent_summary": "s" * 200,
+                    "runtime_receipt": {"request_body": "secret"},
+                    "unexpected": {"api_key": "secret"},
+                    "trust": "untrusted_advisory",
+                    "must_not_execute": True,
+                },
             }
         )
 
-        self.assertEqual(payload["origin_url"], "https://cdn.example.com/hero.png")
+        self.assertEqual(payload["origin_url"], "https://cdn.example.com")
         self.assertEqual(payload["source_key"], "generic/images/hero.png")
         self.assertNotIn("temp_file", payload)
         self.assertNotIn("api_key", payload)
         self.assertNotIn("request_body", payload)
-        self.assertEqual(payload["nested"], {})
+        self.assertNotIn("nested", payload)
+        self.assertEqual(len(payload["ai_suggestions"]["reason"]), 80)
+        self.assertEqual(len(payload["ai_suggestions"]["agent_summary"]), 60)
+        self.assertNotIn("runtime_receipt", payload["ai_suggestions"])
+        self.assertNotIn("unexpected", payload["ai_suggestions"])
+        self.assertTrue(payload["ai_suggestions"]["must_not_execute"])
 
     def test_ipc_start_failure_does_not_log_local_socket_path(self) -> None:
         private_path = "/Users/tester/Library/Application Support/Haypile/storage/ipc.sock"
@@ -126,7 +140,7 @@ class LocalDataSecurityTests(unittest.TestCase):
     def test_public_origin_strips_credentials_and_query_secrets(self) -> None:
         self.assertEqual(
             public_origin_url("https://user:secret@cdn.example.com:8443/a.png?token=private#part"),
-            "https://cdn.example.com:8443/a.png",
+            "https://cdn.example.com:8443",
         )
 
     def test_static_assets_send_private_sandbox_headers(self) -> None:

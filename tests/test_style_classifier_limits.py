@@ -73,8 +73,62 @@ class StyleClassifierPowerTests(unittest.TestCase):
 
         self.assertEqual(result.tags, ["自然", "绿色", "hero", "extra", "six", "seven"])
         self.assertEqual(result.quality, "unknown")
+        self.assertEqual(result.theme_confidence, 0.0)
         self.assertEqual(result.ai_suggestions()["usage"], "hero_image")
         self.assertEqual(result.ai_suggestions()["agent_summary"], "适合作为自然风格主视觉。")
+        self.assertEqual(result.ai_suggestions()["trust"], "untrusted_advisory")
+        self.assertTrue(result.ai_suggestions()["must_not_execute"])
+
+    def test_prompt_is_role_only(self) -> None:
+        classifier = StyleClassifier.__new__(StyleClassifier)
+        prompt = classifier._build_prompt(["generic", "forest"], {"width": 800})
+
+        self.assertIn("role_confidence", prompt)
+        self.assertNotIn("theme_id", prompt)
+        self.assertNotIn("候选主题", prompt)
+
+    def test_model_call_uses_one_total_configured_timeout(self) -> None:
+        classifier = StyleClassifier.__new__(StyleClassifier)
+        classifier.low_power_mode = False
+        classifier.enabled = True
+        classifier.fallback_theme = "generic"
+        classifier.transport = "ollama"
+        classifier.model = "vision-model"
+        classifier.keep_alive = ""
+        classifier.timeout_seconds = 0.01
+        classifier.confidence_threshold = 0.85
+        classifier._encode_image_preview = lambda _path: ("aW1hZ2U=", "image/png")
+        classifier._collect_image_metadata = lambda _path: {"width": 1, "height": 1}
+
+        async def slow_model(_payload):
+            await asyncio.sleep(0.2)
+            return "", {}
+
+        classifier._call_model = slow_model
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "image.png"
+            image.write_bytes(b"placeholder")
+            with self.assertRaises(httpx.TimeoutException):
+                asyncio.run(classifier.classify_image(image, ["generic"]))
+
+    def test_suggestions_limit_text_and_never_publish_runtime_receipt(self) -> None:
+        classifier = StyleClassifier.__new__(StyleClassifier)
+        classifier.fallback_theme = "generic"
+        result = classifier._normalize_result(
+            {
+                "role": "content_image",
+                "role_confidence": 0.9,
+                "reason": "r" * 200,
+                "agent_summary": "s" * 200,
+            },
+            ["generic"],
+        )
+        result.runtime_receipt = {"request_body": "secret"}
+        suggestions = result.ai_suggestions()
+
+        self.assertEqual(len(suggestions["reason"]), 80)
+        self.assertEqual(len(suggestions["agent_summary"]), 60)
+        self.assertNotIn("runtime_receipt", suggestions)
 
     def test_low_power_mode_disables_model_call(self) -> None:
         with patch.dict("os.environ", {"HAYPILE_LOW_POWER_MODE": "1"}, clear=False):

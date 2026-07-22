@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import mcp_server
 
@@ -159,7 +159,11 @@ class McpServerTests(unittest.TestCase):
             "url": "/static/generic/images/hero.png",
             "access": "manifest_static",
         }
-        with patch.object(mcp_server, "list_bundles", return_value=[bundle]) as list_bundles:
+        with patch.object(mcp_server, "list_bundles", return_value=[bundle]) as list_bundles, patch.object(
+            mcp_server,
+            "get_json",
+            return_value={"status": "ok", "manifest_generation": "generation-1"},
+        ):
             response = mcp_server.handle(
                 {
                     "jsonrpc": "2.0",
@@ -173,7 +177,7 @@ class McpServerTests(unittest.TestCase):
             )
 
         list_bundles.assert_called_once_with(
-            status="ready", asset_type="image", role=None, theme_id=None, audio_usage=None, batch_id=None, limit=100, cursor=None
+            status="ready", asset_type="image", role=None, theme_id=None, audio_usage=None, batch_id=None
         )
         payload = json.loads(response["result"]["content"][0]["text"])
         self.assertEqual(payload["source"], "haypile")
@@ -183,15 +187,35 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(payload["assets"][0]["resolved_url"], "http://127.0.0.1:8010/static/generic/images/hero.png")
         self.assertEqual(payload["assets"][0]["provenance"]["source_key"], "generic/images/hero.png")
         self.assertEqual(payload["assets"][0]["provenance"]["sha256"], "sha")
+        self.assertEqual(payload["manifest_generation"], "generation-1")
+        self.assertEqual(payload["asset_count"], 1)
+        self.assertEqual(payload["total_matching"], 1)
+        self.assertTrue(payload["complete"])
+        self.assertIsNone(payload["next_cursor"])
         self.assertNotIn("storage/assets", json.dumps(payload))
 
     def test_copy_handoff_resolves_latest_batch(self) -> None:
-        with patch.object(mcp_server, "get_json", return_value={"id": "batch-1"}) as get_json, patch.object(
+        with patch.object(
+            mcp_server,
+            "get_json",
+            side_effect=[
+                {"id": "batch-1"},
+                {"status": "ok", "manifest_generation": "generation-1"},
+                {"status": "ok", "manifest_generation": "generation-1"},
+            ],
+        ) as get_json, patch.object(
             mcp_server, "list_bundles", return_value=[]
         ) as list_bundles:
             payload = mcp_server.call_tool("haypile_copy_handoff", {"batch_id": "latest"})
 
-        get_json.assert_called_once_with("/api/v1/batches/latest")
+        self.assertEqual(
+            get_json.call_args_list,
+            [
+                call("/api/v1/batches/latest"),
+                call("/readyz"),
+                call("/readyz"),
+            ],
+        )
         list_bundles.assert_called_once_with(
             status="ready",
             asset_type=None,
@@ -199,10 +223,57 @@ class McpServerTests(unittest.TestCase):
             theme_id=None,
             audio_usage=None,
             batch_id="batch-1",
-            limit=100,
-            cursor=None,
         )
         self.assertEqual(payload["batch_id"], "batch-1")
+
+    def test_copy_handoff_paginates_complete_match_set_and_rejects_unknown_cursor(self) -> None:
+        bundles = [
+            {
+                "id": str(index),
+                "theme_id": "generic",
+                "type": "image",
+                "role": "hero_image",
+                "status": "ready",
+                "sha256": str(index),
+                "source_key": f"generic/images/{index}.png",
+                "url": f"/static/generic/images/{index}.png",
+                "access": "manifest_static",
+            }
+            for index in range(3)
+        ]
+        with patch.object(mcp_server, "list_bundles", return_value=bundles), patch.object(
+            mcp_server,
+            "get_json",
+            return_value={"manifest_generation": "generation-2"},
+        ):
+            first = mcp_server.call_tool("haypile_copy_handoff", {"limit": 2})
+            second = mcp_server.call_tool(
+                "haypile_copy_handoff",
+                {"limit": 2, "cursor": first["next_cursor"]},
+            )
+            with self.assertRaisesRegex(ValueError, "invalid cursor"):
+                mcp_server.call_tool(
+                    "haypile_copy_handoff",
+                    {"limit": 2, "cursor": "missing.png"},
+                )
+
+        self.assertEqual(first["asset_count"], 2)
+        self.assertEqual(first["total_matching"], 3)
+        self.assertFalse(first["complete"])
+        self.assertEqual(second["asset_count"], 1)
+        self.assertTrue(second["complete"])
+
+    def test_copy_handoff_rejects_manifest_generation_race(self) -> None:
+        with patch.object(mcp_server, "list_bundles", return_value=[]), patch.object(
+            mcp_server,
+            "get_json",
+            side_effect=[
+                {"manifest_generation": "old"},
+                {"manifest_generation": "new"},
+            ],
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during handoff"):
+                mcp_server.call_tool("haypile_copy_handoff", {})
 
     def test_list_bundles_passes_batch_id_through(self) -> None:
         with patch.object(mcp_server, "list_bundles", return_value=[]) as list_bundles:
@@ -246,6 +317,34 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(asset["audio_metadata"]["channels"], 2)
         self.assertEqual(asset["audio_tags"]["title"], "Pika Call")
         self.assertEqual(asset["audio_usage"], "voice")
+
+    def test_handoff_redacts_untrusted_runtime_metadata(self) -> None:
+        asset = mcp_server._handoff_asset(
+            {
+                "id": "hero",
+                "theme_id": "generic",
+                "type": "image",
+                "role": "hero_image",
+                "status": "ready",
+                "sha256": "sha",
+                "source_key": "generic/images/hero.png",
+                "url": "/static/generic/images/hero.png",
+                "access": "manifest_static",
+                "origin_url": "https://cdn.example.com/private/path.png?token=secret",
+                "ai_suggestions": {
+                    "source": "model",
+                    "agent_summary": "useful",
+                    "runtime_receipt": {"request_body": "secret"},
+                    "local_path": "/Users/tester/private.png",
+                },
+            }
+        )
+        encoded = json.dumps(asset)
+
+        self.assertEqual(asset["provenance"]["origin_url"], "https://cdn.example.com")
+        self.assertNotIn("runtime_receipt", encoded)
+        self.assertNotIn("request_body", encoded)
+        self.assertNotIn("/Users/", encoded)
 
     def test_mcp_server_starts_and_lists_tools_over_stdio(self) -> None:
         server_path = Path(mcp_server.__file__)

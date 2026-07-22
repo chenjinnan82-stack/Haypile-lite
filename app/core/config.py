@@ -305,9 +305,6 @@ class Settings(BaseSettings):
         text = str(value or "").strip()
         if text and text != "haypile-ipc-v1":
             return text
-        admin_key = os.environ.get("ADMIN_API_KEY", "").strip()
-        if admin_key:
-            return admin_key
         return _read_or_create_ipc_authkey()
 
 

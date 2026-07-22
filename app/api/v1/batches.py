@@ -13,7 +13,7 @@ def get_bundle_service() -> BundleService:
 
 
 @router.get("/latest", response_model=IngestBatchPayload)
-async def get_latest_batch(
+def get_latest_batch(
     bundle_service: BundleService = Depends(get_bundle_service),
 ) -> IngestBatchPayload:
     batch = bundle_service.get_latest_batch()

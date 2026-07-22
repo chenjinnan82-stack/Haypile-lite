@@ -103,7 +103,7 @@ class MaterialSummaryTests(unittest.TestCase):
         labels_by_title = {item.title: item.usage_label for item in summary.recent_items}
         origins_by_title = {item.title: item.origin_url for item in summary.recent_items}
         self.assertEqual(labels_by_title["generic_img_hero_image_aaaa.png"], "主视觉")
-        self.assertEqual(origins_by_title["generic_img_hero_image_aaaa.png"], "https://cdn.example.com/hero.png")
+        self.assertEqual(origins_by_title["generic_img_hero_image_aaaa.png"], "https://cdn.example.com")
         self.assertEqual(labels_by_title["generic_img_unknown_bbbb.png"], "未确定")
         self.assertEqual(labels_by_title["generic_aud_unknown_cccc.mp3"], "音频")
         self.assertIn("草堆里有 3 个 bundle", summary.summary_text())

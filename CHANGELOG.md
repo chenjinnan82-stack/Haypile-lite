@@ -10,6 +10,14 @@
 - Use full SHA-256 bundle identities with unique legacy aliases during migration.
 - Add per-instance locks, per-connection IPC timeouts, stricter MCP lifecycle handling,
   and rollback conflict preservation.
+- Fail readiness and static serving closed while the manifest projection is dirty,
+  missing, or corrupt; expose its generation and asset count after recovery.
+- Make AI sorting role-only, bounded by the configured total timeout, and honest
+  about partial, failed, and cancelled batches.
+- Add complete handoff pagination metadata and whitelist public provenance while
+  treating AI and asset metadata as untrusted advisory data.
+- Keep IPC authentication independent from administrative credentials and run
+  synchronous disk-heavy API reads in FastAPI's thread pool.
 - Mark Alpha storage as a controlled copy, not a user's only backup.
 
 ## v0.3.0-alpha.1 (candidate)

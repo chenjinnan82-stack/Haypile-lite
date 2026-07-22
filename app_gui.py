@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+from datetime import datetime, timezone
 import hashlib
 from html.parser import HTMLParser
 import json
@@ -16,6 +17,7 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 
 def _run_early_mode() -> None:
@@ -49,7 +51,12 @@ from app.core.config import configure_packaged_logging, get_settings, runtime_mo
 from app.core.exceptions import ResourceExhaustedError
 from app.core.file_lock import InterProcessFileLock
 from app.core.ipc import send_ipc_request
-from app.services.asset_provenance import public_origin_url, read_asset_provenance, write_asset_provenance
+from app.services.asset_provenance import (
+    public_origin_url,
+    read_asset_provenance,
+    sanitize_provenance,
+    write_asset_provenance,
+)
 from app.services.ai_provider import (
     AIProviderConfig,
     SystemCredentialStore,
@@ -58,7 +65,12 @@ from app.services.ai_provider import (
 )
 from app.services.bundle_service import BundleService
 from app.services.json_io import atomic_write_json
-from app.services.scanner import AssetScanner
+from app.services.scanner import (
+    AssetScanner,
+    ManifestReadinessError,
+    mark_manifest_dirty,
+    read_manifest_readiness,
+)
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.style_classifier import StyleClassifier
 from app.services.material_summary import build_material_panel_summary
@@ -376,6 +388,7 @@ class IngestWorker(QThread):
         staging_dir = self.settings.STORAGE_DIR / "staging" / "ingest"
         quarantine_dir = self.settings.STORAGE_DIR / "quarantine" / "ingest"
         try:
+            mark_manifest_dirty(self.settings.MANIFEST_PATH)
             self.storage_runtime.recover_incomplete_ingest(
                 assets_dir=self.assets_dir,
                 staging_dir=staging_dir,
@@ -542,13 +555,25 @@ class IngestWorker(QThread):
             rejected_count=rejected_count,
         )
 
-        if accepted_count > 0 or duplicate_count > 0:
-            self.progress_signal.emit(92, ui_text("刷新资产清单...", "Refreshing asset manifest..."))
-            scanner = AssetScanner()
-            try:
-                self._run_coro(scanner.scan_assets_directory())
-            except (OSError, RuntimeError, ValueError):
-                logger.warning("Asset manifest projection failed; it will rebuild on restart")
+        self.progress_signal.emit(92, ui_text("刷新资产清单...", "Refreshing asset manifest..."))
+        scanner = AssetScanner()
+        manifest_ready = True
+        try:
+            self._run_coro(scanner.scan_assets_directory())
+        except (OSError, RuntimeError, ValueError):
+            manifest_ready = False
+            logger.warning("Asset manifest projection failed; Agent access is paused until recovery")
+
+        if not manifest_ready:
+            self.finished_signal.emit(
+                ui_text(
+                    "素材已保存，Agent 接口待恢复",
+                    "Assets saved; Agent access is pending recovery",
+                ),
+                False,
+            )
+            self._close_loop()
+            return
 
         if accepted_count == 0 and duplicate_count == 0:
             self.finished_signal.emit(
@@ -801,9 +826,11 @@ def _persist_ai_failure(bundle: dict[str, object], assets_dir: Path, reason: str
                     "quality": "unknown",
                     "quality_reason": "classification_unavailable",
                     "confidence": {"theme": 0.0, "role": 0.0},
-                    "reason": reason,
+                    "reason": str(reason or "model_call_failed")[:80],
                     "tags": [],
                     "agent_summary": "",
+                    "trust": "untrusted_advisory",
+                    "must_not_execute": True,
                 },
             }
         )
@@ -867,7 +894,7 @@ class AIRefreshWorker(QThread):
 
 
 class AIBatchWorker(QThread):
-    finished_signal = Signal(str, str, bool)
+    finished_signal = Signal(str, str, str)
     progress_signal = Signal(int, str)
 
     def __init__(
@@ -892,18 +919,25 @@ class AIBatchWorker(QThread):
     def run(self) -> None:
         ready_count = 0
         pending_count = 0
+        classified_count = 0
+        failed_count = 0
         total = max(len(self.bundles), 1)
         loop = asyncio.new_event_loop()
         try:
             for index, bundle in enumerate(self.bundles, start=1):
                 if self.isInterruptionRequested():
+                    self.finished_signal.emit(
+                        self.batch_id,
+                        ui_text("AI 整理已取消", "AI sorting cancelled"),
+                        "cancelled",
+                    )
                     return
                 self.progress_signal.emit(
                     int((index - 1) / total * 100),
                     ui_text(f"AI 整理 {index}/{total}", f"AI sorting {index}/{total}"),
                 )
                 try:
-                    _classification, auto_ready = loop.run_until_complete(
+                    classification, auto_ready = loop.run_until_complete(
                         _classify_registered_bundle(
                             bundle,
                             self.assets_dir,
@@ -921,20 +955,44 @@ class AIBatchWorker(QThread):
                     )
                     _persist_ai_failure(bundle, self.assets_dir, "model_call_failed")
                     auto_ready = False
+                    failed_count += 1
+                else:
+                    if classification.source == "model":
+                        classified_count += 1
+                    else:
+                        failed_count += 1
                 if auto_ready:
                     ready_count += 1
                 else:
                     pending_count += 1
         finally:
             loop.close()
-        self.progress_signal.emit(100, ui_text("AI 整理完成", "AI sorting complete"))
-        self.finished_signal.emit(
-            self.batch_id,
-            ui_text(
+        if classified_count == len(self.bundles):
+            status = "success"
+            progress_message = ui_text("AI 整理完成", "AI sorting complete")
+            message = ui_text(
                 f"AI 整理完成：可用 {ready_count}，待确认 {pending_count}",
                 f"AI sorting complete: {ready_count} ready, {pending_count} pending",
-            ),
-            True,
+            )
+        elif classified_count:
+            status = "partial_success"
+            progress_message = ui_text("AI 整理部分完成", "AI sorting partially complete")
+            message = ui_text(
+                f"AI 整理部分完成：成功 {classified_count}，失败 {failed_count}",
+                f"AI sorting partially complete: {classified_count} succeeded, {failed_count} failed",
+            )
+        else:
+            status = "failed"
+            progress_message = ui_text("AI 整理失败", "AI sorting failed")
+            message = ui_text(
+                f"AI 整理失败：{failed_count} 个素材未得到模型结果",
+                f"AI sorting failed: no model result for {failed_count} assets",
+            )
+        self.progress_signal.emit(100, progress_message)
+        self.finished_signal.emit(
+            self.batch_id,
+            message,
+            status,
         )
 
 
@@ -2194,7 +2252,7 @@ class MaterialPanelWindow(QWidget):
             if confirmed
             else f"{bundle['id']} · {self._bundle_status_label(bundle['status'])} · {self._agent_usability_label(bundle['status'])}"
         )
-        origin_url = str(bundle.get("origin_url") or "").strip()
+        origin_url = public_origin_url(str(bundle.get("origin_url") or ""))
         origin_line = f"\norigin {self._compact_text(origin_url, 48)}" if origin_url else ""
         ai_line = self._ai_suggestion_line(bundle.get("ai_suggestions"))
         is_audio = str(bundle.get("type") or "").lower() == "audio"
@@ -2607,10 +2665,22 @@ class MaterialPanelWindow(QWidget):
         batch_id: str = "",
     ) -> dict[str, object]:
         base_url = self._base_url()
+        try:
+            readiness = read_manifest_readiness(get_settings().MANIFEST_PATH)
+            manifest_generation = str(readiness["manifest_generation"])
+        except ManifestReadinessError:
+            manifest_generation = ""
         payload = {
             "handoff_version": "haypile.asset-handoff.v1",
+            "handoff_id": str(uuid4()),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "source": "haypile",
             "base_url": base_url,
+            "manifest_generation": manifest_generation,
+            "asset_count": len(bundles),
+            "total_matching": len(bundles),
+            "complete": True,
+            "next_cursor": None,
             "assets": [self._handoff_asset(item, base_url) for item in bundles],
         }
         if batch_id:
@@ -2620,6 +2690,14 @@ class MaterialPanelWindow(QWidget):
     @staticmethod
     def _handoff_asset(item: dict[str, object], base_url: str) -> dict[str, object]:
         resolved_url = base_url + str(item["url"])
+        public_metadata = sanitize_provenance(
+            {
+                "origin_url": item.get("origin_url", ""),
+                "content_type": item.get("content_type", ""),
+                "downloaded_at": item.get("downloaded_at", ""),
+                "ai_suggestions": item.get("ai_suggestions", {}),
+            }
+        )
         return {
             "id": item["id"],
             "theme_id": item["theme_id"],
@@ -2631,7 +2709,7 @@ class MaterialPanelWindow(QWidget):
             "url": item["url"],
             "access": item["access"],
             "resolved_url": resolved_url,
-            "ai_suggestions": item.get("ai_suggestions", {}),
+            "ai_suggestions": public_metadata.get("ai_suggestions", {}),
             "duration_seconds": item.get("duration_seconds"),
             "audio_metadata": item.get("audio_metadata", {}),
             "audio_tags": item.get("audio_tags", {}),
@@ -2644,9 +2722,9 @@ class MaterialPanelWindow(QWidget):
                 "url": item["url"],
                 "resolved_url": resolved_url,
                 "access": item["access"],
-                "origin_url": item.get("origin_url", ""),
-                "content_type": item.get("content_type", ""),
-                "downloaded_at": item.get("downloaded_at", ""),
+                "origin_url": public_metadata.get("origin_url", ""),
+                "content_type": public_metadata.get("content_type", ""),
+                "downloaded_at": public_metadata.get("downloaded_at", ""),
             },
         }
 
@@ -4918,7 +4996,7 @@ class HaypileFloatingBall(QWidget):
             self._sync_visual_timer()
             return
 
-    def _on_ai_batch_finished(self, batch_id: str, message: str, success: bool) -> None:
+    def _on_ai_batch_finished(self, batch_id: str, message: str, result_status: str) -> None:
         worker = self.ai_batch_worker
         self.ai_batch_worker = None
         if worker is not None:
@@ -4927,7 +5005,10 @@ class HaypileFloatingBall(QWidget):
             self.material_panel.refresh()
         self._refresh_pending_badge()
         if batch_id == self.latest_batch_id:
-            self.show_toast(message, success=success)
+            self.show_toast(
+                message,
+                success=result_status in {"success", "partial_success"},
+            )
         self._sync_visual_timer()
         self._start_next_ai_batch()
 
@@ -5519,6 +5600,13 @@ class HaypileFloatingBall(QWidget):
             self.quick_menu.exit_button.setText(ui_text("退出 Haypile", "Quit Haypile"))
 
     def _status_text(self) -> str:
+        try:
+            read_manifest_readiness(self.settings.MANIFEST_PATH)
+        except ManifestReadinessError:
+            return ui_text(
+                "素材已保存 · Agent 接口待恢复",
+                "Assets saved · Agent access pending recovery",
+            )
         summary = build_material_panel_summary()
         return ui_text(
             f"运行中 · 可用 {summary.recognized_count} · 待确认 {summary.pending_count}",

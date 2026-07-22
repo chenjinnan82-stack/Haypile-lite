@@ -31,7 +31,7 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(hero["role"], "hero_image")
             self.assertEqual(hero["sha256"], hashlib.sha256(b"hero").hexdigest())
             self.assertEqual(hero["id"], hero["sha256"])
-            self.assertEqual(hero["origin_url"], "https://cdn.example.com/hero.png")
+            self.assertEqual(hero["origin_url"], "https://cdn.example.com")
             self.assertEqual(hero["ai_suggestions"]["quality"], "high")
             self.assertEqual(unknown["status"], "pending")
             self.assertEqual(by_id["missing_icon"]["status"], "missing")
@@ -190,7 +190,7 @@ class BundleServiceTests(unittest.TestCase):
             self.assertLess(first_page.json()[0]["source_key"], second_page.json()[0]["source_key"])
             self.assertEqual(one.status_code, 200)
             self.assertEqual(one.json()["access"], "manifest_static")
-            self.assertEqual(one.json()["origin_url"], "https://cdn.example.com/hero.png")
+            self.assertEqual(one.json()["origin_url"], "https://cdn.example.com")
             self.assertEqual(missing.status_code, 404)
             self.assertEqual(no_batch.status_code, 404)
 

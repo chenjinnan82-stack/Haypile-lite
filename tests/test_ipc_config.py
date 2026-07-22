@@ -43,9 +43,22 @@ class IpcConfigTests(unittest.TestCase):
         self.assertEqual(settings.SOPHON_BASE_URL, "http://localhost:8030")
         self.assertEqual(invalid.SOPHON_BASE_URL, "http://127.0.0.1:8030")
 
-    def test_ipc_authkey_uses_admin_key_when_available(self) -> None:
-        with patch.dict("os.environ", {"ADMIN_API_KEY": "admin-secret", "IPC_AUTHKEY": ""}, clear=False):
-            self.assertEqual(Settings(_env_file=None).IPC_AUTHKEY, "admin-secret")
+    def test_ipc_authkey_is_independent_from_admin_key(self) -> None:
+        with TemporaryDirectory() as tmp:
+            key_file = Path(tmp) / "ipc_authkey"
+            with patch.dict(
+                "os.environ",
+                {
+                    "ADMIN_API_KEY": "admin-secret",
+                    "HAYPILE_IPC_AUTHKEY_FILE": str(key_file),
+                    "IPC_AUTHKEY": "",
+                },
+                clear=False,
+            ):
+                ipc_key = Settings(_env_file=None).IPC_AUTHKEY
+
+        self.assertNotEqual(ipc_key, "admin-secret")
+        self.assertEqual(len(ipc_key), 64)
 
     @unittest.skipIf(ipc.is_windows(), "Unix socket test")
     def test_send_ipc_request_uses_configured_authkey_and_logs_failure(self) -> None:

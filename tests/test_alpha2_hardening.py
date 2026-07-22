@@ -755,6 +755,12 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
             self.assertIn("source_ref:", text)
             self.assertIn("tag_commit", text.lower())
             self.assertIn("attest-build-provenance@", text)
+        macos_text = workflows[1].read_text(encoding="utf-8")
+        self.assertIn("python -m unittest discover -s tests", macos_text)
+        self.assertLess(
+            macos_text.index("python -m unittest discover -s tests"),
+            macos_text.index("./scripts/build_macos_app.sh"),
+        )
 
     def test_build_scripts_reject_runtime_state_in_packages(self) -> None:
         root = Path(__file__).resolve().parents[1]
