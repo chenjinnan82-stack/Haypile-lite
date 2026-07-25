@@ -21,6 +21,9 @@ ROLE_LABELS: dict[str, str] = {
     "icon": "图标",
     "content_image": "内容图",
     "texture": "纹理",
+    "reaction": "反应",
+    "sticker": "贴纸",
+    "ui_animation": "界面动画",
     "background": "背景",
     "image": "参考图",
     "audio": "音频",
@@ -1166,7 +1169,17 @@ def _usage_label(*, role: str, asset_type: str) -> str:
 
 def _role_from_asset_key(key: str) -> str:
     text = str(key or "").strip().lower()
-    for role in ("main_background", "hero_image", "logo", "icon", "content_image", "texture"):
+    for role in (
+        "main_background",
+        "hero_image",
+        "logo",
+        "icon",
+        "content_image",
+        "texture",
+        "reaction",
+        "sticker",
+        "ui_animation",
+    ):
         if role in text:
             return role
     if "unknown" in text:

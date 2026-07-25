@@ -29,6 +29,13 @@ A local-first asset intake for AI creators and independent developers.
 
 [Release notes](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.6)
 
+> **Main / upcoming alpha.8:** true GIF files can be dropped from the desktop,
+> direct browser image URLs, or chat apps that expose an actual file attachment.
+> The app also has an explicit clipboard action: exact GIF or file payloads keep
+> their bytes, while pixel-only clipboard data is stored honestly as a static
+> PNG. App-private animated emoji formats are not supported. The alpha.6
+> downloads above do not include these capabilities.
+
 The macOS build is ad-hoc signed and not notarized; right-click the app and
 choose **Open** on first launch. The Windows build is unsigned and portable;
 unzip it before running `Haypile.exe`. Haypile keeps controlled local copies,

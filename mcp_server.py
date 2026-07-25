@@ -63,7 +63,7 @@ BASE_URL = _validate_base_url(
 )
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = {PROTOCOL_VERSION, "2024-11-05"}
-SERVER_VERSION = "0.3.0-alpha.6"
+SERVER_VERSION = "0.3.0-alpha.8"
 MAX_LINE_BYTES = 1024 * 1024
 LOCAL_OPENER = urllib.request.build_opener(
     urllib.request.ProxyHandler({}),
@@ -242,8 +242,11 @@ def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
         "url": bundle["url"],
         "access": bundle["access"],
         "resolved_url": resolved_url,
+        "content_type": public_metadata.get("content_type", ""),
         "ai_suggestions": public_metadata.get("ai_suggestions", {}),
         "duration_seconds": bundle.get("duration_seconds"),
+        "frame_count": bundle.get("frame_count"),
+        "loop_count": bundle.get("loop_count"),
         "audio_metadata": bundle.get("audio_metadata", {}),
         "audio_tags": bundle.get("audio_tags", {}),
         "audio_usage": bundle.get("audio_usage", "unknown"),
@@ -381,7 +384,7 @@ def _validate_tool_arguments(name: str, arguments: object) -> dict[str, Any]:
         "type": {"image", "audio", "asset"},
         "role": {
             "main_background", "hero_image", "logo", "icon", "content_image",
-            "texture", "audio", "unknown",
+            "texture", "reaction", "sticker", "ui_animation", "audio", "unknown",
         },
         "audio_usage": {"music", "voice", "ambience", "sound_effect", "loop", "unknown"},
     }
@@ -409,13 +412,13 @@ TOOLS = [
     },
     {
         "name": "haypile_list_bundles",
-        "description": "List registered Haypile bundles. Audio bundles include duration_seconds, audio_metadata, audio_tags, and audio_usage when available.",
+        "description": "List registered Haypile bundles. GIF images include content_type, frame_count, duration_seconds, and loop_count.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "status": {"type": "string", "enum": ["ready", "pending", "missing"]},
                 "type": {"type": "string", "enum": ["image", "audio", "asset"]},
-                "role": {"type": "string", "enum": ["main_background", "hero_image", "logo", "icon", "content_image", "texture", "audio", "unknown"]},
+                "role": {"type": "string", "enum": ["main_background", "hero_image", "logo", "icon", "content_image", "texture", "reaction", "sticker", "ui_animation", "audio", "unknown"]},
                 "theme_id": {"type": "string", "maxLength": 128},
                 "audio_usage": {"type": "string", "enum": ["music", "voice", "ambience", "sound_effect", "loop", "unknown"]},
                 "batch_id": {"type": "string", "maxLength": 64, "description": "Use latest or a completed ingest batch id."},
@@ -427,13 +430,13 @@ TOOLS = [
     },
     {
         "name": "haypile_copy_handoff",
-        "description": "Return asset-handoff JSON. Preserve identity/provenance fields and audio duration, metadata, and usage when present.",
+        "description": "Return asset-handoff JSON with identity, provenance, media type, and available animation or audio metadata.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "status": {"type": "string", "enum": ["ready", "pending", "missing"]},
                 "type": {"type": "string", "enum": ["image", "audio", "asset"]},
-                "role": {"type": "string", "enum": ["main_background", "hero_image", "logo", "icon", "content_image", "texture", "audio", "unknown"]},
+                "role": {"type": "string", "enum": ["main_background", "hero_image", "logo", "icon", "content_image", "texture", "reaction", "sticker", "ui_animation", "audio", "unknown"]},
                 "theme_id": {"type": "string", "maxLength": 128},
                 "audio_usage": {"type": "string", "enum": ["music", "voice", "ambience", "sound_effect", "loop", "unknown"]},
                 "batch_id": {"type": "string", "maxLength": 64, "description": "Use latest or a completed ingest batch id."},

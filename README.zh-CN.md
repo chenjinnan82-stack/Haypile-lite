@@ -29,6 +29,11 @@
 
 [版本说明](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.6)
 
+> **main / 即将发布的 alpha.8：** 可从桌面、浏览器直接图片 URL，或能提供真实
+> 文件附件的聊天软件拖入 GIF。应用也提供明确的剪贴板收纳动作：完整 GIF 或文件
+> 载荷保留原始字节，仅有静态像素时则如实保存为 PNG；应用私有的动态表情格式尚
+> 不支持。上方 alpha.6 下载版尚不包含这些能力。
+
 macOS 包采用临时签名且尚未公证，首次启动请右键应用并选择“打开”。Windows
 包尚未签名，请先解压再运行 `Haypile.exe`。Haypile 会保存受控的本地副本，但
 Alpha 版本不应成为不可替代素材的唯一备份。

@@ -3,16 +3,13 @@ from __future__ import annotations
 import asyncio
 import ctypes
 from datetime import datetime, timezone
-import hashlib
 from html.parser import HTMLParser
 import json
 import locale
 import logging
 import math
 import os
-import shutil
 import socket
-import sqlite3
 import subprocess
 import sys
 import time
@@ -66,18 +63,25 @@ from app.services.ai_provider import (
     normalize_api_base_url,
 )
 from app.services.bundle_service import BundleService
+from app.services.ingest_service import (
+    IngestCandidate,
+    IngestResult,
+    IngestService,
+)
 from app.services.json_io import atomic_write_json
 from app.services.scanner import (
-    AssetScanner,
     ManifestReadinessError,
-    mark_manifest_dirty,
     read_manifest_readiness,
 )
-from app.services.storage_runtime import StorageRuntimeDB
 from app.services.style_classifier import StyleClassifier
 from app.services.material_summary import build_material_panel_summary
-from app.services.media_validator import MediaValidationError, validate_media
-from app.services.media_types import AUDIO_CONTENT_TYPE_EXTENSIONS, SUPPORTED_AUDIO_EXTENSIONS
+from app.services.media_validator import (
+    MAX_GIF_BYTES,
+    MAX_RASTER_DIMENSION,
+    MAX_RASTER_PIXELS,
+    MIN_GIF_FRAME_DELAY_MS,
+)
+from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
 from app.services.real_project_operations import (
     HaypileRealProjectOperationError,
     execute_haypile_minimal_real_project_reapply,
@@ -92,7 +96,6 @@ from app.services.safe_remote_fetcher import (
     open_safe_remote,
 )
 from app.services.theme_registry import ThemeRegistry
-from app.services.vfs_storage import VFSStorage
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
@@ -118,6 +121,7 @@ from PySide6.QtGui import (
     QDropEvent,
     QLinearGradient,
     QMouseEvent,
+    QMovie,
     QPainter,
     QPainterPath,
     QPaintEvent,
@@ -250,40 +254,6 @@ class DroppedMediaHTMLParser(HTMLParser):
             self._audio_depth -= 1
 
 
-def _ingest_batch_preflight_error(
-    files: list[Path],
-    storage_dir: Path,
-    *,
-    max_files: int,
-    max_bytes: int,
-    reserve_bytes: int,
-) -> str:
-    if len(files) > max_files:
-        return ui_text(
-            f"单次最多收纳 {max_files} 个文件",
-            f"A single drop can contain at most {max_files} files",
-        )
-    total_bytes = 0
-    for path in files:
-        try:
-            if path.is_file() and not path.is_symlink():
-                total_bytes += max(0, path.stat().st_size)
-        except OSError:
-            continue
-    if total_bytes > max_bytes:
-        return ui_text("单次收纳总量不能超过 2GB", "A single drop cannot exceed 2GB")
-    try:
-        free_bytes = shutil.disk_usage(storage_dir).free
-    except OSError:
-        return ui_text("无法确认素材库剩余空间", "Could not check asset storage space")
-    if free_bytes < total_bytes + reserve_bytes:
-        return ui_text(
-            "素材库空间不足，请至少保留 256MB 余量",
-            "Not enough storage space; keep at least 256MB free",
-        )
-    return ""
-
-
 class RemoteDownloadWorker(QThread):
     finished_signal = Signal(object, str, bool)
     progress_signal = Signal(int, str)
@@ -315,7 +285,9 @@ class RemoteDownloadWorker(QThread):
             self.incoming_dir.chmod(0o700)
         failed = 0
         too_large = 0
+        gif_too_large = 0
         unsupported = 0
+        video_not_supported = 0
         downloaded_bytes = 0
         total = max(len(self.urls), 1)
         for index, url in enumerate(self.urls, start=1):
@@ -339,6 +311,10 @@ class RemoteDownloadWorker(QThread):
             if path is None:
                 if reason == "too_large":
                     too_large += 1
+                elif reason == "gif_too_large":
+                    gif_too_large += 1
+                elif reason == "video_not_supported":
+                    video_not_supported += 1
                 elif reason == "unsupported":
                     unsupported += 1
                 else:
@@ -348,8 +324,15 @@ class RemoteDownloadWorker(QThread):
             downloaded_bytes += path.stat().st_size
 
         if not downloaded:
-            if unsupported and not failed and not too_large:
+            if video_not_supported and not failed and not too_large and not gif_too_large:
+                message = ui_text(
+                    "不支持视频；请拖入真实 GIF 图片",
+                    "Video is not supported; drop a true GIF image",
+                )
+            elif unsupported and not failed and not too_large:
                 message = ui_text("没有找到可收纳的图片或音频", "No images or audio to store")
+            elif gif_too_large and not failed and not too_large:
+                message = ui_text("GIF 素材超过 50MB", "GIF asset is over 50MB")
             elif too_large and not failed:
                 message = ui_text("网页素材超过 500MB", "Web asset is over 500MB")
             else:
@@ -357,7 +340,7 @@ class RemoteDownloadWorker(QThread):
             self.finished_signal.emit([], message, False)
             return
         message = ui_text(f"已获取 {len(downloaded)} 个网页素材", f"Fetched {len(downloaded)} web assets")
-        skipped = failed + too_large + unsupported
+        skipped = failed + too_large + gif_too_large + unsupported + video_not_supported
         if skipped:
             message += ui_text(f"，跳过 {skipped}", f", skipped {skipped}")
         self.progress_signal.emit(95, message)
@@ -378,21 +361,13 @@ class RemoteDownloadWorker(QThread):
     def _dedupe_urls(urls: list[str]) -> list[str]:
         return dedupe_remote_urls(urls, limit=RemoteDownloadWorker.MAX_URLS)
 
+
 class IngestWorker(QThread):
     finished_signal = Signal(str, bool)
     progress_signal = Signal(int, str)
     degraded_signal = Signal(str, str, int)
     batch_signal = Signal(str, object)
 
-    SUPPORTED_IMAGE_EXTENSIONS: set[str] = {".png", ".webp", ".svg", ".jpg", ".jpeg"}
-    SUPPORTED_AUDIO_EXTENSIONS: set[str] = set(SUPPORTED_AUDIO_EXTENSIONS)
-    ALLOWED_IMAGE_MIME: set[str] = {
-        "image/png",
-        "image/webp",
-        "image/jpeg",
-        "image/svg+xml",
-    }
-    ALLOWED_AUDIO_MIME: set[str] = set(AUDIO_CONTENT_TYPE_EXTENSIONS)
     MAX_FILE_SIZE_BYTES: int = 500 * 1024 * 1024
     MAX_DROP_FILES: int = 256
     MAX_DROP_BYTES: int = 2 * 1024 * 1024 * 1024
@@ -404,28 +379,8 @@ class IngestWorker(QThread):
         self.files = files
         self.assets_dir = assets_dir
         self.settings = get_settings()
-        self.theme_registry = ThemeRegistry()
         self.ai_enabled = bool(ai_enabled)
-        self.storage_runtime = StorageRuntimeDB()
-        self.vfs_storage = VFSStorage(copy_max_retries=3, copy_base_delay=1.0)
-        self.storage_runtime.ensure_ready()
-        self._loop: asyncio.AbstractEventLoop | None = None
-
-    def _get_or_create_loop(self) -> asyncio.AbstractEventLoop:
-        if self._loop is None or self._loop.is_closed():
-            self._loop = asyncio.new_event_loop()
-        return self._loop
-
-    def _run_coro(self, coro):
-        loop = self._get_or_create_loop()
-        return loop.run_until_complete(coro)
-
-    def _close_loop(self) -> None:
-        if self._loop is None:
-            return
-        if not self._loop.is_closed():
-            self._loop.close()
-        self._loop = None
+        self.result: IngestResult | None = None
 
     def run(self) -> None:
         try:
@@ -437,423 +392,139 @@ class IngestWorker(QThread):
                     ui_text("入库意外中断，重启后将自动恢复", "Import stopped unexpectedly; restart to recover"),
                     False,
                 )
-        finally:
-            self._close_loop()
 
     def _run_ingest(self) -> None:
-        accepted_count = 0
-        duplicate_count = 0
-        renamed_count = 0
-        rejected_count = 0
-        recovered_theme_count = 0
-        staging_dir = self.settings.STORAGE_DIR / "staging" / "ingest"
-        quarantine_dir = self.settings.STORAGE_DIR / "quarantine" / "ingest"
-        preflight_error = self._batch_preflight_error()
-        if preflight_error:
-            self.finished_signal.emit(preflight_error, False)
-            return
-        try:
-            mark_manifest_dirty(self.settings.MANIFEST_PATH)
-            self.storage_runtime.recover_incomplete_ingest(
-                assets_dir=self.assets_dir,
-                staging_dir=staging_dir,
-                quarantine_dir=quarantine_dir,
-            )
-            self.storage_runtime.register_legacy_assets(self.assets_dir)
-        except (OSError, RuntimeError):
-            self.finished_signal.emit(
-                ui_text("素材库恢复失败，未开始入库", "Storage recovery failed; import did not start"),
-                False,
-            )
-            self._close_loop()
-            return
-
-        batch_id = self.storage_runtime.begin_batch()
-        total_files = max(len(self.files), 1)
-        self.progress_signal.emit(3, ui_text("正在构建去重索引...", "Building duplicate index..."))
-        hash_index = self._build_hash_index()
-        if self.isInterruptionRequested():
-            self.storage_runtime.interrupt_batch(batch_id)
-            self._close_loop()
-            return
-
-        for idx, file_path in enumerate(self.files, start=1):
-            if self.isInterruptionRequested():
-                self.storage_runtime.interrupt_batch(batch_id)
-                self._close_loop()
-                return
-            provenance = read_asset_provenance(file_path)
-            self.storage_runtime.record_item_discovered(
-                batch_id,
-                idx,
-                file_path.name,
-                origin_url=str(provenance.get("origin_url") or ""),
-            )
-            progress_base = int((idx - 1) / total_files * 84)
-            self.progress_signal.emit(
-                progress_base + 8,
-                ui_text(f"校验文件 {idx}/{total_files}", f"Checking file {idx}/{total_files}"),
-            )
-            reason = self._preflight_media_file(file_path)
-            if reason is not None:
-                rejected_count += 1
-                self.storage_runtime.reject_item(batch_id, idx, reason)
-                continue
-
-            staged = None
-            try:
-                self.progress_signal.emit(
-                    progress_base + 28,
-                    ui_text(f"写入暂存区 {idx}/{total_files}", f"Staging file {idx}/{total_files}"),
-                )
-                staged = self.vfs_storage.stage(
-                    file_path,
-                    staging_dir,
-                    f"{batch_id}-{idx}",
-                    should_stop=self.isInterruptionRequested,
-                    chunk_size=self.HASH_CHUNK_SIZE,
-                )
-                validated = validate_media(staged.path)
-            except InterruptedError:
-                self.storage_runtime.interrupt_item(batch_id, idx, "interrupted")
-                self.storage_runtime.interrupt_batch(batch_id)
-                self._close_loop()
-                return
-            except (MediaValidationError, OSError) as exc:
-                rejected_count += 1
-                if staged is not None:
-                    staged.path.unlink(missing_ok=True)
-                self.storage_runtime.reject_item(batch_id, idx, type(exc).__name__)
-                continue
-            file_hash = staged.sha256
-            if file_hash in hash_index:
-                duplicate_count += 1
-                staged.path.unlink(missing_ok=True)
-                self.storage_runtime.commit_item(
-                    batch_id,
-                    idx,
-                    sha256_hex=file_hash,
-                    src_path=file_path,
-                    dst_path=hash_index[file_hash],
-                    strategy="duplicate",
-                    duplicate=True,
-                )
-                continue
-
-            theme_id = self.settings.VISION_FALLBACK_THEME
-            role = "unknown"
-
-            destination = self._resolve_themed_destination(
-                original_name=file_path.name,
-                sha256_hex=file_hash,
-                theme_id=theme_id,
-                media_kind=validated.kind,
-                role=role,
-            )
-            if destination.name != file_path.name:
-                renamed_count += 1
-
-            try:
-                self.storage_runtime.record_item_staged(
-                    batch_id,
-                    idx,
-                    media_kind=validated.kind,
-                    sha256_hex=file_hash,
-                    staging_path=staged.path,
-                    destination_path=destination,
-                )
-                self.progress_signal.emit(
-                    progress_base + 58,
-                    ui_text(f"提交资产 {idx}/{total_files}", f"Committing asset {idx}/{total_files}"),
-                )
-                strategy = self.vfs_storage.commit_staged(staged.path, destination)
-                self.storage_runtime.commit_item(
-                    batch_id,
-                    idx,
-                    sha256_hex=file_hash,
-                    src_path=file_path,
-                    dst_path=destination,
-                    strategy=strategy,
-                )
-            except (OSError, sqlite3.Error):
-                self.storage_runtime.interrupt_item(batch_id, idx, "durable_commit_failed")
-                self.storage_runtime.interrupt_batch(batch_id)
-                self.finished_signal.emit(
-                    ui_text("素材提交中断，重启后将自动恢复", "Asset commit interrupted; restart to recover"),
-                    False,
-                )
-                self._close_loop()
-                return
-
-            hash_index[file_hash] = destination
-            accepted_count += 1
-
-            try:
-                self._persist_asset_provenance(
-                    source_path=file_path,
-                    destination=destination,
-                    sha256_hex=file_hash,
-                )
-            except OSError:
-                logger.warning("Asset provenance projection failed: sha256=%s", file_hash)
-
-            if validated.kind == "image":
-                try:
-                    self._upsert_theme_contract_for_image(
-                        destination=destination,
-                        theme_id=theme_id,
-                        role=role,
-                    )
-                    if self.theme_registry.last_recovery is not None:
-                        recovered_theme_count += 1
-                        self.theme_registry.last_recovery = None
-                except (OSError, ValueError):
-                    logger.warning("Theme projection failed: sha256=%s", file_hash)
-
-            self.progress_signal.emit(
-                progress_base + 84,
-                ui_text(f"完成 {idx}/{total_files}", f"Completed {idx}/{total_files}"),
-            )
-
-        if self.isInterruptionRequested():
-            self.storage_runtime.interrupt_batch(batch_id)
-            self._close_loop()
-            return
-        self.storage_runtime.complete_batch(
-            batch_id,
-            accepted_count=accepted_count,
-            duplicate_count=duplicate_count,
-            rejected_count=rejected_count,
+        service = IngestService(
+            storage_dir=self.settings.STORAGE_DIR,
+            assets_dir=self.assets_dir,
+            index_dir=self.settings.INDEX_DIR,
+            themes_dir=self.settings.THEMES_DIR,
+            manifest_path=self.settings.MANIFEST_PATH,
+            fallback_theme=self.settings.VISION_FALLBACK_THEME,
+            max_file_bytes=self.MAX_FILE_SIZE_BYTES,
+            max_files=self.MAX_DROP_FILES,
+            max_batch_bytes=self.MAX_DROP_BYTES,
+            reserve_bytes=self.MIN_FREE_RESERVE_BYTES,
+            hash_chunk_size=self.HASH_CHUNK_SIZE,
         )
-
-        self.progress_signal.emit(92, ui_text("刷新资产清单...", "Refreshing asset manifest..."))
-        scanner = AssetScanner()
-        manifest_ready = True
-        try:
-            self._run_coro(
-                scanner.scan_assets_directory(should_stop=self.isInterruptionRequested)
-            )
-        except InterruptedError:
+        self.result = service.ingest(
+            [IngestCandidate(path) for path in self.files],
+            should_stop=self.isInterruptionRequested,
+            progress=self._on_service_progress,
+        )
+        if self.result.status == "cancelled":
             return
-        except (OSError, RuntimeError, ValueError):
-            manifest_ready = False
-            logger.warning("Asset manifest projection failed; Agent access is paused until recovery")
-
-        if not manifest_ready:
-            self.finished_signal.emit(
-                ui_text(
-                    "素材已保存，Agent 接口待恢复",
-                    "Assets saved; Agent access is pending recovery",
-                ),
-                False,
-            )
-            self._close_loop()
-            return
-
-        if accepted_count == 0 and duplicate_count == 0:
-            self.finished_signal.emit(
-                ui_text(
-                    "文件被拦截：只支持图片/音频，或体积超过 500MB",
-                    "Blocked: only images/audio are supported, or the file is over 500MB",
-                ),
-                False,
-            )
-            self._close_loop()
+        if not self.result.success:
+            self.finished_signal.emit(self._error_message(self.result.error_code), False)
             return
 
         self.batch_signal.emit(
-            batch_id,
+            str(self.result.batch_id),
             {
-                "accepted_count": accepted_count,
-                "duplicate_count": duplicate_count,
-                "rejected_count": rejected_count,
+                "accepted_count": self.result.accepted_count,
+                "duplicate_count": self.result.duplicate_count,
+                "rejected_count": self.result.rejected_count,
             },
         )
-
         message = ui_text(
-            f"收纳完成：新增 {accepted_count}，去重 {duplicate_count}",
-            f"Stored: {accepted_count} new, {duplicate_count} duplicate",
+            f"收纳完成：新增 {self.result.accepted_count}，去重 {self.result.duplicate_count}",
+            f"Stored: {self.result.accepted_count} new, {self.result.duplicate_count} duplicate",
         )
-        if renamed_count > 0:
-            message += ui_text(f"，重命名 {renamed_count}", f", renamed {renamed_count}")
-        if rejected_count > 0:
-            message += ui_text(f"，拦截 {rejected_count}", f", blocked {rejected_count}")
-        if recovered_theme_count:
+        if self.result.renamed_count:
+            message += ui_text(
+                f"，重命名 {self.result.renamed_count}",
+                f", renamed {self.result.renamed_count}",
+            )
+        if self.result.rejected_count:
+            message += ui_text(
+                f"，拦截 {self.result.rejected_count}",
+                f", blocked {self.result.rejected_count}",
+            )
+        if self.result.recovered_theme_count:
             message += ui_text(
                 "；已隔离损坏的主题记录",
                 "; a damaged theme record was quarantined",
             )
-        self.progress_signal.emit(100, ui_text("入库完成", "Import complete"))
         self.finished_signal.emit(message, True)
-        self._close_loop()
 
-    def _batch_preflight_error(self) -> str:
-        return _ingest_batch_preflight_error(
-            self.files,
-            self.settings.STORAGE_DIR,
-            max_files=self.MAX_DROP_FILES,
-            max_bytes=self.MAX_DROP_BYTES,
-            reserve_bytes=self.MIN_FREE_RESERVE_BYTES,
-        )
+    def _on_service_progress(self, stage: str, data: dict[str, int]) -> None:
+        index, total = data["index"], data["total"]
+        messages = {
+            "build_hash_index": ui_text(
+                "正在构建去重索引...", "Building duplicate index..."
+            ),
+            "validate": ui_text(
+                f"校验文件 {index}/{total}", f"Checking file {index}/{total}"
+            ),
+            "stage": ui_text(
+                f"写入暂存区 {index}/{total}", f"Staging file {index}/{total}"
+            ),
+            "commit": ui_text(
+                f"提交资产 {index}/{total}", f"Committing asset {index}/{total}"
+            ),
+            "item_complete": ui_text(
+                f"完成 {index}/{total}", f"Completed {index}/{total}"
+            ),
+            "project_manifest": ui_text(
+                "刷新资产清单...", "Refreshing asset manifest..."
+            ),
+            "complete": ui_text("入库完成", "Import complete"),
+        }
+        self.progress_signal.emit(data["percent"], messages.get(stage, stage))
 
-    def _build_hash_index(self) -> dict[str, Path]:
-        return self.storage_runtime.asset_hash_index(self.assets_dir)
-
-    def _preflight_media_file(self, file_path: Path) -> str | None:
-        if not file_path.exists() or not file_path.is_file() or file_path.is_symlink():
-            return "missing_file"
-        try:
-            file_size = file_path.stat().st_size
-        except OSError:
-            return "unreadable_file"
-        if file_size <= 0:
-            return "empty_file"
-        if file_size > self.MAX_FILE_SIZE_BYTES:
-            return "file_too_large"
-        if not self._is_supported_extension(file_path):
-            return "unsupported_extension"
-        return None
-
-    def _is_supported_extension(self, file_path: Path) -> bool:
-        suffix = file_path.suffix.lower()
-        return (
-            suffix in self.SUPPORTED_IMAGE_EXTENSIONS
-            or suffix in self.SUPPORTED_AUDIO_EXTENSIONS
-        )
-
-    def _validate_media_file(
-        self, file_path: Path
-    ) -> tuple[str | None, str | None, str | None]:
-        if not file_path.exists() or not file_path.is_file():
-            return None, None, "missing_file"
-
-        file_size = file_path.stat().st_size
-        if file_size > self.MAX_FILE_SIZE_BYTES:
-            return None, None, "file_too_large"
-
-        try:
-            validated = validate_media(file_path)
-        except MediaValidationError:
-            return None, None, "unsupported_mime"
-        return validated.kind, validated.mime_type, None
-
-    def _compute_sha256(self, file_path: Path) -> str:
-        digest = hashlib.sha256()
-        with file_path.open("rb") as source:
-            for chunk in iter(lambda: source.read(self.HASH_CHUNK_SIZE), b""):
-                if self.isInterruptionRequested():
-                    raise InterruptedError("hash_interrupted")
-                digest.update(chunk)
-        return digest.hexdigest()
-
-    def _resolve_destination(self, original_name: str, sha256_hex: str) -> Path:
-        candidate = self.assets_dir / original_name
-        if not candidate.exists():
-            return candidate
-
-        source = Path(original_name)
-        short_hash = sha256_hex[:8]
-        stem = source.stem
-        suffix = source.suffix
-        renamed = self.assets_dir / f"{stem}_{short_hash}{suffix}"
-        if not renamed.exists():
-            return renamed
-
-        counter = 1
-        while True:
-            resolved = self.assets_dir / f"{stem}_{short_hash}_{counter}{suffix}"
-            if not resolved.exists():
-                return resolved
-            counter += 1
-
-    def _resolve_themed_destination(
-        self,
-        original_name: str,
-        sha256_hex: str,
-        theme_id: str,
-        media_kind: str,
-        role: str,
-    ) -> Path:
-        safe_theme = self._safe_identifier(
-            theme_id or self.settings.VISION_FALLBACK_THEME
-        )
-        bucket = "images" if media_kind == "image" else "audio"
-        extension = Path(original_name).suffix.lower()
-        if not extension:
-            extension = ".bin"
-
-        short_hash = sha256_hex[:8]
-        safe_role = self._safe_identifier(role or "unknown")
-        base_name = f"{safe_theme}_{'img' if media_kind == 'image' else 'aud'}_{safe_role}_{short_hash}{extension}"
-
-        themed_dir = self.assets_dir / safe_theme / bucket
-        candidate = themed_dir / base_name
-        if not candidate.exists():
-            return candidate
-
-        counter = 1
-        while True:
-            resolved = (
-                themed_dir
-                / f"{safe_theme}_{'img' if media_kind == 'image' else 'aud'}_{safe_role}_{short_hash}_{counter}{extension}"
-            )
-            if not resolved.exists():
-                return resolved
-            counter += 1
-
-    def _persist_asset_provenance(
-        self,
-        *,
-        source_path: Path,
-        destination: Path,
-        sha256_hex: str,
-        ai_suggestions: dict[str, object] | None = None,
-    ) -> None:
-        provenance = read_asset_provenance(source_path)
-        if not provenance and not ai_suggestions:
-            return
-        try:
-            source_key = destination.relative_to(self.assets_dir).as_posix()
-        except ValueError:
-            source_key = destination.name
-        provenance.update({"source_key": source_key, "sha256": sha256_hex})
-        if ai_suggestions:
-            provenance["ai_suggestions"] = ai_suggestions
-        try:
-            write_asset_provenance(destination, provenance)
-        except OSError:
-            logger.debug("Failed to persist asset provenance")
-
-    @staticmethod
-    def _safe_identifier(text: str) -> str:
-        lowered = (text or "").strip().lower()
-        sanitized = "".join(
-            ch if (ch.isalnum() or ch in {"_", "-"}) else "_" for ch in lowered
-        )
-        while "__" in sanitized:
-            sanitized = sanitized.replace("__", "_")
-        sanitized = sanitized.strip("_")
-        return sanitized or "generic"
-
-    def _upsert_theme_contract_for_image(
-        self,
-        destination: Path,
-        theme_id: str,
-        role: str,
-    ) -> None:
-        safe_theme = self._safe_identifier(
-            theme_id or self.settings.VISION_FALLBACK_THEME
-        )
-        safe_role = self._safe_identifier(role or "unknown")
-        rel_path = destination.relative_to(self.assets_dir).as_posix()
-        asset_url = f"/static/{rel_path}"
-        asset_key = destination.stem
-
-        self.theme_registry.upsert_image_asset(
-            theme_id=safe_theme,
-            asset_key=asset_key,
-            asset_url=asset_url,
-            role=safe_role,
+    def _error_message(self, code: str | None) -> str:
+        messages = {
+            "ingest_busy": ui_text(
+                "另一个入口正在收纳，请稍后重试",
+                "Another import is in progress; try again shortly",
+            ),
+            "batch_file_limit": ui_text(
+                f"单次最多收纳 {self.MAX_DROP_FILES} 个文件",
+                f"A single drop can contain at most {self.MAX_DROP_FILES} files",
+            ),
+            "batch_byte_limit": ui_text(
+                "单次收纳总量不能超过 2GB",
+                "A single drop cannot exceed 2GB",
+            ),
+            "storage_space_unavailable": ui_text(
+                "无法确认素材库剩余空间",
+                "Could not check asset storage space",
+            ),
+            "storage_space_low": ui_text(
+                "素材库空间不足，请至少保留 256MB 余量",
+                "Not enough storage space; keep at least 256MB free",
+            ),
+            "storage_recovery_failed": ui_text(
+                "素材库恢复失败，未开始入库",
+                "Storage recovery failed; import did not start",
+            ),
+            "durable_commit_failed": ui_text(
+                "素材提交中断，重启后将自动恢复",
+                "Asset commit interrupted; restart to recover",
+            ),
+            "ingest_journal_failed": ui_text(
+                "素材未提交，请重试",
+                "Asset was not committed; please retry",
+            ),
+            "manifest_projection_failed": ui_text(
+                "素材已保存，Agent 接口待恢复",
+                "Assets saved; Agent access is pending recovery",
+            ),
+            "video_not_supported": ui_text(
+                "不支持视频；请拖入真实 GIF 图片",
+                "Video is not supported; drop a true GIF image",
+            ),
+            "unsupported_media": ui_text(
+                "文件被拦截：只支持安全的图片/音频，或素材超过允许的体积",
+                "Blocked: only safe images/audio are supported, or an asset exceeds its size limit",
+            ),
+        }
+        return messages.get(
+            code,
+            ui_text(
+                "入库意外中断，重启后将自动恢复",
+                "Import stopped unexpectedly; restart to recover",
+            ),
         )
 
 
@@ -865,7 +536,11 @@ async def _classify_registered_bundle(
     bundle_service: BundleService,
 ):
     source_key = str(bundle.get("source_key") or "").strip()
-    if str(bundle.get("type") or "").lower() != "image" or not source_key:
+    if (
+        str(bundle.get("type") or "").lower() != "image"
+        or str(bundle.get("content_type") or "").lower() == "image/gif"
+        or not source_key
+    ):
         raise ValueError("unsupported_bundle")
     assets_root = assets_dir.resolve(strict=False)
     asset_path = (assets_root / source_key).resolve(strict=False)
@@ -890,6 +565,8 @@ async def _classify_registered_bundle(
 
 
 def _persist_ai_failure(bundle: dict[str, object], assets_dir: Path, reason: str) -> None:
+    if str(bundle.get("content_type") or "").lower() == "image/gif":
+        return
     source_key = str(bundle.get("source_key") or "").strip()
     if not source_key:
         return
@@ -997,7 +674,11 @@ class AIBatchWorker(QThread):
     ) -> None:
         super().__init__()
         self.batch_id = batch_id
-        self.bundles = [dict(bundle) for bundle in bundles]
+        self.bundles = [
+            dict(bundle)
+            for bundle in bundles
+            if str(bundle.get("content_type") or "").lower() != "image/gif"
+        ]
         self.assets_dir = assets_dir
         self.style_classifier = StyleClassifier(provider)
         self.bundle_service = BundleService()
@@ -1585,6 +1266,12 @@ class MaterialPanelWindow(QWidget):
         self._retry_batch_callback = None
         self._ai_provider_factory = None
         self._ai_enabled_callback = None
+        self._low_power_enabled = False
+        self._gif_movie: QMovie | None = None
+        self._gif_frame_count = 0
+        self._gif_stop_timer = QTimer(self)
+        self._gif_stop_timer.setSingleShot(True)
+        self._gif_stop_timer.timeout.connect(self._finish_gif_preview)
         self.ai_refresh_worker: AIRefreshWorker | None = None
         self.confirmation_preview: ConfirmationPreviewWindow | None = None
         if not self._embedded:
@@ -1776,6 +1463,28 @@ class MaterialPanelWindow(QWidget):
         self.role_row.hide()
         layout.addWidget(self.role_row)
 
+        self.gif_role_row = QWidget(self.container)
+        self.gif_role_row.setStyleSheet("QWidget { background: transparent; border: none; }")
+        gif_role_layout = QHBoxLayout(self.gif_role_row)
+        gif_role_layout.setContentsMargins(0, 0, 0, 0)
+        gif_role_layout.setSpacing(4)
+        self.gif_role_buttons: dict[str, QPushButton] = {}
+        for role, label in (
+            ("reaction", ui_text("反应", "Reaction")),
+            ("sticker", ui_text("贴纸", "Sticker")),
+            ("ui_animation", ui_text("界面动画", "UI motion")),
+        ):
+            button = QPushButton(label, self.gif_role_row)
+            button.setFixedHeight(24)
+            button.setStyleSheet(self._role_button_style(False))
+            button.clicked.connect(
+                lambda _checked=False, selected_role=role: self._set_selected_role(selected_role)
+            )
+            self.gif_role_buttons[role] = button
+            gif_role_layout.addWidget(button)
+        self.gif_role_row.hide()
+        layout.addWidget(self.gif_role_row)
+
         self.audio_usage_row = QWidget(self.container)
         self.audio_usage_row.setStyleSheet("QWidget { background: transparent; border: none; }")
         audio_usage_layout = QHBoxLayout(self.audio_usage_row)
@@ -1827,6 +1536,8 @@ class MaterialPanelWindow(QWidget):
         self.preview_label.setStyleSheet(
             "QLabel { background: #F6F1E4; border: 1px solid #DDD3BB; border-radius: 8px; }"
         )
+        self.preview_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.preview_label.mousePressEvent = self._replay_gif_preview
         self.preview_label.hide()
         layout.addWidget(self.preview_label)
 
@@ -1940,6 +1651,7 @@ class MaterialPanelWindow(QWidget):
         detail_layout.addWidget(self.detail_label, 1)
         detail_layout.addWidget(self.accept_ai_button)
         detail_layout.addWidget(self.role_row)
+        detail_layout.addWidget(self.gif_role_row)
         detail_layout.addWidget(self.audio_usage_row)
         detail_layout.addWidget(self.retry_ai_button)
         detail_layout.addWidget(self.copy_selected_button)
@@ -1957,13 +1669,18 @@ class MaterialPanelWindow(QWidget):
                     "已隔离损坏的主题记录并创建恢复副本",
                     "Damaged theme metadata was quarantined and replaced",
                 ),
-                False,
+                success=False,
             )
 
     def set_ai_handlers(self, *, provider_factory, enabled_callback, retry_batch_callback) -> None:
         self._ai_provider_factory = provider_factory
         self._ai_enabled_callback = enabled_callback
         self._retry_batch_callback = retry_batch_callback
+
+    def set_low_power_enabled(self, enabled: bool) -> None:
+        self._low_power_enabled = bool(enabled)
+        if self._low_power_enabled:
+            self._stop_gif_preview(reset_to_first=True)
 
     def retranslate(self) -> None:
         labels = {
@@ -1986,6 +1703,13 @@ class MaterialPanelWindow(QWidget):
         }
         for role, button in self.role_buttons.items():
             button.setText(role_labels[role])
+        gif_role_labels = {
+            "reaction": ui_text("反应", "Reaction"),
+            "sticker": ui_text("贴纸", "Sticker"),
+            "ui_animation": ui_text("界面动画", "UI motion"),
+        }
+        for role, button in self.gif_role_buttons.items():
+            button.setText(gif_role_labels[role])
         usage_labels = {
             "music": ui_text("音乐", "Music"),
             "voice": ui_text("人声", "Voice"),
@@ -2047,6 +1771,7 @@ class MaterialPanelWindow(QWidget):
             self.hide()
 
     def refresh(self) -> None:
+        self._stop_gif_preview(reset_to_first=True, discard=True)
         summary = build_material_panel_summary()
         service = BundleService()
         list_bundles = getattr(service, "list_bundles", None)
@@ -2072,7 +1797,7 @@ class MaterialPanelWindow(QWidget):
                         "已隔离损坏的主题记录并创建恢复副本",
                         "Damaged theme metadata was quarantined and replaced",
                     ),
-                    False,
+                    success=False,
                 )
             else:
                 self._theme_recovery_notice_pending = True
@@ -2120,6 +1845,7 @@ class MaterialPanelWindow(QWidget):
         selected_id = self._selected_bundle_id
         self.detail_label.hide()
         self.role_row.hide()
+        self.gif_role_row.hide()
         self.audio_usage_row.hide()
         self.retry_ai_button.hide()
         self.accept_ai_button.hide()
@@ -2195,7 +1921,7 @@ class MaterialPanelWindow(QWidget):
 
         if selected_item is not None:
             selected_bundle = self._bundle_for_item(selected_item)
-            self._show_preview_for_item(selected_item)
+            self._show_preview_for_item(selected_item, selected_bundle)
             self._show_detail_for_bundle(selected_bundle)
 
         service_lines = [summary.recognition_status, summary.service_status]
@@ -2346,7 +2072,7 @@ class MaterialPanelWindow(QWidget):
         bundle = self._bundle_for_item(item)
         self._selected_bundle_id = bundle["id"]
         self._refresh_item_selection_styles()
-        self._show_preview_for_item(item)
+        self._show_preview_for_item(item, bundle)
         self._show_detail_for_bundle(bundle)
         event.accept()
 
@@ -2366,7 +2092,11 @@ class MaterialPanelWindow(QWidget):
         )
         origin_url = public_origin_url(str(bundle.get("origin_url") or ""))
         origin_line = f"\norigin {self._compact_text(origin_url, 48)}" if origin_url else ""
-        ai_line = self._ai_suggestion_line(bundle.get("ai_suggestions"))
+        is_gif = (
+            str(bundle.get("content_type") or "").lower() == "image/gif"
+            and bundle.get("frame_count") is not None
+        )
+        ai_line = "" if is_gif else self._ai_suggestion_line(bundle.get("ai_suggestions"))
         is_audio = str(bundle.get("type") or "").lower() == "audio"
         audio_line = self._audio_detail_line(bundle) if is_audio else ""
         self.detail_label.setText(
@@ -2379,10 +2109,12 @@ class MaterialPanelWindow(QWidget):
         self.detail_label.show()
         self.copy_selected_button.setEnabled(bool(bundle.get("id")))
         self.role_row.setVisible(not is_audio and bundle["status"] != "missing")
+        self.gif_role_row.setVisible(is_gif and bundle["status"] != "missing")
         self.audio_usage_row.setVisible(is_audio and bundle["status"] != "missing")
         self._suggested_ai_role = self._suggested_role(bundle.get("ai_suggestions"))
         self.accept_ai_button.setVisible(
             not is_audio
+            and not is_gif
             and bundle["status"] != "missing"
             and bool(self._suggested_ai_role)
             and self._suggested_ai_role != str(bundle.get("role") or "")
@@ -2391,11 +2123,13 @@ class MaterialPanelWindow(QWidget):
             self._refresh_audio_usage_buttons(str(bundle.get("audio_usage") or "unknown"))
         else:
             self._refresh_role_buttons(bundle["role"])
+            self._refresh_gif_role_buttons(str(bundle.get("role") or ""))
         self._refresh_retry_ai_button(bundle)
 
     def _refresh_retry_ai_button(self, bundle: dict[str, object]) -> None:
         visible = (
             str(bundle.get("type") or "").lower() == "image"
+            and str(bundle.get("content_type") or "").lower() != "image/gif"
             and str(bundle.get("status") or "") != "missing"
             and bool(str(bundle.get("source_key") or "").strip())
         )
@@ -2420,12 +2154,18 @@ class MaterialPanelWindow(QWidget):
             self.detail_label.setText(ui_text("AI 分拣未开启\n请先在设置中开启 AI", "AI sorting is off\nEnable it in Settings"))
             self.detail_label.show()
             if self._toast_callback is not None:
-                self._toast_callback(ui_text("AI 分拣未开启", "AI sorting is off"), False)
+                self._toast_callback(
+                    ui_text("AI 分拣未开启", "AI sorting is off"),
+                    success=False,
+                )
             return
         bundle = self._get_bundle_safely(self._selected_bundle_id)
         if bundle is None:
             self.detail_label.setText(ui_text("资源不存在", "Asset not found"))
             self.detail_label.show()
+            return
+        if str(bundle.get("content_type") or "").lower() == "image/gif":
+            self.retry_ai_button.hide()
             return
         self.retry_ai_button.setEnabled(False)
         self.retry_ai_button.setText(ui_text("AI 分拣中...", "AI sorting..."))
@@ -2446,7 +2186,7 @@ class MaterialPanelWindow(QWidget):
         if worker is not None:
             worker.deleteLater()
         if self._toast_callback is not None:
-            self._toast_callback(message, success)
+            self._toast_callback(message, success=success)
         if bundle_id != self._selected_bundle_id:
             current = self._get_bundle_safely(self._selected_bundle_id) if self._selected_bundle_id else None
             if current is not None:
@@ -2519,7 +2259,10 @@ class MaterialPanelWindow(QWidget):
         )
         self._show_detail_for_bundle(bundle, copied=True)
         if self._toast_callback is not None:
-            self._toast_callback(ui_text("已复制 handoff", "Handoff copied"), True)
+            self._toast_callback(
+                ui_text("已复制 handoff", "Handoff copied"),
+                success=True,
+            )
 
     def _get_bundle_safely(self, bundle_id: str) -> dict[str, object] | None:
         try:
@@ -2552,7 +2295,8 @@ class MaterialPanelWindow(QWidget):
         if self._suggested_ai_role:
             self._set_selected_role(self._suggested_ai_role)
 
-    def _show_preview_for_item(self, item) -> None:
+    def _show_preview_for_item(self, item, bundle: dict[str, object] | None = None) -> None:
+        self._stop_gif_preview(reset_to_first=True, discard=True)
         self.preview_label.clear()
         asset_type = str(item.asset_type or "").lower()
         if asset_type == "audio":
@@ -2562,10 +2306,38 @@ class MaterialPanelWindow(QWidget):
         if asset_type != "image" or not item.source_key:
             self.preview_label.hide()
             return
-        pixmap = QPixmap(str(get_settings().ASSETS_DIR / item.source_key))
+        asset_path = get_settings().ASSETS_DIR / item.source_key
+        pixmap = QPixmap(str(asset_path))
         if pixmap.isNull():
             self.preview_label.hide()
             return
+        content_type = str((bundle or {}).get("content_type") or "").lower()
+        try:
+            frame_count = int((bundle or {}).get("frame_count") or 0)
+        except (TypeError, ValueError):
+            frame_count = 0
+        if (
+            content_type == "image/gif"
+            and frame_count > 1
+            and not self._low_power_enabled
+            and self.isVisible()
+        ):
+            movie = QMovie(str(asset_path), parent=self)
+            if movie.isValid():
+                scaled_size = pixmap.size().scaled(
+                    292,
+                    64,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                )
+                movie.setScaledSize(scaled_size)
+                movie.frameChanged.connect(self._on_gif_frame_changed)
+                self._gif_movie = movie
+                self._gif_frame_count = frame_count
+                self.preview_label.setMovie(movie)
+                self.preview_label.show()
+                movie.start()
+                return
+            movie.deleteLater()
         self.preview_label.setPixmap(
             pixmap.scaled(
                 292,
@@ -2575,6 +2347,54 @@ class MaterialPanelWindow(QWidget):
             )
         )
         self.preview_label.show()
+
+    def _on_gif_frame_changed(self, frame_index: int) -> None:
+        movie = self._gif_movie
+        if movie is None or self._gif_frame_count <= 1:
+            return
+        if frame_index < self._gif_frame_count - 1:
+            return
+        movie.setPaused(True)
+        self._gif_stop_timer.start(
+            max(MIN_GIF_FRAME_DELAY_MS, int(movie.nextFrameDelay()))
+        )
+
+    def _finish_gif_preview(self) -> None:
+        self._stop_gif_preview(reset_to_first=True)
+
+    def _stop_gif_preview(self, *, reset_to_first: bool, discard: bool = False) -> None:
+        self._gif_stop_timer.stop()
+        movie = self._gif_movie
+        if movie is None:
+            return
+        movie.stop()
+        if reset_to_first:
+            movie.jumpToFrame(0)
+        if discard:
+            try:
+                movie.frameChanged.disconnect(self._on_gif_frame_changed)
+            except (RuntimeError, TypeError):
+                pass
+            self.preview_label.setMovie(None)
+            self.preview_label.clear()
+            movie.deleteLater()
+            self._gif_movie = None
+            self._gif_frame_count = 0
+
+    def _replay_gif_preview(self, event: QMouseEvent) -> None:
+        movie = self._gif_movie
+        if (
+            event.button() != Qt.MouseButton.LeftButton
+            or movie is None
+            or self._low_power_enabled
+        ):
+            event.ignore()
+            return
+        self._gif_stop_timer.stop()
+        movie.stop()
+        movie.jumpToFrame(0)
+        movie.start()
+        event.accept()
 
     @staticmethod
     def _asset_type_label(asset_type: str) -> str:
@@ -2681,6 +2501,10 @@ class MaterialPanelWindow(QWidget):
         for role, button in self.role_buttons.items():
             button.setStyleSheet(self._role_button_style(role == active_role))
 
+    def _refresh_gif_role_buttons(self, active_role: str = "") -> None:
+        for role, button in self.gif_role_buttons.items():
+            button.setStyleSheet(self._role_button_style(role == active_role))
+
     def _refresh_audio_usage_buttons(self, active_usage: str = "") -> None:
         for usage, button in self.audio_usage_buttons.items():
             button.setStyleSheet(self._role_button_style(usage == active_usage))
@@ -2709,6 +2533,9 @@ class MaterialPanelWindow(QWidget):
             "icon": ui_text("图标", "Icon"),
             "content_image": ui_text("内容图", "Content image"),
             "texture": ui_text("纹理", "Texture"),
+            "reaction": ui_text("反应", "Reaction"),
+            "sticker": ui_text("贴纸", "Sticker"),
+            "ui_animation": ui_text("界面动画", "UI animation"),
             "audio": ui_text("音频", "Audio"),
             "unknown": ui_text("未确定", "Unknown"),
             "参考图": ui_text("参考图", "Reference"),
@@ -2763,12 +2590,13 @@ class MaterialPanelWindow(QWidget):
                 f"List latest ready assets: GET {base_url}/api/v1/bundles?status=ready&batch_id=latest",
                 'Default batch selector: batch_id="latest".',
                 "Use each bundle's id, sha256, source_key, url, resolved_url, and provenance.",
+                "Also preserve content_type; for image/gif, respect frame_count, duration_seconds, loop_count, and the confirmed role.",
                 "Fetch files through resolved_url or the MCP haypile_list_bundles tool.",
                 "Do not read Haypile's local asset directory directly.",
             ]
         )
 
-    def _bundle_for_item(self, item) -> dict[str, str]:
+    def _bundle_for_item(self, item) -> dict[str, object]:
         source_key = str(item.source_key or "").strip()
         bundle = self._bundle_by_source_key.get(source_key) if source_key else None
         if bundle is not None:
@@ -2788,6 +2616,8 @@ class MaterialPanelWindow(QWidget):
             "downloaded_at": "",
             "ai_suggestions": {},
             "duration_seconds": None,
+            "frame_count": None,
+            "loop_count": None,
             "audio_metadata": {},
             "audio_tags": {},
             "audio_usage": "unknown",
@@ -2844,8 +2674,11 @@ class MaterialPanelWindow(QWidget):
             "url": item["url"],
             "access": item["access"],
             "resolved_url": resolved_url,
+            "content_type": public_metadata.get("content_type", ""),
             "ai_suggestions": public_metadata.get("ai_suggestions", {}),
             "duration_seconds": item.get("duration_seconds"),
+            "frame_count": item.get("frame_count"),
+            "loop_count": item.get("loop_count"),
             "audio_metadata": item.get("audio_metadata", {}),
             "audio_tags": item.get("audio_tags", {}),
             "audio_usage": item.get("audio_usage", "unknown"),
@@ -2893,11 +2726,13 @@ class MaterialPanelWindow(QWidget):
         return "#666666"
 
     def hideEvent(self, event) -> None:
+        self._stop_gif_preview(reset_to_first=True, discard=True)
         if self.confirmation_preview is not None:
             self.confirmation_preview.hide_preview()
         super().hideEvent(event)
 
     def closeEvent(self, event) -> None:
+        self._stop_gif_preview(reset_to_first=True, discard=True)
         if self.confirmation_preview is not None:
             self.confirmation_preview.hide()
             self.confirmation_preview.close()
@@ -3459,8 +3294,14 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+        self.paste_ingest_button = self._action_button(
+            ui_text("从剪贴板收纳", "Import from clipboard"),
+            "paste_ingest",
+            page,
+        )
         self.ai_settings_button = self._action_button(ui_text("AI 分拣", "AI sorting"), "ai_setup", page)
         self.low_power_button = self._action_button(ui_text("低功耗：关", "Low power: off"), "low_power", page)
+        layout.addWidget(self.paste_ingest_button)
         layout.addWidget(self.ai_settings_button)
         layout.addWidget(self.low_power_button)
 
@@ -3587,6 +3428,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             "latest_handoff": ui_text("复制最新批次 handoff", "Copy latest batch handoff"),
             "ready_handoff": ui_text("复制全部可用素材", "Copy all ready assets"),
             "agent_recipe": ui_text("复制 Agent 配方", "Copy Agent recipe"),
+            "paste_ingest": ui_text("从剪贴板收纳", "Import from clipboard"),
             "ai_setup": ui_text("AI 分拣", "AI sorting"),
             "logs": ui_text("打开日志目录", "Open logs folder"),
             "exit": ui_text("退出 Haypile", "Quit Haypile"),
@@ -3928,6 +3770,9 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._available = QRect(available)
         if not self.isVisible():
             return
+        if self._feedback_only:
+            self._apply_feedback_geometry()
+            return
         previous_side = self._drawer_side
         desired_side = self._choose_drawer_side()
         if self.is_drawer_open() and allow_flip and desired_side != previous_side:
@@ -4120,12 +3965,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._anchor = QRect(anchor)
         self._available = QRect(available)
         self._feedback_only = True
-        width, height = 270, 44
-        right = anchor.right() + 10
-        x = right if right + width <= available.right() - 8 else anchor.left() - width - 10
-        y = max(available.top() + 8, min(anchor.center().y() - height // 2, available.bottom() - height - 8))
-        self.setGeometry(x, y, width, height)
-        self.drawer_shell.setGeometry(0, 0, width, height)
+        self._apply_feedback_geometry()
         self.drawer_title.hide()
         self.drawer_stack.hide()
         self.progress_bar.setVisible(self._progress_active)
@@ -4134,6 +3974,32 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self.show()
         self.raise_()
         self._feedback_timer.start()
+
+    def _apply_feedback_geometry(self) -> None:
+        width = 270
+        self.feedback_label.setMinimumHeight(0)
+        self.feedback_label.setMaximumHeight(16777215)
+        label_height = max(28, self.feedback_label.heightForWidth(width - 28))
+        self.feedback_label.setFixedHeight(label_height)
+        height = label_height + 22 + (14 if self._progress_active else 0)
+        right = self._anchor.right() + 10
+        left = self._anchor.left() - width - 10
+        if right + width <= self._available.right() - 8:
+            x = right
+        elif left >= self._available.left() + 8:
+            x = left
+        else:
+            x = self._anchor.center().x() - width // 2
+        x = max(self._available.left() + 8, min(x, self._available.right() - width - 8))
+        y = max(
+            self._available.top() + 8,
+            min(
+                self._anchor.center().y() - height // 2,
+                self._available.bottom() - height - 8,
+            ),
+        )
+        self.setGeometry(x, y, width, height)
+        self.drawer_shell.setGeometry(0, 0, width, height)
 
     def _hide_feedback(self) -> None:
         if self._progress_active:
@@ -4153,6 +4019,8 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
     def set_progress(self, percent: int, text: str) -> None:
         self.progress_bar.setValue(max(0, min(100, percent)))
         self.feedback_label.setText(text)
+        if self._feedback_only and self.isVisible():
+            self._apply_feedback_geometry()
 
     def complete_progress(self, success: bool, message: str) -> None:
         self._progress_active = False
@@ -4403,6 +4271,7 @@ class HaypileFloatingBall(QWidget):
         self.quick_menu = QuickMenuWindow()
         self.material_panel = self.quick_menu.material_panel
         self.material_panel.set_toast_handler(self.show_toast)
+        self.material_panel.set_low_power_enabled(self.low_power_enabled)
         self.material_panel.set_ai_handlers(
             provider_factory=self._current_ai_provider_config,
             enabled_callback=lambda: self.ai_enabled and not self.low_power_enabled,
@@ -4596,6 +4465,11 @@ class HaypileFloatingBall(QWidget):
         super().resizeEvent(event)
         self._update_window_mask()
         self._reposition_quick_menu()
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        if hasattr(self, "quick_menu"):
+            self._reposition_quick_menu()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if not self.is_expanded:
@@ -5126,6 +5000,165 @@ class HaypileFloatingBall(QWidget):
             urls.extend(value for value in mime_data.text().split() if HaypileFloatingBall._is_http_url(value))
         return RemoteDownloadWorker._dedupe_urls(urls)
 
+    @staticmethod
+    def _clipboard_gif_payload(mime_data) -> bytes | None:
+        found = False
+        # ponytail: add app-private clipboard formats only after observing a real sample.
+        for mime_type in ("image/gif", "com.compuserve.gif"):
+            if not mime_data.hasFormat(mime_type):
+                continue
+            found = True
+            payload = mime_data.data(mime_type)
+            if payload:
+                return bytes(payload)
+        return b"" if found else None
+
+    def _new_clipboard_temp(self, suffix: str) -> tuple[Path, int]:
+        incoming_dir = self.settings.STORAGE_DIR / "incoming" / "browser"
+        incoming_dir.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            incoming_dir.chmod(0o700)
+        path = incoming_dir / f"clipboard_{uuid4().hex}{suffix}"
+        return path, os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+
+    def _write_clipboard_bytes(self, payload: bytes, suffix: str) -> Path:
+        path, fd = self._new_clipboard_temp(suffix)
+        try:
+            with os.fdopen(fd, "wb") as target:
+                target.write(payload)
+                target.flush()
+                os.fsync(target.fileno())
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            path.unlink(missing_ok=True)
+            raise
+        return path
+
+    def _write_clipboard_image(self, image) -> Path:
+        path, fd = self._new_clipboard_temp(".png")
+        os.close(fd)
+        try:
+            if not image.save(str(path), "PNG"):
+                raise OSError("clipboard_image_save_failed")
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        return path
+
+    def _write_clipboard_mime_image(self, mime_data) -> Path:
+        image = mime_data.imageData()
+        width = int(image.width())
+        height = int(image.height())
+        if (
+            image.isNull()
+            or width <= 0
+            or height <= 0
+            or width > MAX_RASTER_DIMENSION
+            or height > MAX_RASTER_DIMENSION
+            or width * height > MAX_RASTER_PIXELS
+        ):
+            raise ValueError("clipboard_image_dimensions")
+        return self._write_clipboard_image(image)
+
+    def _ingest_clipboard(self) -> None:
+        self._ingest_clipboard_data(QApplication.clipboard().mimeData())
+
+    def _ingest_clipboard_data(self, mime_data) -> None:
+        if self._closing:
+            return
+        if self._ingest_busy():
+            self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), success=False)
+            return
+
+        files = self._extract_local_files(mime_data)
+        remote_urls = self._extract_remote_media_urls(mime_data)
+        if files:
+            if remote_urls:
+                self._start_remote_download_worker(remote_urls, files)
+            else:
+                self._start_worker(files)
+            return
+
+        gif_payload = self._clipboard_gif_payload(mime_data)
+        if gif_payload:
+            if len(gif_payload) > MAX_GIF_BYTES:
+                self.show_toast(ui_text("GIF 素材超过 50MB", "GIF asset is over 50MB"), success=False)
+                return
+            try:
+                path = self._write_clipboard_bytes(gif_payload, ".gif")
+            except Exception:
+                logger.exception("Failed to materialize clipboard GIF")
+                self.show_toast(
+                    ui_text("无法保存剪贴板 GIF", "Clipboard GIF could not be saved"),
+                    success=False,
+                )
+                return
+            self._remote_ingest_paths.add(path)
+            self._start_worker([path])
+            return
+
+        if gif_payload == b"" and not remote_urls:
+            self.show_toast(ui_text("剪贴板中的 GIF 为空", "Clipboard GIF is empty"), success=False)
+            return
+
+        if remote_urls:
+            fallback_file = None
+            if mime_data.hasImage():
+                try:
+                    fallback_file = self._write_clipboard_mime_image(mime_data)
+                except ValueError:
+                    pass
+                except Exception:
+                    logger.exception("Failed to materialize clipboard image fallback")
+                if fallback_file is not None:
+                    self._remote_ingest_paths.add(fallback_file)
+            if fallback_file is None:
+                self._start_remote_download_worker(remote_urls)
+            else:
+                self._start_remote_download_worker(
+                    remote_urls,
+                    fallback_file=fallback_file,
+                )
+            return
+
+        if mime_data.hasImage():
+            try:
+                path = self._write_clipboard_mime_image(mime_data)
+            except ValueError:
+                self.show_toast(
+                    ui_text("剪贴板图片尺寸无效或过大", "Clipboard image dimensions are invalid or too large"),
+                    success=False,
+                )
+                return
+            except Exception:
+                logger.exception("Failed to materialize clipboard image")
+                self.show_toast(
+                    ui_text("无法保存剪贴板图片", "Clipboard image could not be saved"),
+                    success=False,
+                )
+                return
+            self._remote_ingest_paths.add(path)
+            self._start_worker([path])
+            self.show_toast(
+                ui_text(
+                    "剪贴板只提供静态画面，将按 PNG 收纳",
+                    "Clipboard exposed a still image; it will be imported as PNG",
+                ),
+                success=True,
+            )
+            return
+
+        self.show_toast(
+            ui_text(
+                "剪贴板里没有可收纳的文件、图片或直链",
+                "No supported file, image, or direct URL found on the clipboard",
+            ),
+            success=False,
+        )
+
     @classmethod
     def _drop_visual_kind_for_mime_data(cls, mime_data) -> str:
         local_files = [
@@ -5177,13 +5210,25 @@ class HaypileFloatingBall(QWidget):
             or (self.remote_worker is not None and self.remote_worker.isRunning())
         )
 
-    def _start_remote_download_worker(self, urls: list[str], local_files: list[Path] | None = None) -> None:
+    def _start_remote_download_worker(
+        self,
+        urls: list[str],
+        local_files: list[Path] | None = None,
+        *,
+        fallback_file: Path | None = None,
+    ) -> None:
         if self._closing:
             return
         self.remote_worker = RemoteDownloadWorker(urls, self.settings.STORAGE_DIR / "incoming" / "browser")
         self.remote_worker.progress_signal.connect(self._on_ingest_progress)
         self.remote_worker.finished_signal.connect(
-            lambda downloaded, message, success: self._on_remote_download_finished(downloaded, message, success, local_files or [])
+            lambda downloaded, message, success: self._on_remote_download_finished(
+                downloaded,
+                message,
+                success,
+                local_files or [],
+                fallback_file,
+            )
         )
         self.remote_worker.start()
         self.show_toast(ui_text("正在获取网页素材...", "Fetching web assets..."), success=True)
@@ -5224,6 +5269,7 @@ class HaypileFloatingBall(QWidget):
         message: str,
         success: bool,
         local_files: list[Path],
+        fallback_file: Path | None = None,
     ) -> None:
         if self._closing:
             for path in downloaded_files:
@@ -5232,14 +5278,20 @@ class HaypileFloatingBall(QWidget):
         if self.remote_worker is not None:
             self.remote_worker.deleteLater()
             self.remote_worker = None
-        if not success and not local_files:
-            self.show_toast(message, success=False)
-            self.quick_menu.complete_progress(False, message)
-            return
+        if downloaded_files and fallback_file is not None:
+            self._delete_remote_temp(fallback_file)
+            self._remote_ingest_paths.discard(fallback_file)
         files = [*local_files, *downloaded_files]
+        if not downloaded_files and fallback_file is not None and fallback_file.is_file():
+            files.append(fallback_file)
         if not files:
-            self.show_toast(ui_text("没有找到可收纳的图片或音频", "No images or audio to store"), success=False)
-            self.quick_menu.complete_progress(False, message)
+            failure_message = (
+                message
+                if not success
+                else ui_text("没有找到可收纳的图片或音频", "No images or audio to store")
+            )
+            self.show_toast(failure_message, success=False)
+            self.quick_menu.complete_progress(False, failure_message)
             return
         self._remote_ingest_paths.update(downloaded_files)
         self._drop_feedback_until = time.monotonic() + 0.65
@@ -5281,9 +5333,13 @@ class HaypileFloatingBall(QWidget):
         self._cleanup_remote_ingest_paths()
         if self._closing:
             return
+        ingest_result = getattr(self.worker, "result", None)
+        duplicate_only = bool(
+            isinstance(ingest_result, IngestResult) and ingest_result.duplicate_only
+        )
         if success:
             now = time.monotonic()
-            if self._is_duplicate_only_result(message):
+            if duplicate_only:
                 self._drop_feedback_until = 0.0
                 self._bounce_feedback_until = 0.0
                 self._nudge_feedback_started_at = now
@@ -5349,6 +5405,11 @@ class HaypileFloatingBall(QWidget):
                     asset_type="image",
                     batch_id=batch_id,
                 )
+                bundles = [
+                    bundle
+                    for bundle in bundles
+                    if str(bundle.get("content_type") or "").lower() != "image/gif"
+                ]
             except ManifestReadinessError:
                 self._ai_batch_queue.insert(0, batch_id)
                 QTimer.singleShot(1000, self._start_next_ai_batch)
@@ -5411,7 +5472,9 @@ class HaypileFloatingBall(QWidget):
 
     def _toast_anchor(self) -> QRect:
         circle = self._get_collapsed_circle_rect()
-        top_left = self.mapToGlobal(circle.topLeft())
+        top_left = self.mapToGlobal(circle.topLeft()) + self._drop_visual_offset(
+            self._drop_open_progress
+        ).toPoint()
         return QRect(top_left, circle.size())
 
     def _ball_anchor_rect(self) -> QRect:
@@ -5538,6 +5601,7 @@ class HaypileFloatingBall(QWidget):
         if enabled and self.ai_enabled and self.ai_provider_mode == "off":
             self.ai_provider_mode = "local"
         self.low_power_enabled = bool(enabled)
+        self.material_panel.set_low_power_enabled(self.low_power_enabled)
         if self.low_power_enabled:
             self._ai_preference = bool(self.ai_enabled or self._ai_preference)
             self.ai_enabled = False
@@ -5832,6 +5896,9 @@ class HaypileFloatingBall(QWidget):
             if action == "settings":
                 QTimer.singleShot(0, self._refresh_ai_menu_status)
             return
+        if action == "paste_ingest":
+            self._ingest_clipboard()
+            return
         if action == "mcp":
             QApplication.clipboard().setText(self._mcp_config_text())
             self.show_toast(ui_text("已复制 MCP 配置", "MCP config copied"), success=True)
@@ -6121,6 +6188,8 @@ class HaypileFloatingBall(QWidget):
     def _set_drop_open_progress(self, value: float) -> None:
         self._drop_open_progress = max(0.0, min(float(value), 1.0))
         self.update()
+        if hasattr(self, "quick_menu") and self.quick_menu.isVisible():
+            self._reposition_quick_menu()
 
     def _drop_visual_offset(self, progress: float) -> QPointF:
         if self._drop_anchor_global is None:
@@ -7009,11 +7078,6 @@ class HaypileFloatingBall(QWidget):
             height,
         )
 
-    @staticmethod
-    def _is_duplicate_only_result(message: str) -> bool:
-        lowered = message.lower()
-        return ("新增 0" in message and "去重 " in message) or ("0 new" in lowered and "duplicate" in lowered)
-
     def _refresh_pending_badge(self) -> None:
         try:
             self._has_pending_assets = build_material_panel_summary().pending_count > 0
@@ -7121,8 +7185,66 @@ class HaypileFloatingBall(QWidget):
             logger.debug("Failed to kill process tree pid=%s error_type=%s", pid, type(exc).__name__)
             return
 
+
+def clipboard_mime_diagnostics(mime_data) -> dict[str, object]:
+    formats: list[dict[str, object]] = []
+    for name in sorted({str(value) for value in mime_data.formats()}):
+        try:
+            byte_length: int | None = len(mime_data.data(name))
+        except Exception:
+            byte_length = None
+        formats.append({"name": name, "byte_length": byte_length})
+
+    local_files = HaypileFloatingBall._extract_local_files(mime_data)
+    remote_urls = HaypileFloatingBall._extract_remote_media_urls(mime_data)
+    gif_payload = HaypileFloatingBall._clipboard_gif_payload(mime_data)
+    has_image = bool(mime_data.hasImage())
+    if local_files:
+        ingest_route = (
+            "local_files_and_remote_urls" if remote_urls else "local_files"
+        )
+    elif gif_payload:
+        ingest_route = "raw_gif"
+    elif remote_urls:
+        ingest_route = (
+            "remote_url_with_static_png_fallback" if has_image else "remote_url"
+        )
+    elif has_image:
+        ingest_route = "static_png"
+    elif gif_payload == b"":
+        ingest_route = "empty_gif"
+    else:
+        ingest_route = "unsupported"
+
+    return {
+        "diagnostic_version": "haypile.clipboard-diagnostics.v1",
+        "platform": sys.platform,
+        "format_count": len(formats),
+        "formats": formats,
+        "has_urls": bool(mime_data.hasUrls()),
+        "has_html": bool(mime_data.hasHtml()),
+        "has_text": bool(mime_data.hasText()),
+        "has_image": has_image,
+        "local_file_count": len(local_files),
+        "remote_url_count": len(remote_urls),
+        "raw_gif_byte_count": len(gif_payload or b""),
+        "ingest_route": ingest_route,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args == ["--clipboard-diagnostics"]:
+        app = QApplication.instance() or QApplication([sys.argv[0], *args])
+        print(
+            json.dumps(
+                clipboard_mime_diagnostics(app.clipboard().mimeData()),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
     if "--backend" in args:
         settings = get_settings()
         configure_packaged_logging("backend", settings.LOG_DIR)

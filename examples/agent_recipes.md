@@ -9,7 +9,10 @@ Goal: turn ready images into page visual direction.
 1. Read the current drop with `GET /api/v1/bundles?status=ready&type=image&batch_id=latest` or MCP `haypile_list_bundles` using `batch_id: "latest"`.
 2. For each bundle, use `resolved_url` from `asset-handoff.json`, or build it from `base_url + url`.
 3. Produce layout/color/hero/image-use suggestions.
-4. Keep `id`, `role`, `status`, `sha256`, `source_key`, `url`, `ai_suggestions`, `duration_seconds`, `audio_metadata`, `audio_tags`, `audio_usage`, and `provenance` beside every suggestion.
+4. Keep `id`, `role`, `status`, `sha256`, `source_key`, `url`, `content_type`,
+   `duration_seconds`, `frame_count`, `loop_count`, `ai_suggestions`,
+   `audio_metadata`, `audio_tags`, `audio_usage`, and `provenance` beside every
+   suggestion.
 5. Treat `ai_suggestions` as hints only; asset truth still comes from `sha256`, `source_key`, `url`, and `provenance`.
 
 For a large pile, request `limit=50`, then use the final returned `source_key`

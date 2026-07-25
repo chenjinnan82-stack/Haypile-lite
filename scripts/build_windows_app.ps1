@@ -6,7 +6,15 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$ReleaseVersion = "0.3.0-alpha.6"
+$ReleaseVersion = "0.3.0-alpha.8"
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$GitStatus = @(git -C $Root status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not inspect the Git worktree."
+}
+if ($GitStatus.Count -ne 0) {
+    throw "Release builds require a clean Git worktree; commit all intended changes first."
+}
 
 if ($env:OS -ne "Windows_NT") {
     throw "Haypile Windows builds must run on Windows."
@@ -15,7 +23,6 @@ if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString
     throw "Haypile v0.3 Windows builds require x64 Windows."
 }
 
-$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Venv = Join-Path $Root ".build-venv"
 $VenvPython = Join-Path $Venv "Scripts/python.exe"
 $DeployTool = Join-Path $Venv "Scripts/pyside6-deploy.exe"
@@ -110,6 +117,9 @@ try {
     }
     if (-not (Get-ChildItem $PortableDir -Filter "qwindows.dll" -File -Recurse | Select-Object -First 1)) {
         throw "Missing Qt Windows platform plugin qwindows.dll."
+    }
+    if (-not (Get-ChildItem $PortableDir -Filter "qgif.dll" -File -Recurse | Select-Object -First 1)) {
+        throw "Missing Qt GIF image plugin qgif.dll."
     }
     $BuildInfo = [ordered]@{
         version = $ReleaseVersion

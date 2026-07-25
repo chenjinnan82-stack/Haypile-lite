@@ -36,6 +36,7 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(hero["sha256"], hashlib.sha256(b"hero").hexdigest())
             self.assertEqual(hero["id"], hero["sha256"])
             self.assertEqual(hero["origin_url"], "https://cdn.example.com")
+            self.assertEqual(hero["content_type"], "image/png")
             self.assertEqual(hero["ai_suggestions"]["quality"], "high")
             self.assertEqual(unknown["status"], "pending")
             self.assertEqual(

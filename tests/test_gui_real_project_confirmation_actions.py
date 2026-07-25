@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -10,6 +11,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from PIL import Image
 
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -178,6 +181,410 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         self.assertFalse(downloaded.exists())
         self.assertFalse(downloaded.with_name(downloaded.name + ".provenance.json").exists())
         self.assertEqual(dummy._remote_ingest_paths, set())
+
+    def test_clipboard_diagnostics_reports_metadata_without_values_or_paths(self) -> None:
+        local = self.tmpdir / "private-name.gif"
+        local.write_bytes(b"local")
+        mime_data = QMimeData()
+        mime_data.setUrls(
+            [
+                QUrl.fromLocalFile(str(local)),
+                QUrl("https://private.example/asset.gif?token=secret"),
+            ]
+        )
+        mime_data.setText("https://private.example/asset.gif?token=secret")
+        mime_data.setData("application/x-haypile-test", b"secret-payload")
+
+        report = app_gui_module.clipboard_mime_diagnostics(mime_data)
+
+        self.assertEqual(
+            set(report),
+            {
+                "diagnostic_version",
+                "platform",
+                "format_count",
+                "formats",
+                "has_urls",
+                "has_html",
+                "has_text",
+                "has_image",
+                "local_file_count",
+                "remote_url_count",
+                "raw_gif_byte_count",
+                "ingest_route",
+            },
+        )
+        self.assertEqual(report["local_file_count"], 1)
+        self.assertEqual(report["remote_url_count"], 1)
+        self.assertEqual(report["ingest_route"], "local_files_and_remote_urls")
+        formats = {
+            item["name"]: item["byte_length"]
+            for item in report["formats"]
+        }
+        self.assertEqual(
+            formats["application/x-haypile-test"],
+            len(b"secret-payload"),
+        )
+        serialized = json.dumps(report, ensure_ascii=False)
+        self.assertNotIn(local.as_posix(), serialized)
+        self.assertNotIn("private.example", serialized)
+        self.assertNotIn("secret-payload", serialized)
+        self.assertNotIn("token=secret", serialized)
+
+    def test_clipboard_diagnostics_matches_ingest_priority(self) -> None:
+        raw_gif = QMimeData()
+        raw_gif.setData("image/gif", b"GIF89a")
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(raw_gif)["ingest_route"],
+            "raw_gif",
+        )
+
+        remote_image = QMimeData()
+        remote_image.setText("https://cdn.example/asset.gif")
+        image = QPixmap(2, 2)
+        image.fill(Qt.GlobalColor.transparent)
+        remote_image.setImageData(image.toImage())
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(remote_image)["ingest_route"],
+            "remote_url_with_static_png_fallback",
+        )
+
+        static_image = QMimeData()
+        static_image.setImageData(image.toImage())
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(static_image)["ingest_route"],
+            "static_png",
+        )
+
+        empty_gif = QMimeData()
+        empty_gif.setData("image/gif", b"")
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(empty_gif)["ingest_route"],
+            "empty_gif",
+        )
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(QMimeData())["ingest_route"],
+            "unsupported",
+        )
+
+    def test_clipboard_diagnostics_cli_does_not_initialize_storage(self) -> None:
+        expected = {
+            "diagnostic_version": "haypile.clipboard-diagnostics.v1",
+            "ingest_route": "unsupported",
+        }
+        with (
+            patch.object(
+                app_gui_module,
+                "clipboard_mime_diagnostics",
+                return_value=expected,
+            ) as diagnose,
+            patch.object(
+                app_gui_module,
+                "get_settings",
+                side_effect=AssertionError("storage must not initialize"),
+            ),
+            patch("builtins.print") as print_mock,
+        ):
+            result = app_gui_module.main(["--clipboard-diagnostics"])
+
+        self.assertEqual(result, 0)
+        diagnose.assert_called_once()
+        self.assertEqual(json.loads(print_mock.call_args.args[0]), expected)
+
+    def test_clipboard_raw_gif_runs_real_ingest_and_cleans_temp_file(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        storage = self.tmpdir / "storage"
+        assets = storage / "assets"
+        index = storage / "index"
+        themes = storage / "themes"
+        environment = {
+            "STORAGE_DIR": storage.as_posix(),
+            "ASSETS_DIR": assets.as_posix(),
+            "INDEX_DIR": index.as_posix(),
+            "THEMES_DIR": themes.as_posix(),
+            "MANIFEST_PATH": (index / "assets_manifest.json").as_posix(),
+            "VISION_CLASSIFIER_ENABLED": "0",
+            "VISION_FALLBACK_THEME": "generic",
+        }
+        first = Image.new("RGBA", (4, 4), (255, 0, 0, 255))
+        second = Image.new("RGBA", (4, 4), (0, 255, 0, 255))
+        output = io.BytesIO()
+        first.save(
+            output,
+            format="GIF",
+            save_all=True,
+            append_images=[second],
+            duration=[100, 200],
+            loop=0,
+            optimize=False,
+        )
+        payload = output.getvalue()
+        expected_hash = hashlib.sha256(payload).hexdigest()
+        materialized: list[tuple[Path, int]] = []
+        ball = None
+        with patch.dict(os.environ, environment, clear=False):
+            app_gui_module.get_settings.cache_clear()
+            try:
+                ball = app_gui_module.HaypileFloatingBall()
+                ball.ai_enabled = False
+                original_write = ball._write_clipboard_bytes
+
+                def record_write(raw_payload: bytes, suffix: str) -> Path:
+                    path = original_write(raw_payload, suffix)
+                    materialized.append((path, path.stat().st_mode & 0o777))
+                    return path
+
+                ball._write_clipboard_bytes = record_write
+                ball._start_remote_download_worker = lambda *_args, **_kwargs: self.fail(
+                    "raw GIF should not use remote download"
+                )
+                mime_data = QMimeData()
+                mime_data.setData("image/gif", payload)
+                mime_data.setText("https://cdn.example.com/fallback.gif")
+
+                with patch.object(
+                    app_gui_module.IngestWorker,
+                    "start",
+                    lambda worker: worker.run(),
+                ):
+                    ball._ingest_clipboard_data(mime_data)
+
+                manifest = json.loads(
+                    (index / "assets_manifest.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(len(manifest), 1)
+                item = next(iter(manifest.values()))
+                self.assertEqual(item["content_type"], "image/gif")
+                self.assertEqual(item["frame_count"], 2)
+                self.assertEqual(item["duration_seconds"], 0.3)
+                stored = next(assets.rglob("*.gif"))
+                self.assertEqual(stored.read_bytes(), payload)
+                self.assertEqual(hashlib.sha256(stored.read_bytes()).hexdigest(), expected_hash)
+                self.assertEqual(len(materialized), 1)
+                self.assertFalse(materialized[0][0].exists())
+                self.assertEqual(ball._remote_ingest_paths, set())
+                if os.name != "nt":
+                    self.assertEqual(materialized[0][1], 0o600)
+            finally:
+                if ball is not None:
+                    ball.close()
+                    self.app.processEvents()
+                app_gui_module.get_settings.cache_clear()
+                app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_clipboard_routes_files_and_urls_through_existing_ingest_paths(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        local = self.tmpdir / "local.gif"
+        local.write_bytes(b"local")
+        received: list[list[Path]] = []
+        remote: list[tuple[list[str], list[Path]]] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball._start_remote_download_worker = (
+            lambda urls, local_files=None: remote.append((urls, local_files or []))
+        )
+        try:
+            local_mime = QMimeData()
+            local_mime.setUrls([QUrl.fromLocalFile(str(local))])
+            local_mime.setData("image/gif", b"ignored")
+            ball._ingest_clipboard_data(local_mime)
+            self.assertEqual(received, [[local]])
+
+            url_mime = QMimeData()
+            url_mime.setText("https://cdn.example.com/asset.gif")
+            ball._ingest_clipboard_data(url_mime)
+            self.assertEqual(remote, [(["https://cdn.example.com/asset.gif"], [])])
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_clipboard_empty_gif_mime_with_url_uses_remote_download(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        received: list[list[Path]] = []
+        remote: list[list[str]] = []
+        messages: list[str] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball._start_remote_download_worker = lambda urls, local_files=None: remote.append(urls)
+        ball.show_toast = lambda message, success: messages.append(message)
+        mime_data = QMimeData()
+        mime_data.setData("image/gif", b"")
+        mime_data.setText("https://cdn.example.com/asset.gif")
+        try:
+            self.assertTrue(mime_data.hasFormat("image/gif"))
+            ball._ingest_clipboard_data(mime_data)
+
+            self.assertEqual(remote, [["https://cdn.example.com/asset.gif"]])
+            self.assertEqual(received, [])
+            self.assertFalse(any("GIF 为空" in message for message in messages))
+            self.assertEqual(ball._remote_ingest_paths, set())
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_clipboard_static_png_is_used_only_when_remote_download_fails(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        original_settings = ball.settings
+        ball.settings = SimpleNamespace(STORAGE_DIR=self.tmpdir / "storage")
+        received: list[list[Path]] = []
+        remote: list[tuple[list[str], Path | None]] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball._start_remote_download_worker = (
+            lambda urls, local_files=None, *, fallback_file=None: remote.append(
+                (urls, fallback_file)
+            )
+        )
+        image = QPixmap(2, 2)
+        image.fill(Qt.GlobalColor.transparent)
+        mime_data = QMimeData()
+        mime_data.setText("https://cdn.example.com/asset.gif")
+        mime_data.setImageData(image.toImage())
+        try:
+            ball._ingest_clipboard_data(mime_data)
+
+            self.assertEqual(len(remote), 1)
+            fallback = remote[0][1]
+            self.assertIsNotNone(fallback)
+            self.assertEqual(received, [])
+            self.assertTrue(fallback.is_file())
+            self.assertIn(fallback, ball._remote_ingest_paths)
+
+            downloaded = self.tmpdir / "downloaded.gif"
+            downloaded.write_bytes(b"downloaded")
+            ball._on_remote_download_finished(
+                [downloaded],
+                "downloaded",
+                True,
+                [],
+                fallback,
+            )
+            self.assertEqual(received, [[downloaded]])
+            self.assertFalse(fallback.exists())
+            self.assertNotIn(fallback, ball._remote_ingest_paths)
+            ball._cleanup_remote_ingest_paths()
+            received.clear()
+
+            ball._ingest_clipboard_data(mime_data)
+            fallback = remote[-1][1]
+            self.assertIsNotNone(fallback)
+            ball._on_remote_download_finished(
+                [],
+                "remote failed",
+                False,
+                [],
+                fallback,
+            )
+
+            self.assertEqual(received, [[fallback]])
+            stored = QPixmap(str(fallback)).toImage()
+            self.assertFalse(stored.isNull())
+            self.assertEqual(stored.pixelColor(0, 0).alpha(), 0)
+            ball._cleanup_remote_ingest_paths()
+            self.assertFalse(fallback.exists())
+        finally:
+            ball.settings = original_settings
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_clipboard_static_image_is_explicit_png_fallback_and_is_cleaned(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        original_settings = ball.settings
+        ball.settings = SimpleNamespace(STORAGE_DIR=self.tmpdir / "storage")
+        received: list[list[Path]] = []
+        messages: list[tuple[str, bool]] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball.show_toast = lambda message, success: messages.append((message, success))
+        image = QPixmap(2, 2)
+        image.fill(Qt.GlobalColor.transparent)
+        mime_data = QMimeData()
+        mime_data.setImageData(image.toImage())
+        try:
+            ball._ingest_clipboard_data(mime_data)
+
+            path = received[0][0]
+            stored = QPixmap(str(path)).toImage()
+            self.assertEqual(path.suffix, ".png")
+            self.assertFalse(stored.isNull())
+            self.assertEqual(stored.pixelColor(0, 0).alpha(), 0)
+            self.assertIn("将按 PNG 收纳", messages[-1][0])
+            self.assertTrue(messages[-1][1])
+
+            ball._cleanup_remote_ingest_paths()
+            self.assertFalse(path.exists())
+        finally:
+            ball.settings = original_settings
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_clipboard_busy_and_oversize_gif_leave_no_temp_file(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        original_settings = ball.settings
+        storage_dir = self.tmpdir / "storage"
+        ball.settings = SimpleNamespace(STORAGE_DIR=storage_dir)
+        received: list[list[Path]] = []
+        messages: list[tuple[str, bool]] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball.show_toast = lambda message, success: messages.append((message, success))
+        mime_data = QMimeData()
+        mime_data.setData("image/gif", b"GIF89a")
+        try:
+            ball.worker = SimpleNamespace(isRunning=lambda: True)
+            ball._ingest_clipboard_data(mime_data)
+            self.assertIn("正在入库", messages[-1][0])
+            self.assertFalse((storage_dir / "incoming/browser").exists())
+
+            ball.worker = None
+            with patch.object(app_gui_module, "MAX_GIF_BYTES", 3):
+                ball._ingest_clipboard_data(mime_data)
+            self.assertEqual(received, [])
+            self.assertIn("50MB", messages[-1][0])
+            self.assertFalse((storage_dir / "incoming/browser").exists())
+
+            with (
+                patch.object(app_gui_module.os, "fsync", side_effect=OSError("disk error")),
+                patch.object(app_gui_module.logger, "exception"),
+            ):
+                ball._ingest_clipboard_data(mime_data)
+            self.assertEqual(received, [])
+            self.assertIn("无法保存", messages[-1][0])
+            self.assertEqual(list((storage_dir / "incoming/browser").iterdir()), [])
+        finally:
+            ball.settings = original_settings
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_quick_menu_exposes_clipboard_ingest_action(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        invoked: list[bool] = []
+        ball._ingest_clipboard = lambda: invoked.append(True)
+        try:
+            self.assertIn("paste_ingest", ball.quick_menu._detail_buttons)
+            self.assertEqual(
+                ball.quick_menu._detail_buttons["paste_ingest"].text(),
+                "从剪贴板收纳",
+            )
+            ball._handle_quick_menu_action("paste_ingest")
+            self.assertEqual(invoked, [True])
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_project_picker_handoff_refresh_populates_existing_confirmation_preview(self) -> None:
         project_root = self.tmpdir / "signal-pool-demo"
@@ -1145,11 +1552,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         menu = QuickMenuWindow()
         try:
             menu.set_track_center(QPointF(96, 112))
+            finished = QSignalSpy(menu._slide_animation.finished)
 
             menu.show_menu(10, 20)
 
             self.assertNotEqual(menu._content_shift, QPointF(0, 0))
-            QTest.qWait(210)
+            self.assertTrue(finished.wait(1_000))
             self.app.processEvents()
             self.assertEqual(menu._content_shift, QPointF(0, 0))
             center, _radius = menu._track_geometry()
@@ -1459,6 +1867,94 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.app.processEvents()
             app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
+    def test_floating_ball_ingest_feedback_tracks_closing_drop_visual(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 800, 600)
+        try:
+            ball.setGeometry(10, 10, ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE)
+            ball._drag_hover = True
+            ball._open_drop_target()
+            ball._drop_open_animation.stop()
+            ball._set_drop_open_progress(1.0)
+            ball.show_toast("正在收纳", success=True)
+            ball.quick_menu.begin_progress(
+                ball._toast_anchor(),
+                ball._available_geometry(),
+                "正在收纳",
+            )
+            self.app.processEvents()
+
+            feedback_x = []
+            for progress in (1.0, 0.5, 0.0):
+                ball._set_drop_open_progress(progress)
+                self.app.processEvents()
+                visual_center = (
+                    app_gui_module.QPointF(ball.pos())
+                    + app_gui_module.QRectF(ball.rect()).center()
+                    + ball._drop_visual_offset(progress)
+                )
+                anchor = ball._toast_anchor()
+                self.assertLessEqual(abs(anchor.center().x() - visual_center.x()), 2)
+                self.assertLessEqual(abs(anchor.center().y() - visual_center.y()), 2)
+                self.assertEqual(ball.quick_menu._anchor, anchor)
+                self.assertEqual(
+                    ball.quick_menu.drawer_shell.geometry(),
+                    app_gui_module.QRect(0, 0, 270, 64),
+                )
+                self.assertFalse(
+                    ball.quick_menu.feedback_label.geometry().intersects(
+                        ball.quick_menu.progress_bar.geometry()
+                    )
+                )
+                feedback_x.append(ball.quick_menu.x())
+
+            self.assertNotEqual(feedback_x[0], feedback_x[-1])
+            long_message = (
+                "Blocked: only safe images/audio are supported, "
+                "or an asset exceeds its size limit"
+            )
+            ball.quick_menu.set_progress(50, long_message)
+            self.app.processEvents()
+            self.assertGreater(
+                ball.quick_menu.feedback_label.height(),
+                28,
+            )
+            self.assertEqual(
+                ball.quick_menu.drawer_shell.height(),
+                ball.quick_menu.feedback_label.height() + 36,
+            )
+            self.assertFalse(
+                ball.quick_menu.feedback_label.geometry().intersects(
+                    ball.quick_menu.progress_bar.geometry()
+                )
+            )
+            ball.quick_menu.complete_progress(True, "收纳完成")
+            self.assertEqual(
+                ball.quick_menu.drawer_shell.geometry(),
+                app_gui_module.QRect(0, 0, 270, 50),
+            )
+            ball.quick_menu.show_feedback(
+                long_message,
+                False,
+                ball._toast_anchor(),
+                ball._available_geometry(),
+            )
+            self.app.processEvents()
+            self.assertGreater(
+                ball.quick_menu.feedback_label.height(),
+                28,
+            )
+            self.assertEqual(
+                ball.quick_menu.drawer_shell.height(),
+                ball.quick_menu.feedback_label.height() + 22,
+            )
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
     def test_floating_ball_drag_repositions_visible_toast(self) -> None:
         previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
@@ -1484,6 +1980,25 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             self.assertTrue(anchors)
             self.assertEqual(anchors[-1], ball._toast_anchor())
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_programmatic_move_repositions_visible_feedback(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball.show()
+            ball.show_toast("ok", success=True)
+            before = ball.quick_menu.geometry()
+
+            ball.move(400, 300)
+            self.app.processEvents()
+
+            self.assertEqual(ball.quick_menu._anchor, ball._toast_anchor())
+            self.assertNotEqual(ball.quick_menu.geometry(), before)
         finally:
             ball.close()
             self.app.processEvents()
@@ -2165,13 +2680,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 "temp_file": str(source),
             },
         )
-        worker = app_gui_module.IngestWorker([], assets_dir)
-
-        worker._persist_asset_provenance(
-            source_path=source,
-            destination=destination,
-            sha256_hex="abc123",
+        service = app_gui_module.IngestService(
+            storage_dir=assets_dir.parent,
+            assets_dir=assets_dir,
+            index_dir=assets_dir.parent / "index",
+            themes_dir=assets_dir.parent / "themes",
+            manifest_path=assets_dir.parent / "index/assets_manifest.json",
         )
+        service._persist_asset_provenance(source, destination, "abc123")
 
         provenance = read_asset_provenance(destination)
         self.assertEqual(provenance["origin_url"], "https://cdn.example.com")
@@ -2185,14 +2701,18 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         destination = assets_dir / "generic/images/generic_img_hero_image_deadbeef.png"
         destination.parent.mkdir(parents=True)
         source.write_bytes(b"image")
-        worker = app_gui_module.IngestWorker([], assets_dir)
-
-        worker._persist_asset_provenance(
-            source_path=source,
-            destination=destination,
-            sha256_hex="abc123",
-            ai_suggestions={"quality": "high", "tags": ["主视觉"]},
+        write_asset_provenance(
+            source,
+            {"ai_suggestions": {"quality": "high", "tags": ["主视觉"]}},
         )
+        service = app_gui_module.IngestService(
+            storage_dir=assets_dir.parent,
+            assets_dir=assets_dir,
+            index_dir=assets_dir.parent / "index",
+            themes_dir=assets_dir.parent / "themes",
+            manifest_path=assets_dir.parent / "index/assets_manifest.json",
+        )
+        service._persist_asset_provenance(source, destination, "abc123")
 
         provenance = read_asset_provenance(destination)
         self.assertEqual(provenance["source_key"], "generic/images/generic_img_hero_image_deadbeef.png")
@@ -2700,6 +3220,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
+            ball.worker = SimpleNamespace(
+                result=app_gui_module.IngestResult(
+                    status="completed",
+                    accepted_count=0,
+                    duplicate_count=1,
+                ),
+                deleteLater=lambda: None,
+                isRunning=lambda: False,
+            )
             ball._on_ingest_finished("收纳完成：新增 0，去重 1", True)
 
             self.assertTrue(ball._nudge_feedback_active())
@@ -2971,27 +3500,46 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         first.write_bytes(b"1234")
         second.write_bytes(b"56")
 
+        def preflight(
+            files: list[Path],
+            *,
+            max_files: int,
+            max_bytes: int,
+            reserve_bytes: int,
+        ) -> str | None:
+            service = app_gui_module.IngestService(
+                storage_dir=storage,
+                assets_dir=storage / "assets",
+                index_dir=storage / "index",
+                themes_dir=storage / "themes",
+                manifest_path=storage / "index/assets_manifest.json",
+                max_files=max_files,
+                max_batch_bytes=max_bytes,
+                reserve_bytes=reserve_bytes,
+            )
+            return service._batch_preflight_error(files)
+
         with patch(
-            "app_gui.shutil.disk_usage",
+            "app.services.ingest_service.shutil.disk_usage",
             return_value=SimpleNamespace(free=1024),
         ):
-            too_many = app_gui_module._ingest_batch_preflight_error(
-                [first, second], storage, max_files=1, max_bytes=100, reserve_bytes=10
+            too_many = preflight(
+                [first, second], max_files=1, max_bytes=100, reserve_bytes=10
             )
-            too_large = app_gui_module._ingest_batch_preflight_error(
-                [first], storage, max_files=2, max_bytes=3, reserve_bytes=10
+            too_large = preflight(
+                [first], max_files=2, max_bytes=3, reserve_bytes=10
             )
-            no_space = app_gui_module._ingest_batch_preflight_error(
-                [first], storage, max_files=2, max_bytes=100, reserve_bytes=1021
+            no_space = preflight(
+                [first], max_files=2, max_bytes=100, reserve_bytes=1021
             )
-            accepted = app_gui_module._ingest_batch_preflight_error(
-                [first], storage, max_files=2, max_bytes=100, reserve_bytes=10
+            accepted = preflight(
+                [first], max_files=2, max_bytes=100, reserve_bytes=10
             )
 
-        self.assertIn("最多", too_many)
-        self.assertIn("2GB", too_large)
-        self.assertIn("空间不足", no_space)
-        self.assertEqual(accepted, "")
+        self.assertEqual(too_many, "batch_file_limit")
+        self.assertEqual(too_large, "batch_byte_limit")
+        self.assertEqual(no_space, "storage_space_low")
+        self.assertIsNone(accepted)
         self.assertEqual(list(storage.iterdir()), [])
 
     def test_worker_shutdown_requests_interruption_without_forcing_thread(self) -> None:

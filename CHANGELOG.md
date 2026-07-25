@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.3.0-alpha.8 (upcoming)
+
+Alpha.7 was not published. Alpha.8 supersedes its planned GIF slice after the
+shared intake transaction and clipboard entry landed on the same source line.
+
+- Accept and fully validate true GIF images from local drops, direct
+  `image/gif` URLs, and chat apps that expose actual file attachments while
+  preserving the original bytes.
+- Enforce GIF-specific size, frame, dimension, decoded-pixel, and effective
+  duration limits in the shared validator and legacy recovery path.
+- Preview one GIF loop in the Assets drawer, stop animation in low-power mode,
+  and add manual reaction, sticker, and UI-animation roles.
+- Keep GIFs out of AI sorting and expose verified MIME and animation metadata
+  through the manifest, HTTP, MCP, and `asset-handoff.v1`.
+- Move the complete intake transaction behind a Qt-free service and one
+  cross-process writer lock shared by GUI intake and startup recovery.
+- Add an explicit clipboard action for local files, exact GIF payloads, safe
+  direct URLs, and an honest static-PNG fallback when only pixels are available.
+- Add a local privacy-safe clipboard-format diagnostic that reports format
+  names, sizes, and selected intake route without exposing content or locations.
+- Refuse release package builds from a dirty Git worktree so `BUILD_INFO.json`
+  always identifies the exact committed source bytes.
+
 ## v0.3.0-alpha.6 (seed safety candidate)
 
 - Keep the `alpha.5` source tag immutable after both desktop package gates

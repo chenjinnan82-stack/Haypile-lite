@@ -26,14 +26,28 @@ class MediaValidation:
     width: int | None = None
     height: int | None = None
     duration_seconds: float | None = None
+    frame_count: int | None = None
+    loop_count: int | None = None
 
 
-RASTER_FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
-RASTER_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+RASTER_FORMATS = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+}
+RASTER_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 MAX_RASTER_PIXELS = 80_000_000
 MAX_RASTER_TOTAL_PIXELS = 160_000_000
 MAX_RASTER_DIMENSION = 32_768
 MAX_RASTER_FRAMES = 100
+MAX_GIF_BYTES = 50 * 1024 * 1024
+MAX_GIF_FRAMES = 500
+MAX_GIF_DIMENSION = 4096
+MAX_GIF_EFFECTIVE_DURATION_MS = 30_000
+MIN_GIF_FRAME_DELAY_MS = 20
+# Qt's GIF handler substitutes 100 ms when the declared delay is below 20 ms.
+QT_GIF_SHORT_DELAY_MS = 100
 MAX_SVG_BYTES = 5 * 1024 * 1024
 MAX_SVG_NODES = 10_000
 MAX_SVG_DEPTH = 64
@@ -58,7 +72,10 @@ def validate_media(path: Path) -> MediaValidation:
 
 
 def validate_raster(path: Path) -> MediaValidation:
+    is_gif = path.suffix.lower() == ".gif"
     try:
+        if is_gif and (size := path.stat().st_size) > MAX_GIF_BYTES:
+            raise MediaValidationError("gif_size_limit")
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(path) as image:
@@ -69,19 +86,49 @@ def validate_raster(path: Path) -> MediaValidation:
                     "PNG": {".png"},
                     "JPEG": {".jpg", ".jpeg"},
                     "WEBP": {".webp"},
+                    "GIF": {".gif"},
                 }[image_format]
                 if path.suffix.lower() not in expected_suffixes:
                     raise MediaValidationError("raster_extension_mismatch")
                 width, height = (int(image.size[0]), int(image.size[1]))
                 frames = int(getattr(image, "n_frames", 1) or 1)
-                _validate_raster_limits(width, height, frames)
+                if image_format == "GIF":
+                    _validate_gif_header(width, height, frames)
+                    loop_count = _non_negative_int(image.info.get("loop"))
+                else:
+                    _validate_raster_limits(width, height, frames)
+                    loop_count = None
                 image.verify()
+
+            declared_duration_ms = 0
+            effective_duration_ms = 0
+            has_positive_delay = False
+            total_gif_pixels = 0
             with Image.open(path) as image:
                 for frame_index in range(frames):
                     image.seek(frame_index)
+                    if image_format == "GIF":
+                        frame_width, frame_height = int(image.size[0]), int(image.size[1])
+                        _validate_gif_frame(frame_width, frame_height)
+                        total_gif_pixels += frame_width * frame_height
+                        if total_gif_pixels > MAX_RASTER_TOTAL_PIXELS:
+                            raise MediaValidationError("raster_total_pixel_limit")
+                        delay_ms = _gif_delay_ms(image.info.get("duration"))
+                        declared_duration_ms += delay_ms
+                        effective_duration_ms += (
+                            delay_ms
+                            if delay_ms >= MIN_GIF_FRAME_DELAY_MS
+                            else QT_GIF_SHORT_DELAY_MS
+                        )
+                        has_positive_delay = has_positive_delay or delay_ms > 0
+                        if effective_duration_ms > MAX_GIF_EFFECTIVE_DURATION_MS:
+                            raise MediaValidationError("gif_duration_limit")
+                    image.load()
                     with image.copy() as frame:
                         frame.thumbnail((4096, 4096))
                         frame.load()
+            if image_format == "GIF" and frames > 1 and not has_positive_delay:
+                raise MediaValidationError("gif_missing_frame_delay")
     except MediaValidationError:
         raise
     except (
@@ -93,7 +140,19 @@ def validate_raster(path: Path) -> MediaValidation:
         ValueError,
     ) as exc:
         raise MediaValidationError("invalid_raster") from exc
-    return MediaValidation("image", RASTER_FORMATS[image_format], width, height)
+    return MediaValidation(
+        "image",
+        RASTER_FORMATS[image_format],
+        width,
+        height,
+        duration_seconds=(
+            declared_duration_ms / 1000.0
+            if image_format == "GIF" and frames > 1 and has_positive_delay
+            else None
+        ),
+        frame_count=(frames if image_format == "GIF" else None),
+        loop_count=loop_count,
+    )
 
 
 def _validate_raster_limits(width: int, height: int, frames: int) -> None:
@@ -107,6 +166,37 @@ def _validate_raster_limits(width: int, height: int, frames: int) -> None:
         raise MediaValidationError("raster_frame_limit")
     if width * height * frames > MAX_RASTER_TOTAL_PIXELS:
         raise MediaValidationError("raster_total_pixel_limit")
+
+
+def _validate_gif_header(width: int, height: int, frames: int) -> None:
+    _validate_gif_frame(width, height)
+    if frames <= 0 or frames > MAX_GIF_FRAMES:
+        raise MediaValidationError("gif_frame_limit")
+
+
+def _validate_gif_frame(width: int, height: int) -> None:
+    if width <= 0 or height <= 0:
+        raise MediaValidationError("invalid_raster_dimensions")
+    if width > MAX_GIF_DIMENSION or height > MAX_GIF_DIMENSION:
+        raise MediaValidationError("gif_dimension_limit")
+
+
+def _gif_delay_ms(value: object) -> int:
+    try:
+        delay = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if not math.isfinite(delay) or delay <= 0:
+        return 0
+    return int(delay)
+
+
+def _non_negative_int(value: object) -> int | None:
+    try:
+        number = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number >= 0 else None
 
 
 def validate_svg(path: Path) -> MediaValidation:

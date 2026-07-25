@@ -22,7 +22,10 @@
       "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
       "access": "manifest_static",
       "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png",
+      "content_type": "image/png",
       "duration_seconds": null,
+      "frame_count": null,
+      "loop_count": null,
       "audio_metadata": {},
       "audio_tags": {},
       "audio_usage": "unknown",
@@ -47,7 +50,8 @@
         "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
         "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
         "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png",
-        "access": "manifest_static"
+        "access": "manifest_static",
+        "content_type": "image/png"
       }
     }
   ]
