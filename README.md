@@ -82,8 +82,20 @@ Haypile is local-first by design:
 
 See [Security Policy](SECURITY.md) or [report privately on GitHub](https://github.com/chenjinnan82-stack/Haypile-lite/security/advisories/new).
 
-## What v0.3 Adds
+## What Main / Upcoming Alpha.8 Adds
 
+- True GIF intake from local files, direct `image/gif` URLs, and file
+  attachments, with original bytes preserved and strict frame-by-frame limits.
+- One-loop GIF preview, manual reaction/sticker/UI-animation roles, and no GIF
+  AI sorting. New GIFs stay pending until a role is confirmed.
+- Explicit clipboard intake for files, exact GIF payloads, and safe direct
+  media URLs. Pixel-only clipboard images are stored as static PNGs.
+- Verified GIF MIME, frame count, declared duration, and loop count travel
+  through the manifest, HTTP, MCP, and `asset-handoff.v1`.
+- A Qt-free shared intake transaction and cross-process writer lock keep GUI
+  intake and startup recovery from modifying the same open batch.
+- A privacy-safe clipboard diagnostic reports only format names, sizes, and the
+  selected route; app-private animated emoji remain unsupported.
 - Intake finishes before AI sorting, so an offline or slow model never blocks storage.
 - Every drop has a stable batch ID; duplicates still belong to the new batch.
 - Image roles include background, hero, logo, icon, content image, and texture.
@@ -160,7 +172,9 @@ python3 -m unittest discover -s tests
 ```
 
 Build notes live in [macOS internal build](docs/MACOS_INTERNAL_BUILD.md) and the
-platform scripts under `scripts/`. The private release gate is documented in
+platform scripts under `scripts/`. The
+[alpha.8 release draft](docs/OPEN_SOURCE_RELEASE.md) records the exact feature
+and support boundary; the private release gate is documented in
 [AI evaluation](docs/AI_EVALUATION.md).
 
 ## Project Notes

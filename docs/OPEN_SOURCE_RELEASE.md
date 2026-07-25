@@ -8,8 +8,8 @@ macOS/Windows package checks have passed. After publication, limit it to a
 
 ## GitHub About
 
-Drop local images, organize the latest batch, and hand ready assets to agents
-without exposing your disk.
+Collect local images, true GIFs, and audio, organize the latest batch, and hand
+ready assets to agents without exposing your disk.
 
 ## Suggested Topics
 
@@ -44,16 +44,16 @@ stored as a static PNG. Static images can still use optional AI suggestions.
 Ready assets reach Codex through HTTP, MCP, or `asset-handoff.v1`; audio remains
 supported.
 
-### Highlights
+### New in alpha.8
 
 - Validate every GIF frame with 50 MiB, 500-frame, 4096-pixel, decoded-pixel,
   and 30-second effective-duration limits.
 - Accept local files, direct `image/gif` URLs, and chat attachments exposed as
   actual files without video conversion, page scraping, or derived assets.
-- Preview one loop and stop GIF motion when the drawer hides or low-power mode
-  is enabled.
-- Add manual reaction, sticker, and UI-animation roles while keeping GIFs out
-  of AI sorting.
+- Preview one loop, keep single-frame GIFs static, and stop GIF motion when the
+  drawer hides or low-power mode is enabled.
+- Keep new GIFs pending until the user confirms a reaction, sticker, or
+  UI-animation role, while keeping GIFs out of AI sorting.
 - Route GUI intake and startup recovery through one Qt-free transaction service
   and one cross-process writer lock.
 - Add explicit clipboard intake for local files, exact GIF payloads, safe direct
@@ -62,6 +62,9 @@ supported.
   the manifest, HTTP, MCP, and handoff.
 - Reject package builds from dirty Git worktrees so embedded build metadata maps
   to exact committed source.
+
+### Safety retained from earlier v0.3 candidates
+
 - Cooperative cancellation replaces forced Qt thread termination; shutdown waits
   for intake, download, AI, manifest, and the owned backend to finish safely.
 - Authenticated IPC identifies the Haypile process, port, PID, protocol, and

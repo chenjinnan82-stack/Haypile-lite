@@ -78,8 +78,19 @@ Haypile 的本地优先不是一句口号：
 
 安全边界问题请按 [SECURITY.md](SECURITY.md) 或通过 [GitHub 私密漏洞报告](https://github.com/chenjinnan82-stack/Haypile-lite/security/advisories/new) 提交。
 
-## v0.3 增加了什么
+## main / 即将发布的 alpha.8 增加了什么
 
+- 支持从本地文件、真实 `image/gif` 直链和文件附件安全收纳 GIF；逐帧校验并
+  保留原始字节。
+- GIF 只播放一轮预览，可手动选择“反应、贴纸、界面动画”，且不进入 AI
+  分拣；新 GIF 在人工确认用途前保持 pending。
+- 增加明确的剪贴板收纳：支持文件、完整 GIF 载荷和安全直链；只有解码像素时
+  则如实保存为静态 PNG。
+- 经验证的 GIF MIME、帧数、声明时长和循环次数会贯穿 manifest、HTTP、MCP
+  与 `asset-handoff.v1`。
+- GUI 摄入与启动恢复共用无 Qt 的摄入事务和跨进程写锁，不会互相恢复或改写
+  仍在进行的批次。
+- 隐私安全的剪贴板诊断只报告格式名、大小与所选路径；应用私有动态表情仍不支持。
 - 入库先完成、AI 后整理；模型离线、超时或限流不会阻止素材保存。
 - 每次 Drop 都有稳定批次 ID，重复素材仍会加入本批次。
 - 图片用途包括背景、主视觉、Logo、图标、内容图和纹理。
@@ -155,7 +166,8 @@ python3 -m unittest discover -s tests
 ```
 
 macOS 构建说明见 [MACOS_INTERNAL_BUILD.md](docs/MACOS_INTERNAL_BUILD.md)，平台脚本位于
-`scripts/`。私有评估与发布门槛见 [AI_EVALUATION.md](docs/AI_EVALUATION.md)。
+`scripts/`。[alpha.8 发布草稿](docs/OPEN_SOURCE_RELEASE.md)记录了准确的功能与
+支持边界；私有评估与发布门槛见 [AI_EVALUATION.md](docs/AI_EVALUATION.md)。
 
 ## 项目边界
 

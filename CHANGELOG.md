@@ -10,8 +10,9 @@ shared intake transaction and clipboard entry landed on the same source line.
   preserving the original bytes.
 - Enforce GIF-specific size, frame, dimension, decoded-pixel, and effective
   duration limits in the shared validator and legacy recovery path.
-- Preview one GIF loop in the Assets drawer, stop animation in low-power mode,
-  and add manual reaction, sticker, and UI-animation roles.
+- Preview one GIF loop in the Assets drawer, keep single-frame GIFs static,
+  stop animation in low-power mode, and add manual reaction, sticker, and
+  UI-animation roles. New GIFs remain pending until a role is confirmed.
 - Keep GIFs out of AI sorting and expose verified MIME and animation metadata
   through the manifest, HTTP, MCP, and `asset-handoff.v1`.
 - Move the complete intake transaction behind a Qt-free service and one
