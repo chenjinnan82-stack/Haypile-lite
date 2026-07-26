@@ -18,7 +18,15 @@ try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("IPC_AUTHKEY", "test-ipc-authkey")
     from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
-    from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QMouseEvent, QPixmap
+    from PySide6.QtGui import (
+        QDragEnterEvent,
+        QDragLeaveEvent,
+        QDragMoveEvent,
+        QDropEvent,
+        QMouseEvent,
+        QPainter,
+        QPixmap,
+    )
     from PySide6.QtTest import QSignalSpy, QTest
     from PySide6.QtWidgets import QApplication
 
@@ -364,6 +372,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 self.assertEqual(len(materialized), 1)
                 self.assertFalse(materialized[0][0].exists())
                 self.assertEqual(ball._remote_ingest_paths, set())
+                self.assertEqual(ball._active_ingest_visual_kind, "gif")
+                self.assertTrue(ball._gif_open_timer.isActive())
+                self.assertIsNotNone(ball._pending_ingest_finish)
                 if os.name != "nt":
                     self.assertEqual(materialized[0][1], 0o600)
             finally:
@@ -2260,6 +2271,238 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                     app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(unknown_or_mixed),
                     "leaf",
                 )
+
+    def test_floating_ball_uses_gif_intake_only_for_pure_local_gif_drops(self) -> None:
+        first = self.tmpdir / "first.gif"
+        second = self.tmpdir / "second.GIF"
+        static = self.tmpdir / "cover.png"
+        for path in (first, second, static):
+            path.write_bytes(b"fixture")
+
+        pure_gif = QMimeData()
+        pure_gif.setUrls([QUrl.fromLocalFile(str(first)), QUrl.fromLocalFile(str(second))])
+        self.assertEqual(
+            app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(pure_gif),
+            "gif",
+        )
+
+        mixed = QMimeData()
+        mixed.setUrls([QUrl.fromLocalFile(str(first)), QUrl.fromLocalFile(str(static))])
+        self.assertEqual(
+            app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(mixed),
+            "leaf",
+        )
+
+        remote_gif = QMimeData()
+        remote_gif.setUrls([QUrl("https://cdn.example.com/loop.gif")])
+        self.assertEqual(
+            app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(remote_gif),
+            "leaf",
+        )
+
+    def test_floating_ball_gif_intake_draws_timed_afterimages_and_reduced_motion_frame(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
+            ball.is_expanded = True
+            ball._drop_visual_kind = "gif"
+            ball._set_drop_open_progress(1.0)
+            expanded_at = 10.0
+            ball._gif_expand_started_at = expanded_at - ball.GIF_EXPAND_SECONDS
+
+            def render_at(timestamp: float) -> QPixmap:
+                frame = QPixmap(ball.size())
+                frame.fill(Qt.GlobalColor.transparent)
+                with patch.object(app_gui_module.time, "monotonic", return_value=timestamp):
+                    ball.render(frame)
+                return frame
+
+            first = render_at(expanded_at).toImage()
+            second = render_at(expanded_at + ball.GIF_TICK_SECONDS * 1.1).toImage()
+            self.assertNotEqual(first, second)
+            center = first.pixelColor(ball.width() // 2, ball.height() // 2 - 6)
+            self.assertGreater(center.alpha(), 120)
+            self.assertGreater(center.red(), center.green())
+
+            def render_symbol(timestamp: float):
+                symbol = QPixmap(160, 160)
+                symbol.fill(Qt.GlobalColor.transparent)
+                symbol_painter = QPainter(symbol)
+                with patch.object(app_gui_module.time, "monotonic", return_value=timestamp):
+                    ball._draw_gif_intake(
+                        symbol_painter,
+                        app_gui_module.QRectF(9.5, 9.5, 141, 141),
+                        1.0,
+                        0.0,
+                    )
+                symbol_painter.end()
+                return symbol.toImage()
+
+            symbol_image = render_symbol(expanded_at)
+            colors = {
+                symbol_image.pixelColor(x, y).name().upper()
+                for y in range(symbol_image.height())
+                for x in range(symbol_image.width())
+                if symbol_image.pixelColor(x, y).alpha() > 200
+            }
+            self.assertTrue({"#78945B", "#D5A73D", "#D9795F"} <= colors)
+            occupied_x = [
+                x
+                for y in range(symbol_image.height())
+                for x in range(symbol_image.width())
+                if symbol_image.pixelColor(x, y).alpha() > 30
+            ]
+            visible_width = max(occupied_x) - min(occupied_x) + 1
+            self.assertGreaterEqual(visible_width, 68)
+            self.assertGreater(visible_width, 52)
+
+            ball._gif_expand_started_at = expanded_at
+            centered_image = render_symbol(expanded_at)
+            centered_x = [
+                x
+                for y in range(centered_image.height())
+                for x in range(centered_image.width())
+                if centered_image.pixelColor(x, y).alpha() > 30
+            ]
+            centered_width = max(centered_x) - min(centered_x) + 1
+            self.assertGreaterEqual(visible_width - centered_width, 14)
+            ball._gif_expand_started_at = expanded_at - ball.GIF_EXPAND_SECONDS
+
+            ball._set_gif_suction_progress(1.0)
+            contracted = render_at(expanded_at).toImage()
+            self.assertNotEqual(contracted, first)
+
+            ball._set_gif_suction_progress(0.0)
+            ball.low_power_enabled = True
+            reduced_first = render_at(expanded_at).toImage()
+            reduced_second = render_at(expanded_at + ball.GIF_TICK_SECONDS * 2.2).toImage()
+            self.assertEqual(reduced_first, reduced_second)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_gif_drop_sucks_once_and_clears_on_leave(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        received: list[list[Path]] = []
+        source = self.tmpdir / "loop.gif"
+        source.write_bytes(b"GIF89a")
+        ball._start_worker = lambda files: received.append(files)
+        try:
+            ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
+            ball.is_expanded = True
+            ball._drag_hover = True
+            ball._drop_visual_kind = "gif"
+            ball._set_drop_open_progress(1.0)
+            mime_data = QMimeData()
+            mime_data.setUrls([QUrl.fromLocalFile(str(source))])
+            event = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime_data,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+
+            ball.dropEvent(event)
+
+            self.assertEqual(received, [[source]])
+            self.assertIsNotNone(ball._gif_suction_animation)
+            self.assertEqual(ball._gif_suction_animation.endValue(), 1.0)
+            self.assertFalse(ball._collapse_timer.isActive())
+
+            ball._gif_suction_animation.stop()
+            ball._finish_gif_suction()
+            self.assertTrue(ball._collapse_timer.isActive())
+            self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+
+            ball._collapse_timer.stop()
+            ball._drop_open_animation.stop()
+            ball._set_drop_open_progress(1.0)
+            ball._drop_visual_kind = "gif"
+            ball._drag_hover = True
+            ball._animate_gif_suction()
+            ball.dragLeaveEvent(QDragLeaveEvent())
+            self.assertIsNone(ball._gif_suction_animation)
+            self.assertEqual(ball._gif_suction_progress, 0.0)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_remote_gif_starts_programmatic_intake_and_defers_success_feedback(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        source = self.tmpdir / "downloaded.gif"
+        source.write_bytes(b"GIF89a")
+        shown: list[tuple[str, bool]] = []
+        completed: list[tuple[bool, str]] = []
+        ball.show_toast = lambda message, *, success: shown.append((message, success))
+        ball.quick_menu.complete_progress = lambda success, message: completed.append((success, message))
+        try:
+            with patch.object(app_gui_module.IngestWorker, "start", lambda _worker: None):
+                ball._on_remote_download_finished([source], "ok", True, [])
+
+            self.assertEqual(ball._active_ingest_visual_kind, "gif")
+            self.assertEqual(ball._drop_visual_kind, "gif")
+            self.assertTrue(ball._gif_open_timer.isActive())
+            self.assertEqual(shown[-1], ("正在校验 GIF…", True))
+            self.assertEqual(ball.quick_menu._anchor, ball._toast_anchor())
+
+            ball.worker.result = app_gui_module.IngestResult(
+                status="completed",
+                accepted_count=1,
+            )
+            before_finish = ball._ingest_feedback_not_before - 0.1
+            with patch.object(app_gui_module.time, "monotonic", return_value=before_finish):
+                ball._on_ingest_finished("generic success", True)
+
+            self.assertIsNotNone(ball._pending_ingest_finish)
+            self.assertEqual(completed, [])
+            ball._ingest_feedback_timer.stop()
+            ball._flush_pending_ingest_finish()
+            self.assertEqual(shown[-1], ("GIF 已收纳 · 请选择用途", True))
+            self.assertEqual(completed[-1], (True, "GIF 已收纳 · 请选择用途"))
+            self.assertEqual(ball._active_ingest_visual_kind, "leaf")
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_gif_intake_resets_on_hide_and_low_power(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._gui_state_path = self.tmpdir / "gui_state.json"
+        try:
+            ball.show()
+            ball._begin_programmatic_gif_intake()
+            self.assertTrue(ball._gif_open_timer.isActive())
+
+            ball.hide()
+            self.app.processEvents()
+            self.assertFalse(ball._gif_open_timer.isActive())
+            self.assertIsNone(ball._gif_suction_animation)
+            self.assertEqual(ball._gif_suction_progress, 0.0)
+            self.assertEqual(ball._drop_visual_kind, "leaf")
+
+            ball.show()
+            ball._begin_programmatic_gif_intake()
+            self.assertTrue(ball._gif_open_timer.isActive())
+            ball._set_low_power_enabled(True)
+            self.assertFalse(ball._gif_open_timer.isActive())
+            self.assertIsNone(ball._gif_suction_animation)
+            self.assertTrue(ball._collapse_timer.isActive())
+        finally:
+            ball._cleanup_done = True
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_audio_intake_uses_distinct_leaf_nest_and_directional_suction(self) -> None:
         previous_start = app_gui_module.HaypileFloatingBall.start_api_server

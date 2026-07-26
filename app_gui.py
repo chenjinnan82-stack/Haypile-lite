@@ -4122,6 +4122,12 @@ AttachedHubWindow = QuickMenuWindow
 class HaypileFloatingBall(QWidget):
     COLLAPSED_SIZE = 72
     EXPANDED_SIZE = 300
+    GIF_TICK_SECONDS = 0.11
+    GIF_FRAME_STAGGER_SECONDS = 0.045
+    GIF_EXPAND_SECONDS = 0.18
+    GIF_OPEN_MS = 210
+    GIF_SUCTION_MS = 190
+    GIF_CLOSE_MS = 170
 
     def __init__(self) -> None:
         super().__init__()
@@ -4216,6 +4222,12 @@ class HaypileFloatingBall(QWidget):
         self._drop_visual_kind = "leaf"
         self._audio_suction_progress = 0.0
         self._audio_suction_animation: QVariantAnimation | None = None
+        self._gif_suction_progress = 0.0
+        self._gif_suction_animation: QVariantAnimation | None = None
+        self._gif_expand_started_at = 0.0
+        self._active_ingest_visual_kind = "leaf"
+        self._ingest_feedback_not_before = 0.0
+        self._pending_ingest_finish: tuple[str, bool, IngestResult | None] | None = None
         self._external_drag_candidate = False
         self._global_drag_origin: QPoint | None = None
         self._drag_awareness_angle = -math.pi / 2
@@ -4241,6 +4253,13 @@ class HaypileFloatingBall(QWidget):
         self._drag_prepare_timer.setSingleShot(True)
         self._drag_prepare_timer.setInterval(110)
         self._drag_prepare_timer.timeout.connect(self._open_drop_target)
+        self._gif_open_timer = QTimer(self)
+        self._gif_open_timer.setSingleShot(True)
+        self._gif_open_timer.setInterval(self.GIF_OPEN_MS)
+        self._gif_open_timer.timeout.connect(self._animate_gif_suction)
+        self._ingest_feedback_timer = QTimer(self)
+        self._ingest_feedback_timer.setSingleShot(True)
+        self._ingest_feedback_timer.timeout.connect(self._flush_pending_ingest_finish)
         self._exit_armed = False
         self._exit_timer = QTimer(self)
         self._exit_timer.setSingleShot(True)
@@ -4384,6 +4403,15 @@ class HaypileFloatingBall(QWidget):
                     panel_rect,
                     progress,
                     self._audio_suction_progress,
+                )
+            elif self._drop_visual_kind == "gif":
+                self._draw_drop_leaf_frame(painter, panel_rect, progress)
+                self._draw_drop_center_cutout(painter, panel_rect, progress)
+                self._draw_gif_intake(
+                    painter,
+                    panel_rect,
+                    progress,
+                    self._gif_suction_progress,
                 )
             else:
                 self._draw_drop_leaf_frame(painter, panel_rect, progress)
@@ -4619,6 +4647,7 @@ class HaypileFloatingBall(QWidget):
         if files or remote_urls:
             self._close_attached_ui()
             self._cancel_audio_suction()
+            self._cancel_gif_suction()
             self._drop_visual_kind = self._drop_visual_kind_for_mime_data(event.mimeData())
             self._drag_hover = True
             self._drag_prepare_active = True
@@ -4645,6 +4674,7 @@ class HaypileFloatingBall(QWidget):
         self._drag_prepare_active = False
         self._drag_prepare_timer.stop()
         self._cancel_audio_suction()
+        self._cancel_gif_suction()
         self._close_drop_target()
         self._sync_visual_timer()
 
@@ -4666,6 +4696,8 @@ class HaypileFloatingBall(QWidget):
         event.acceptProposedAction()
         if self._drop_visual_kind == "audio" and self._drop_open_progress > 0.05:
             self._animate_audio_suction()
+        elif self._drop_visual_kind == "gif" and self._drop_open_progress > 0.05:
+            self._animate_gif_suction()
         else:
             self._close_drop_target()
         self._sync_visual_timer()
@@ -4688,6 +4720,8 @@ class HaypileFloatingBall(QWidget):
         if not self._drag_hover:
             return
         self._drag_prepare_active = False
+        if self._drop_visual_kind == "gif":
+            self._gif_expand_started_at = time.monotonic()
         if self._drop_anchor_global is None:
             self._drop_anchor_global = self.mapToGlobal(self._get_collapsed_circle_rect().center())
         self._animate_drop_open(True)
@@ -5188,12 +5222,23 @@ class HaypileFloatingBall(QWidget):
             for url in mime_data.urls()
             if url.isLocalFile() and Path(url.toLocalFile()).is_file()
         ]
-        if any(path.suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS for path in local_files):
+        local_kind = cls._visual_kind_for_files(local_files)
+        if local_files and local_kind == "leaf":
             return "leaf"
 
         parser = DroppedMediaHTMLParser()
         if mime_data.hasHtml():
             parser.feed(mime_data.html())
+        if local_kind == "gif":
+            has_remote_candidate = bool(parser.urls) or any(
+                not url.isLocalFile() and cls._is_http_url(url.toString().strip())
+                for url in mime_data.urls()
+            )
+            if mime_data.hasText():
+                has_remote_candidate = has_remote_candidate or any(
+                    cls._is_http_url(value) for value in mime_data.text().split()
+                )
+            return "leaf" if has_remote_candidate else "gif"
         if parser.image_urls:
             return "leaf"
         if parser.audio_urls:
@@ -5219,6 +5264,17 @@ class HaypileFloatingBall(QWidget):
         ) else "leaf"
 
     @staticmethod
+    def _visual_kind_for_files(files: list[Path]) -> str:
+        if not files:
+            return "leaf"
+        suffixes = [path.suffix.lower() for path in files]
+        if all(suffix == ".gif" for suffix in suffixes):
+            return "gif"
+        if all(suffix in SUPPORTED_AUDIO_EXTENSIONS for suffix in suffixes):
+            return "audio"
+        return "leaf"
+
+    @staticmethod
     def _is_http_url(value: str) -> bool:
         return urlparse(value).scheme.lower() in {"http", "https"}
 
@@ -5230,6 +5286,7 @@ class HaypileFloatingBall(QWidget):
         return bool(
             (self.worker is not None and self.worker.isRunning())
             or (self.remote_worker is not None and self.remote_worker.isRunning())
+            or self._pending_ingest_finish is not None
         )
 
     def _start_remote_download_worker(
@@ -5338,17 +5395,39 @@ class HaypileFloatingBall(QWidget):
             self.show_toast(ui_text("没有可收纳的文件", "No files to store"), success=False)
             return
 
+        self._active_ingest_visual_kind = self._visual_kind_for_files(merged_files)
+        self._ingest_feedback_not_before = 0.0
+        if self._active_ingest_visual_kind == "gif":
+            visual_already_started = bool(
+                self._gif_open_timer.isActive()
+                or self._gif_suction_animation is not None
+            )
+            was_open = self._drop_open_progress > 0.05
+            self._begin_programmatic_gif_intake()
+            visual_ms = self.GIF_SUCTION_MS + self.GIF_CLOSE_MS
+            if not visual_already_started and not was_open:
+                visual_ms += self.GIF_OPEN_MS
+            self._ingest_feedback_not_before = time.monotonic() + visual_ms / 1000.0
+
         self.worker = IngestWorker(merged_files, self.assets_dir)
         self.worker.finished_signal.connect(self._on_ingest_finished)
         self.worker.progress_signal.connect(self._on_ingest_progress)
         self.worker.batch_signal.connect(self._on_ingest_batch)
         self.worker.start()
         self._sync_visual_timer()
-        self.show_toast(ui_text(f"已接收 {len(merged_files)} 个文件，正在收纳...", f"Received {len(merged_files)} files, storing..."), success=True)
+        initial_message = (
+            ui_text("正在校验 GIF…", "Checking GIF…")
+            if self._active_ingest_visual_kind == "gif"
+            else ui_text(
+                f"已接收 {len(merged_files)} 个文件，正在收纳...",
+                f"Received {len(merged_files)} files, storing...",
+            )
+        )
+        self.show_toast(initial_message, success=True)
         self.quick_menu.begin_progress(
             self._toast_anchor(),
             self._available_geometry(),
-            ui_text("正在收纳...", "Storing..."),
+            initial_message,
         )
 
     def _on_ingest_finished(self, message: str, success: bool) -> None:
@@ -5356,9 +5435,43 @@ class HaypileFloatingBall(QWidget):
         if self._closing:
             return
         ingest_result = getattr(self.worker, "result", None)
+        if self.worker is not None:
+            self.worker.deleteLater()
+            self.worker = None
+        if (
+            self._active_ingest_visual_kind == "gif"
+            and time.monotonic() < self._ingest_feedback_not_before
+        ):
+            self._pending_ingest_finish = (message, success, ingest_result)
+            remaining_ms = max(
+                1,
+                int((self._ingest_feedback_not_before - time.monotonic()) * 1000),
+            )
+            self._ingest_feedback_timer.start(remaining_ms)
+            return
+        self._finalize_ingest_finish(message, success, ingest_result)
+
+    def _flush_pending_ingest_finish(self) -> None:
+        pending = self._pending_ingest_finish
+        self._pending_ingest_finish = None
+        if pending is None or self._closing:
+            return
+        self._finalize_ingest_finish(*pending)
+
+    def _finalize_ingest_finish(
+        self,
+        message: str,
+        success: bool,
+        ingest_result: IngestResult | None,
+    ) -> None:
         duplicate_only = bool(
             isinstance(ingest_result, IngestResult) and ingest_result.duplicate_only
         )
+        if success and not duplicate_only and self._active_ingest_visual_kind == "gif":
+            message = ui_text(
+                "GIF 已收纳 · 请选择用途",
+                "GIF stored · choose a role",
+            )
         if success:
             now = time.monotonic()
             if duplicate_only:
@@ -5389,9 +5502,8 @@ class HaypileFloatingBall(QWidget):
         if self.quick_menu.current_page() == "assets":
             self.material_panel.refresh()
         self._refresh_pending_badge()
-        if self.worker is not None:
-            self.worker.deleteLater()
-            self.worker = None
+        self._active_ingest_visual_kind = "leaf"
+        self._ingest_feedback_not_before = 0.0
 
     def _on_ingest_batch(self, batch_id: str, _summary: object) -> None:
         self.latest_batch_id = batch_id
@@ -5479,6 +5591,12 @@ class HaypileFloatingBall(QWidget):
         self.show_toast(ui_text("已加入 AI 整理队列", "Added to AI sorting queue"), success=True)
 
     def _on_ingest_progress(self, percent: int, text: str) -> None:
+        if self._active_ingest_visual_kind == "gif":
+            text = (
+                ui_text("正在校验 GIF…", "Checking GIF…")
+                if percent < 50
+                else ui_text("正在收纳…", "Storing…")
+            )
         self.quick_menu.set_progress(percent, text)
 
     def show_toast(self, message: str, *, success: bool) -> None:
@@ -5629,6 +5747,9 @@ class HaypileFloatingBall(QWidget):
             self.ai_enabled = False
             self._drag_awareness_timer.stop()
             self._clear_external_drag_candidate()
+            if self._gif_open_timer.isActive() or self._gif_suction_animation is not None:
+                self._cancel_gif_suction()
+                self._close_drop_target()
             self._ai_batch_queue.clear()
             self._shutdown_ai_batch_worker()
         else:
@@ -5820,6 +5941,9 @@ class HaypileFloatingBall(QWidget):
         self._shutdown_wait_notice_shown = False
         self._collapse_timer.stop()
         self._drag_prepare_timer.stop()
+        self._gif_open_timer.stop()
+        self._ingest_feedback_timer.stop()
+        self._pending_ingest_finish = None
         self._exit_timer.stop()
         self._visual_timer.stop()
         self._drag_awareness_timer.stop()
@@ -5827,6 +5951,8 @@ class HaypileFloatingBall(QWidget):
             self._drop_open_animation.stop()
         if self._audio_suction_animation is not None:
             self._audio_suction_animation.stop()
+        if self._gif_suction_animation is not None:
+            self._gif_suction_animation.stop()
         self._shutdown_remote_worker()
         self._shutdown_worker()
         self._shutdown_ai_batch_worker()
@@ -6251,12 +6377,63 @@ class HaypileFloatingBall(QWidget):
         self._audio_suction_animation = None
         self._close_drop_target()
 
+    def _set_gif_suction_progress(self, value: float) -> None:
+        self._gif_suction_progress = max(0.0, min(float(value), 1.0))
+        self.update()
+
+    def _cancel_gif_suction(self) -> None:
+        self._gif_open_timer.stop()
+        if self._gif_suction_animation is not None:
+            self._gif_suction_animation.stop()
+            self._gif_suction_animation = None
+        self._set_gif_suction_progress(0.0)
+
+    def _animate_gif_suction(self) -> None:
+        self._cancel_gif_suction()
+        if self._gif_expand_started_at <= 0.0:
+            self._gif_expand_started_at = time.monotonic() - self.GIF_EXPAND_SECONDS
+        if self.low_power_enabled:
+            self._set_gif_suction_progress(1.0)
+            self._finish_gif_suction()
+            return
+        animation = QVariantAnimation(self)
+        self._gif_suction_animation = animation
+        animation.valueChanged.connect(self._set_gif_suction_progress)
+        animation.setDuration(self.GIF_SUCTION_MS)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.finished.connect(self._finish_gif_suction)
+        animation.start()
+
+    def _finish_gif_suction(self) -> None:
+        self._gif_suction_animation = None
+        self._close_drop_target()
+
+    def _begin_programmatic_gif_intake(self) -> None:
+        if self._gif_open_timer.isActive() or self._gif_suction_animation is not None:
+            return
+        self._drop_visual_kind = "gif"
+        self._gif_expand_started_at = time.monotonic()
+        if self._drop_open_progress > 0.05:
+            self._animate_gif_suction()
+            return
+        if self._drop_anchor_global is None:
+            self._drop_anchor_global = self.mapToGlobal(self._get_collapsed_circle_rect().center())
+        self._collapse_timer.stop()
+        self._animate_drop_open(True)
+        self._animate_size(self.EXPANDED_SIZE)
+        self._gif_open_timer.start()
+        self._sync_visual_timer()
+
     def _close_drop_target(self) -> None:
         self._animate_drop_open(False)
         self._collapse_timer.start()
 
     def _reset_drop_visual_state(self) -> None:
         self._cancel_audio_suction()
+        self._cancel_gif_suction()
+        self._gif_expand_started_at = 0.0
         self._drop_visual_kind = "leaf"
 
     def _animate_drop_open(self, opened: bool) -> None:
@@ -6456,6 +6633,111 @@ class HaypileFloatingBall(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(Qt.GlobalColor.transparent)
         painter.drawPath(self._audio_center_path(panel_rect, progress))
+        painter.restore()
+
+    def _draw_gif_intake(
+        self,
+        painter: QPainter,
+        panel_rect: QRectF,
+        progress: float,
+        suction: float,
+    ) -> None:
+        progress = max(0.0, min(progress, 1.0))
+        suction = max(0.0, min(suction, 1.0))
+        if progress <= 0.0:
+            return
+
+        now = time.monotonic()
+        elapsed = max(0.0, now - self._gif_expand_started_at)
+        active_frame = int(now / self.GIF_TICK_SECONDS) % 3
+        lift_phase = (now % self.GIF_TICK_SECONDS) / self.GIF_TICK_SECONDS
+        lift = 3.0 * math.sin(lift_phase * math.pi)
+        width = min(52.0, panel_rect.width() * 0.38)
+        height = width * 37.0 / 52.0
+        center = panel_rect.center() + QPointF(0.0, -panel_rect.height() * 0.045)
+        layers = (
+            (-9.0, -9.0, -9.0, QColor("#78945B"), 2),
+            (7.0, 7.0, 7.0, QColor("#D5A73D"), 1),
+            (0.0, 0.0, 0.0, QColor("#D9795F"), 0),
+        )
+
+        painter.save()
+        clip = QPainterPath()
+        clip.addEllipse(panel_rect.adjusted(3.0, 3.0, -3.0, -3.0))
+        painter.setClipPath(clip)
+        inherited_opacity = painter.opacity()
+        for index, (offset_x, offset_y, rotation, color, suction_order) in enumerate(layers):
+            expand_start = index * self.GIF_FRAME_STAGGER_SECONDS
+            expand = max(
+                0.0,
+                min(
+                    (elapsed - expand_start)
+                    / max(
+                        0.001,
+                        self.GIF_EXPAND_SECONDS
+                        - 2 * self.GIF_FRAME_STAGGER_SECONDS,
+                    ),
+                    1.0,
+                ),
+            )
+            expand = expand * expand * (3.0 - 2.0 * expand)
+            if self.low_power_enabled or suction > 0.0:
+                expand = 1.0
+
+            suction_start = suction_order * (
+                self.GIF_FRAME_STAGGER_SECONDS / (self.GIF_SUCTION_MS / 1000.0)
+            )
+            layer_suction = max(
+                0.0,
+                min(
+                    (suction - suction_start)
+                    / max(0.001, 1.0 - suction_start),
+                    1.0,
+                ),
+            )
+            layer_suction = layer_suction * layer_suction * (3.0 - 2.0 * layer_suction)
+            scale = (0.82 + 0.18 * progress) * (1.0 - 0.68 * layer_suction)
+            frame_lift = (
+                lift
+                if not self.low_power_enabled
+                and suction <= 0.0
+                and index == active_frame
+                else 0.0
+            )
+            layer_center = center + QPointF(
+                offset_x * expand,
+                offset_y * expand - frame_lift + 22.0 * layer_suction,
+            )
+            painter.save()
+            painter.setOpacity(
+                inherited_opacity
+                * progress
+                * (0.22 + 0.78 * expand)
+                * (1.0 - 0.82 * layer_suction)
+            )
+            painter.translate(layer_center)
+            painter.rotate(rotation * expand)
+            card = QRectF(
+                -width * scale / 2.0,
+                -height * scale / 2.0,
+                width * scale,
+                height * scale,
+            )
+            if index == 2 and layer_suction <= 0.0:
+                painter.setBrush(QColor(35, 28, 13, 28))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(card.translated(0.0, 1.6), 4.5, 4.5)
+            painter.setBrush(color)
+            painter.setPen(QPen(QColor("#4E5F3D"), 1.15))
+            painter.drawRoundedRect(card, 4.5, 4.5)
+            if index == 2:
+                inset_x = max(4.5, card.width() * 0.11)
+                inset_y = max(4.0, card.height() * 0.13)
+                core = card.adjusted(inset_x, inset_y, -inset_x, -inset_y)
+                painter.setBrush(QColor("#FFF9EA"))
+                painter.setPen(QPen(QColor("#4E5F3D"), 0.8))
+                painter.drawRoundedRect(core, 2.8, 2.8)
+            painter.restore()
         painter.restore()
 
     def _load_drop_leaf_renderers(self) -> list[QSvgRenderer]:
