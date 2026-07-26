@@ -553,7 +553,7 @@ class GifGuiTests(unittest.TestCase):
             with patch.dict(os.environ, environment, clear=False):
                 get_settings.cache_clear()
                 try:
-                    worker = IngestWorker([first, duplicate], assets, ai_enabled=True)
+                    worker = IngestWorker([first, duplicate], assets)
                     service = IngestService(
                         storage_dir=storage,
                         assets_dir=assets,
@@ -789,7 +789,7 @@ class GifGuiTests(unittest.TestCase):
             with patch.dict(os.environ, environment, clear=False):
                 get_settings.cache_clear()
                 try:
-                    worker = IngestWorker([mp4, webm], assets, ai_enabled=False)
+                    worker = IngestWorker([mp4, webm], assets)
                     finished: list[tuple[str, bool]] = []
                     worker.finished_signal.connect(
                         lambda message, success: finished.append((message, success))

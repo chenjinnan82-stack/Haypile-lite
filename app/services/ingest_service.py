@@ -57,6 +57,11 @@ class IngestResult:
 class IngestService:
     SUPPORTED_IMAGE_EXTENSIONS = {".png", ".webp", ".svg", ".jpg", ".jpeg", ".gif"}
     UNSUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".webm"}
+    DEFAULT_MAX_FILE_BYTES = 500 * 1024 * 1024
+    DEFAULT_MAX_FILES = 256
+    DEFAULT_MAX_BATCH_BYTES = 2 * 1024 * 1024 * 1024
+    DEFAULT_RESERVE_BYTES = 256 * 1024 * 1024
+    DEFAULT_HASH_CHUNK_SIZE = 1024 * 1024
 
     def __init__(
         self,
@@ -67,11 +72,11 @@ class IngestService:
         themes_dir: Path,
         manifest_path: Path,
         fallback_theme: str = "generic",
-        max_file_bytes: int = 500 * 1024 * 1024,
-        max_files: int = 256,
-        max_batch_bytes: int = 2 * 1024 * 1024 * 1024,
-        reserve_bytes: int = 256 * 1024 * 1024,
-        hash_chunk_size: int = 1024 * 1024,
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+        max_files: int = DEFAULT_MAX_FILES,
+        max_batch_bytes: int = DEFAULT_MAX_BATCH_BYTES,
+        reserve_bytes: int = DEFAULT_RESERVE_BYTES,
+        hash_chunk_size: int = DEFAULT_HASH_CHUNK_SIZE,
     ) -> None:
         self.storage_dir = Path(storage_dir)
         self.assets_dir = Path(assets_dir)

@@ -74,7 +74,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         invalid.write_text("not an image", encoding="utf-8")
         self._write_wav(audio)
 
-        worker = IngestWorker([image, audio, duplicate, invalid], self.assets_dir, ai_enabled=True)
+        worker = IngestWorker([image, audio, duplicate, invalid], self.assets_dir)
         finished: list[tuple[str, bool]] = []
         completed_batches: list[str] = []
         worker.finished_signal.connect(lambda message, ok: finished.append((message, ok)))
@@ -204,7 +204,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         write_asset_provenance(first, {"origin_url": "https://one.example/path.svg"})
         write_asset_provenance(second, {"origin_url": "https://two.example/path.svg"})
 
-        IngestWorker([first, second], self.assets_dir, ai_enabled=False).run()
+        IngestWorker([first, second], self.assets_dir).run()
 
         runtime = StorageRuntimeDB(self.runtime_db_path)
         with runtime.get_connection() as conn:
@@ -267,7 +267,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>',
             encoding="utf-8",
         )
-        worker = IngestWorker([image], self.assets_dir, ai_enabled=False)
+        worker = IngestWorker([image], self.assets_dir)
         worker.MAX_DROP_FILES = 0
         finished: list[tuple[str, bool]] = []
         worker.finished_signal.connect(lambda message, ok: finished.append((message, ok)))
@@ -283,7 +283,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         image = self.tmpdir / "plain.svg"
         image.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>', encoding="utf-8")
 
-        worker = IngestWorker([image], self.assets_dir, ai_enabled=False)
+        worker = IngestWorker([image], self.assets_dir)
         worker.style_classifier = _ExplodingClassifier()
         finished: list[tuple[str, bool]] = []
         worker.finished_signal.connect(lambda message, ok: finished.append((message, ok)))
@@ -312,7 +312,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             observed_batch_ids.append(str(latest["id"]))
             return {}
 
-        worker = IngestWorker([image], self.assets_dir, ai_enabled=False)
+        worker = IngestWorker([image], self.assets_dir)
         with patch.object(AssetScanner, "scan_assets_directory", new=observe_completed_batch):
             worker.run()
 
@@ -325,7 +325,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             encoding="utf-8",
         )
         batches: list[str] = []
-        worker = IngestWorker([image], self.assets_dir, ai_enabled=True)
+        worker = IngestWorker([image], self.assets_dir)
         worker.batch_signal.connect(lambda batch_id, _summary: batches.append(batch_id))
         worker.run()
 

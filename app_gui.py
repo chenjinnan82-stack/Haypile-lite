@@ -68,6 +68,17 @@ from app.services.ingest_service import (
     IngestResult,
     IngestService,
 )
+from app.services.intake_route import (
+    ROUTE_EMPTY_GIF,
+    ROUTE_LOCAL_FILES,
+    ROUTE_LOCAL_FILES_AND_REMOTE_URLS,
+    ROUTE_RAW_GIF,
+    ROUTE_REMOTE_URL,
+    ROUTE_REMOTE_URL_WITH_STATIC_PNG_FALLBACK,
+    ROUTE_STATIC_PNG,
+    ROUTE_UNSUPPORTED,
+    resolve_intake_route,
+)
 from app.services.json_io import atomic_write_json
 from app.services.scanner import (
     ManifestReadinessError,
@@ -258,7 +269,7 @@ class RemoteDownloadWorker(QThread):
     finished_signal = Signal(object, str, bool)
     progress_signal = Signal(int, str)
 
-    MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024
+    MAX_FILE_SIZE_BYTES = IngestService.DEFAULT_MAX_FILE_BYTES
     MAX_TOTAL_DOWNLOAD_BYTES = 1024 * 1024 * 1024
     MAX_URLS = MAX_REMOTE_URLS
     TIMEOUT_SECONDS = 15.0
@@ -368,18 +379,17 @@ class IngestWorker(QThread):
     degraded_signal = Signal(str, str, int)
     batch_signal = Signal(str, object)
 
-    MAX_FILE_SIZE_BYTES: int = 500 * 1024 * 1024
-    MAX_DROP_FILES: int = 256
-    MAX_DROP_BYTES: int = 2 * 1024 * 1024 * 1024
-    MIN_FREE_RESERVE_BYTES: int = 256 * 1024 * 1024
-    HASH_CHUNK_SIZE: int = 1024 * 1024
+    MAX_FILE_SIZE_BYTES: int = IngestService.DEFAULT_MAX_FILE_BYTES
+    MAX_DROP_FILES: int = IngestService.DEFAULT_MAX_FILES
+    MAX_DROP_BYTES: int = IngestService.DEFAULT_MAX_BATCH_BYTES
+    MIN_FREE_RESERVE_BYTES: int = IngestService.DEFAULT_RESERVE_BYTES
+    HASH_CHUNK_SIZE: int = IngestService.DEFAULT_HASH_CHUNK_SIZE
 
-    def __init__(self, files: list[Path], assets_dir: Path, *, ai_enabled: bool | None = None) -> None:
+    def __init__(self, files: list[Path], assets_dir: Path) -> None:
         super().__init__()
         self.files = files
         self.assets_dir = assets_dir
         self.settings = get_settings()
-        self.ai_enabled = bool(ai_enabled)
         self.result: IngestResult | None = None
 
     def run(self) -> None:
@@ -4639,9 +4649,14 @@ class HaypileFloatingBall(QWidget):
         self._sync_visual_timer()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        files = self._extract_local_files(event.mimeData())
-        remote_urls = self._extract_remote_media_urls(event.mimeData())
-        self._drop_visual_kind = self._drop_visual_kind_for_mime_data(event.mimeData())
+        mime_data = event.mimeData()
+        route = resolve_intake_route(
+            local_files=self._extract_local_files(mime_data),
+            remote_urls=self._extract_remote_media_urls(mime_data),
+            raw_gif=None,
+            has_image=False,
+        )
+        self._drop_visual_kind = self._drop_visual_kind_for_mime_data(mime_data)
         self._close_attached_ui()
         self._drag_hover = False
         self._clear_external_drag_candidate()
@@ -4655,19 +4670,19 @@ class HaypileFloatingBall(QWidget):
             self._close_drop_target()
         self._sync_visual_timer()
 
-        if not files and not remote_urls:
+        if route.name == ROUTE_UNSUPPORTED:
             self.show_toast(ui_text("没有找到可收纳的图片或音频", "No images or audio to store"), success=False)
             return
         if self._ingest_busy():
             self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), success=False)
             return
-        if remote_urls:
-            self._start_remote_download_worker(remote_urls, files)
+        if route.has_remote:
+            self._start_remote_download_worker(list(route.remote_urls), list(route.local_files))
             return
         self._drop_feedback_until = time.monotonic() + 0.65
         self._sync_visual_timer()
         self.update()
-        self._start_worker(files)
+        self._start_worker(list(route.local_files))
 
     def _open_drop_target(self) -> None:
         if not self._drag_hover:
@@ -5073,17 +5088,24 @@ class HaypileFloatingBall(QWidget):
             self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), success=False)
             return
 
-        files = self._extract_local_files(mime_data)
-        remote_urls = self._extract_remote_media_urls(mime_data)
-        if files:
-            if remote_urls:
-                self._start_remote_download_worker(remote_urls, files)
+        route = resolve_intake_route(
+            local_files=self._extract_local_files(mime_data),
+            remote_urls=self._extract_remote_media_urls(mime_data),
+            raw_gif=self._clipboard_gif_payload(mime_data),
+            has_image=bool(mime_data.hasImage()),
+        )
+        if route.name in {ROUTE_LOCAL_FILES, ROUTE_LOCAL_FILES_AND_REMOTE_URLS}:
+            if route.has_remote:
+                self._start_remote_download_worker(
+                    list(route.remote_urls),
+                    list(route.local_files),
+                )
             else:
-                self._start_worker(files)
+                self._start_worker(list(route.local_files))
             return
 
-        gif_payload = self._clipboard_gif_payload(mime_data)
-        if gif_payload:
+        if route.name == ROUTE_RAW_GIF:
+            gif_payload = route.raw_gif or b""
             if len(gif_payload) > MAX_GIF_BYTES:
                 self.show_toast(ui_text("GIF 素材超过 50MB", "GIF asset is over 50MB"), success=False)
                 return
@@ -5100,13 +5122,13 @@ class HaypileFloatingBall(QWidget):
             self._start_worker([path])
             return
 
-        if gif_payload == b"" and not remote_urls:
+        if route.name == ROUTE_EMPTY_GIF:
             self.show_toast(ui_text("剪贴板中的 GIF 为空", "Clipboard GIF is empty"), success=False)
             return
 
-        if remote_urls:
+        if route.name in {ROUTE_REMOTE_URL, ROUTE_REMOTE_URL_WITH_STATIC_PNG_FALLBACK}:
             fallback_file = None
-            if mime_data.hasImage():
+            if route.name == ROUTE_REMOTE_URL_WITH_STATIC_PNG_FALLBACK:
                 try:
                     fallback_file = self._write_clipboard_mime_image(mime_data)
                 except ValueError:
@@ -5116,15 +5138,15 @@ class HaypileFloatingBall(QWidget):
                 if fallback_file is not None:
                     self._remote_ingest_paths.add(fallback_file)
             if fallback_file is None:
-                self._start_remote_download_worker(remote_urls)
+                self._start_remote_download_worker(list(route.remote_urls))
             else:
                 self._start_remote_download_worker(
-                    remote_urls,
+                    list(route.remote_urls),
                     fallback_file=fallback_file,
                 )
             return
 
-        if mime_data.hasImage():
+        if route.name == ROUTE_STATIC_PNG:
             try:
                 path = self._write_clipboard_mime_image(mime_data)
             except ValueError:
@@ -5316,7 +5338,7 @@ class HaypileFloatingBall(QWidget):
             self.show_toast(ui_text("没有可收纳的文件", "No files to store"), success=False)
             return
 
-        self.worker = IngestWorker(merged_files, self.assets_dir, ai_enabled=self.ai_enabled)
+        self.worker = IngestWorker(merged_files, self.assets_dir)
         self.worker.finished_signal.connect(self._on_ingest_finished)
         self.worker.progress_signal.connect(self._on_ingest_progress)
         self.worker.batch_signal.connect(self._on_ingest_batch)
@@ -7195,26 +7217,12 @@ def clipboard_mime_diagnostics(mime_data) -> dict[str, object]:
             byte_length = None
         formats.append({"name": name, "byte_length": byte_length})
 
-    local_files = HaypileFloatingBall._extract_local_files(mime_data)
-    remote_urls = HaypileFloatingBall._extract_remote_media_urls(mime_data)
-    gif_payload = HaypileFloatingBall._clipboard_gif_payload(mime_data)
-    has_image = bool(mime_data.hasImage())
-    if local_files:
-        ingest_route = (
-            "local_files_and_remote_urls" if remote_urls else "local_files"
-        )
-    elif gif_payload:
-        ingest_route = "raw_gif"
-    elif remote_urls:
-        ingest_route = (
-            "remote_url_with_static_png_fallback" if has_image else "remote_url"
-        )
-    elif has_image:
-        ingest_route = "static_png"
-    elif gif_payload == b"":
-        ingest_route = "empty_gif"
-    else:
-        ingest_route = "unsupported"
+    route = resolve_intake_route(
+        local_files=HaypileFloatingBall._extract_local_files(mime_data),
+        remote_urls=HaypileFloatingBall._extract_remote_media_urls(mime_data),
+        raw_gif=HaypileFloatingBall._clipboard_gif_payload(mime_data),
+        has_image=bool(mime_data.hasImage()),
+    )
 
     return {
         "diagnostic_version": "haypile.clipboard-diagnostics.v1",
@@ -7224,11 +7232,11 @@ def clipboard_mime_diagnostics(mime_data) -> dict[str, object]:
         "has_urls": bool(mime_data.hasUrls()),
         "has_html": bool(mime_data.hasHtml()),
         "has_text": bool(mime_data.hasText()),
-        "has_image": has_image,
-        "local_file_count": len(local_files),
-        "remote_url_count": len(remote_urls),
-        "raw_gif_byte_count": len(gif_payload or b""),
-        "ingest_route": ingest_route,
+        "has_image": route.has_image,
+        "local_file_count": len(route.local_files),
+        "remote_url_count": len(route.remote_urls),
+        "raw_gif_byte_count": len(route.raw_gif or b""),
+        "ingest_route": route.name,
     }
 
 
