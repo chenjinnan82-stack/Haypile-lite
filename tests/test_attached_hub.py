@@ -30,8 +30,6 @@ class AttachedHubTests(unittest.TestCase):
 
     def setUp(self) -> None:
         app_gui.set_ui_language("auto")
-        self.previous_start = app_gui.HaypileFloatingBall.start_api_server
-        app_gui.HaypileFloatingBall.start_api_server = lambda self: None
         self.ball = app_gui.HaypileFloatingBall()
         self.ball._available_geometry = lambda: QRect(0, 0, 1000, 760)
         self.ball.move(180, 260)
@@ -40,7 +38,6 @@ class AttachedHubTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.ball.close()
         self.app.processEvents()
-        app_gui.HaypileFloatingBall.start_api_server = self.previous_start
         app_gui.set_ui_language("auto")
 
     def test_three_layer_hub_keeps_grass_origin_and_fixed_drawer_shell(self) -> None:

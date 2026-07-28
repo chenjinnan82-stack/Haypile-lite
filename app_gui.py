@@ -9,7 +9,6 @@ import locale
 import logging
 import math
 import os
-import socket
 import subprocess
 import sys
 import time
@@ -48,7 +47,7 @@ import httpx
 from app.core.config import configure_packaged_logging, get_settings, runtime_mode_command
 from app.core.exceptions import ResourceExhaustedError
 from app.core.file_lock import InterProcessFileLock
-from app.core.ipc import send_ipc_request
+from app.gui.backend_runtime import BackendRuntimeController
 from app.gui.intake_visual import (
     GIF_EXPAND_SECONDS as INTAKE_GIF_EXPAND_SECONDS,
     GIF_FRAME_STAGGER_SECONDS as INTAKE_GIF_FRAME_STAGGER_SECONDS,
@@ -4127,6 +4126,9 @@ AttachedHubWindow = QuickMenuWindow
 
 
 class HaypileFloatingBall(QWidget):
+    shutdown_requested = Signal()
+    shutdown_ready = Signal()
+
     COLLAPSED_SIZE = 72
     EXPANDED_SIZE = 300
     GIF_TICK_SECONDS = INTAKE_GIF_TICK_SECONDS
@@ -4136,8 +4138,9 @@ class HaypileFloatingBall(QWidget):
     GIF_SUCTION_MS = round(INTAKE_GIF_SUCTION_SECONDS * 1000)
     GIF_CLOSE_MS = 170
 
-    def __init__(self) -> None:
+    def __init__(self, *, managed_shutdown: bool = False) -> None:
         super().__init__()
+        self._managed_shutdown = bool(managed_shutdown)
         self.settings = get_settings()
         self.project_root: Path = self.settings.BASE_DIR
         self.assets_dir: Path = self.settings.ASSETS_DIR
@@ -4184,12 +4187,6 @@ class HaypileFloatingBall(QWidget):
                 self._session_api_key = SystemCredentialStore.get(current_host)
             self.ai_api_key_present = bool(self._session_api_key)
 
-        self.api_process: subprocess.Popen[str] | None = None
-        self.api_owned_by_gui = False
-        self._api_log_handle = None
-        self._backend_phase = "idle"
-        self._backend_phase_started_at = 0.0
-        self._backend_wait_notice_shown = False
         self.worker: IngestWorker | None = None
         self.remote_worker: RemoteDownloadWorker | None = None
         self._remote_ingest_paths: set[Path] = set()
@@ -4245,6 +4242,7 @@ class HaypileFloatingBall(QWidget):
         self._geometry_animation: QPropertyAnimation | None = None
         self._closing = False
         self._cleanup_done = False
+        self._shutdown_ready_emitted = False
         self._shutdown_started_at = 0.0
         self._shutdown_wait_notice_shown = False
         self._collapse_timer = QTimer(self)
@@ -4275,9 +4273,6 @@ class HaypileFloatingBall(QWidget):
         self._drag_awareness_timer = QTimer(self)
         self._drag_awareness_timer.setInterval(80)
         self._drag_awareness_timer.timeout.connect(self._poll_external_drag_candidate)
-        self._backend_timer = QTimer(self)
-        self._backend_timer.setInterval(150)
-        self._backend_timer.timeout.connect(self._poll_api_server)
         self._shutdown_timer = QTimer(self)
         self._shutdown_timer.setInterval(100)
         self._shutdown_timer.timeout.connect(self._poll_shutdown)
@@ -4314,8 +4309,6 @@ class HaypileFloatingBall(QWidget):
         self.quick_menu.set_close_handler(self._close_attached_ui)
         self._refresh_ai_menu_status()
         self._refresh_pending_badge()
-
-        self.start_api_server()
 
     def _configure_window_surface(self) -> None:
         if sys.platform.startswith("win"):
@@ -4832,211 +4825,6 @@ class HaypileFloatingBall(QWidget):
             return
         event.accept()
         super().closeEvent(event)
-
-    def start_api_server(self) -> None:
-        if self.api_process is not None:
-            if self.api_process.poll() is None:
-                return
-            self._finish_api_process()
-
-        existing = self._probe_backend_response()
-        if self._is_configured_haypile_backend(existing):
-            self.api_owned_by_gui = False
-            self._backend_phase = "ready"
-            return
-        if self._is_port_open(self.settings.HOST, self.settings.PORT):
-            self.api_owned_by_gui = False
-            self._backend_phase = "conflict"
-            self.show_toast(
-                ui_text(
-                    f"端口 {self.settings.PORT} 已被其他程序占用",
-                    f"Port {self.settings.PORT} is used by another program",
-                ),
-                success=False,
-            )
-            return
-
-        allow_gui_backend_start = (
-            os.environ.get("HAYPILE_GUI_ALLOW_BACKEND_START", "").strip().lower()
-        )
-        if allow_gui_backend_start in {"0", "false", "no", "off"}:
-            self.api_owned_by_gui = False
-            self.show_toast(ui_text("Haypile 后台未启动，当前配置禁止界面自动启动", "Haypile backend is not running; auto-start is disabled"), success=False)
-            return
-
-        command = runtime_mode_command("backend", source_root=self.project_root)
-        env = os.environ.copy()
-        env["HAYPILE_BACKEND_HOST_ALLOW_START"] = "1"
-        creationflags = 0
-        if sys.platform.startswith("win"):
-            creationflags = (
-                subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        try:
-            self.settings.LOG_DIR.mkdir(parents=True, exist_ok=True)
-            log_path = self.settings.LOG_DIR / "backend-process.log"
-            self._api_log_handle = log_path.open("a", encoding="utf-8", buffering=1)
-            if os.name != "nt":
-                log_path.chmod(0o600)
-            self.api_process = subprocess.Popen(
-                command,
-                cwd=str(self.project_root),
-                stdout=self._api_log_handle,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=env,
-                creationflags=creationflags,
-            )
-        except OSError as exc:
-            self._close_api_log()
-            logger.error("Backend process launch failed error_type=%s", type(exc).__name__)
-            self.show_toast(ui_text("后台服务启动失败", "Backend failed to start"), success=False)
-            return
-        self.api_owned_by_gui = True
-        self._backend_phase = "starting"
-        self._backend_phase_started_at = time.monotonic()
-        self._backend_wait_notice_shown = False
-        self._backend_timer.start()
-
-    def stop_api_server(self) -> None:
-        if self.api_process is None:
-            self._backend_phase = "idle"
-            return
-        if self.api_process.poll() is not None:
-            self._finish_api_process()
-            return
-        if self.api_owned_by_gui:
-            send_ipc_request({"type": "stop"}, timeout=0.6)
-        self._backend_phase = "stopping"
-        self._backend_phase_started_at = time.monotonic()
-        self._backend_timer.start()
-
-    def _poll_api_server(self) -> None:
-        process = self.api_process
-        if process is None:
-            self._backend_timer.stop()
-            return
-        if process.poll() is not None:
-            failed_to_start = self._backend_phase == "starting"
-            self._finish_api_process()
-            if failed_to_start and not self._closing:
-                self.show_toast(ui_text("后台服务启动失败", "Backend failed to start"), success=False)
-            return
-
-        now = time.monotonic()
-        if self._backend_phase == "starting":
-            response = self._probe_backend_response()
-            if self._is_configured_haypile_backend(
-                response,
-                require_ready=True,
-                expected_pid=getattr(process, "pid", None),
-            ):
-                self._backend_phase = "ready"
-                self._backend_timer.stop()
-                self._refresh_ai_menu_status()
-                return
-            if now - self._backend_phase_started_at >= 5.0 and not self._backend_wait_notice_shown:
-                self._backend_wait_notice_shown = True
-                self.show_toast(
-                    ui_text("后台仍在准备素材库", "Backend is still preparing the asset library"),
-                    success=True,
-                )
-            return
-
-        elapsed = now - self._backend_phase_started_at
-        if self._backend_phase == "stopping" and elapsed >= 10.0:
-            logger.warning("Backend graceful shutdown timed out; sending terminate")
-            process.terminate()
-            self._backend_phase = "terminating"
-            self._backend_phase_started_at = now
-        elif self._backend_phase == "terminating" and elapsed >= 3.0:
-            logger.error("Backend terminate timed out; forcing process exit")
-            if sys.platform.startswith("win"):
-                self._kill_process_tree(process.pid)
-            else:
-                process.kill()
-            self._backend_phase = "killing"
-            self._backend_phase_started_at = now
-        elif self._backend_phase == "killing" and elapsed >= 2.0:
-            if sys.platform.startswith("win"):
-                self._kill_process_tree(process.pid)
-            else:
-                process.kill()
-
-    def _finish_api_process(self) -> None:
-        self.api_process = None
-        self.api_owned_by_gui = False
-        self._backend_phase = "idle"
-        self._backend_timer.stop()
-        self._close_api_log()
-
-    def _close_api_log(self) -> None:
-        handle, self._api_log_handle = self._api_log_handle, None
-        if handle is not None:
-            try:
-                handle.close()
-            except OSError:
-                pass
-
-    @staticmethod
-    def _is_haypile_backend(response: object, *, require_ready: bool = False) -> bool:
-        if not isinstance(response, dict):
-            return False
-        if response.get("ok") is not True:
-            return False
-        if response.get("product") != "haypile" or response.get("protocol_version") != 1:
-            return False
-        return not require_ready or response.get("ready") is True
-
-    def _is_configured_haypile_backend(
-        self,
-        response: object,
-        *,
-        require_ready: bool = False,
-        expected_pid: int | None = None,
-    ) -> bool:
-        if not self._is_haypile_backend(response, require_ready=require_ready):
-            return False
-        assert isinstance(response, dict)
-        try:
-            port = int(response.get("port"))
-            pid = int(response.get("pid"))
-        except (TypeError, ValueError):
-            return False
-        if response.get("host") != self.settings.HOST or port != self.settings.PORT:
-            return False
-        return expected_pid is None or pid == expected_pid
-
-    def _probe_backend_response(self) -> dict[str, object] | None:
-        response = send_ipc_request({"type": "ping"}, timeout=0.45)
-        return response if isinstance(response, dict) else None
-
-    def _probe_backend_via_ipc(self) -> bool:
-        return self._is_configured_haypile_backend(self._probe_backend_response())
-
-    def _wait_backend_ready(self, timeout_seconds: float = 5.0) -> bool:
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            response = self._probe_backend_response()
-            expected_pid = (
-                self.api_process.pid
-                if self.api_owned_by_gui and self.api_process is not None
-                else None
-            )
-            if self._is_configured_haypile_backend(
-                response,
-                require_ready=True,
-                expected_pid=expected_pid,
-            ):
-                return True
-            time.sleep(0.12)
-        return False
-
-    @staticmethod
-    def _is_port_open(host: str, port: int) -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.35)
-            return sock.connect_ex((host, port)) == 0
 
     @staticmethod
     def _extract_local_files(mime_data) -> list[Path]:
@@ -5999,7 +5787,7 @@ class HaypileFloatingBall(QWidget):
         self._shutdown_worker()
         self._shutdown_ai_batch_worker()
         self._shutdown_ai_refresh_worker()
-        self.stop_api_server()
+        self.shutdown_requested.emit()
         self.show_toast(
             ui_text("正在安全结束当前操作", "Finishing the current operation safely"),
             success=True,
@@ -6021,15 +5809,13 @@ class HaypileFloatingBall(QWidget):
                 self.material_panel.ai_refresh_worker,
             )
         )
-        backend_done = self.api_process is None
-        if workers_done and backend_done:
-            self._cleanup_remote_ingest_paths()
-            self._cleanup_done = True
+        if workers_done:
             self._shutdown_timer.stop()
-            self._close_api_log()
-            self.quick_menu.hide()
-            self.quick_menu.close()
-            QTimer.singleShot(0, QCoreApplication.quit)
+            if not self._shutdown_ready_emitted:
+                self._shutdown_ready_emitted = True
+                self.shutdown_ready.emit()
+            if not self._managed_shutdown:
+                self.complete_shutdown()
             return
         if (
             time.monotonic() - self._shutdown_started_at >= 30.0
@@ -6043,6 +5829,16 @@ class HaypileFloatingBall(QWidget):
                 ),
                 success=False,
             )
+
+    def complete_shutdown(self) -> None:
+        if self._cleanup_done or not self._shutdown_ready_emitted:
+            return
+        self._cleanup_remote_ingest_paths()
+        self._cleanup_done = True
+        self._shutdown_timer.stop()
+        self.quick_menu.hide()
+        self.quick_menu.close()
+        QTimer.singleShot(0, self.close)
 
     def _reposition_progress_window(self) -> None:
         if self.quick_menu.isVisible():
@@ -6223,6 +6019,41 @@ class HaypileFloatingBall(QWidget):
             api_model=self.ai_api_model,
             api_key_present=self.ai_api_key_present,
         )
+
+    def _on_backend_phase_changed(self, phase: str) -> None:
+        if phase == "ready":
+            self._refresh_ai_menu_status()
+
+    def _on_backend_notice(self, code: str, details: object) -> None:
+        payload = details if isinstance(details, dict) else {}
+        if code == "port_conflict":
+            port = payload.get("port", self.settings.PORT)
+            message = ui_text(
+                f"端口 {port} 已被其他程序占用",
+                f"Port {port} is used by another program",
+            )
+            success = False
+        elif code == "auto_start_disabled":
+            message = ui_text(
+                "Haypile 后台未启动，当前配置禁止界面自动启动",
+                "Haypile backend is not running; auto-start is disabled",
+            )
+            success = False
+        elif code in {"launch_failed", "start_failed"}:
+            message = ui_text(
+                "后台服务启动失败",
+                "Backend failed to start",
+            )
+            success = False
+        elif code == "start_slow":
+            message = ui_text(
+                "后台仍在准备素材库",
+                "Backend is still preparing the asset library",
+            )
+            success = True
+        else:
+            return
+        self.show_toast(message, success=success)
 
     def _ai_status_text(self) -> str:
         if self.low_power_enabled:
@@ -6985,23 +6816,6 @@ class HaypileFloatingBall(QWidget):
         # the transparent corners and avoids external black shadows.
         self.clearMask()
 
-    @staticmethod
-    def _kill_process_tree(pid: int) -> None:
-        if not sys.platform.startswith("win"):
-            return
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-        except OSError as exc:
-            logger.debug("Failed to kill process tree pid=%s error_type=%s", pid, type(exc).__name__)
-            return
-
-
 def clipboard_mime_diagnostics(mime_data) -> dict[str, object]:
     formats: list[dict[str, object]] = []
     for name in sorted({str(value) for value in mime_data.formats()}):
@@ -7070,10 +6884,47 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Haypile GUI is already running")
         return 0
     app = QApplication([sys.argv[0], *args])
-    app.setQuitOnLastWindowClosed(True)
-    widget = HaypileFloatingBall()
+    app.setQuitOnLastWindowClosed(False)
+    widget = HaypileFloatingBall(managed_shutdown=True)
+    backend = BackendRuntimeController(settings, settings.BASE_DIR, parent=app)
+    shutdown_state = {
+        "requested": False,
+        "window_ready": False,
+        "completed": False,
+    }
+
+    def maybe_complete_shutdown() -> None:
+        if (
+            shutdown_state["completed"]
+            or not shutdown_state["window_ready"]
+            or not backend.is_stopped
+        ):
+            return
+        shutdown_state["completed"] = True
+        widget.complete_shutdown()
+        QTimer.singleShot(0, QCoreApplication.quit)
+
+    def request_shutdown() -> None:
+        shutdown_state["requested"] = True
+        backend.stop()
+        maybe_complete_shutdown()
+
+    def mark_window_ready() -> None:
+        shutdown_state["window_ready"] = True
+        maybe_complete_shutdown()
+
+    def start_backend() -> None:
+        if not shutdown_state["requested"]:
+            backend.start()
+
+    widget.shutdown_requested.connect(request_shutdown)
+    widget.shutdown_ready.connect(mark_window_ready)
+    backend.stopped.connect(maybe_complete_shutdown)
+    backend.notice.connect(widget._on_backend_notice)
+    backend.phase_changed.connect(widget._on_backend_phase_changed)
     app.aboutToQuit.connect(widget.shutdown)
     widget.show()
+    QTimer.singleShot(0, start_backend)
     try:
         return app.exec()
     finally:
