@@ -4670,6 +4670,9 @@ class HaypileFloatingBall(QWidget):
 
     def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
         event.accept()
+        self._abandon_drag_hover_drop()
+
+    def _abandon_drag_hover_drop(self) -> None:
         self._drag_hover = False
         self._drag_prepare_active = False
         self._drag_prepare_timer.stop()
@@ -4677,6 +4680,7 @@ class HaypileFloatingBall(QWidget):
         self._cancel_gif_suction()
         self._close_drop_target()
         self._sync_visual_timer()
+        self.update()
 
     def dropEvent(self, event: QDropEvent) -> None:
         mime_data = event.mimeData()
@@ -4735,6 +4739,8 @@ class HaypileFloatingBall(QWidget):
         cursor_pos = QCursor.pos()
         if self._pointer_press_owned or self._window_drag_active or not self._global_left_button_down():
             self._clear_external_drag_candidate()
+            # macOS/Qt can skip dragLeave when the drag ends outside the widget.
+            self._force_end_drag_hover()
             return
         if self._global_drag_origin is None:
             self._global_drag_origin = QPoint(cursor_pos)
@@ -4754,6 +4760,12 @@ class HaypileFloatingBall(QWidget):
         self._update_drag_awareness_target_global(cursor_pos)
         self._sync_visual_timer()
         self.update()
+
+    def _force_end_drag_hover(self) -> None:
+        """Close an open drop face if the pointer drag ended without dragLeave."""
+        if not (self._drag_hover or self._drag_prepare_active):
+            return
+        self._abandon_drag_hover_drop()
 
     def _global_left_button_down(self) -> bool:
         if sys.platform == "darwin":

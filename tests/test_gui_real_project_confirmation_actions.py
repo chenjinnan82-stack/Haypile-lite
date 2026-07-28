@@ -2429,6 +2429,34 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.dragLeaveEvent(QDragLeaveEvent())
             self.assertIsNone(ball._gif_suction_animation)
             self.assertEqual(ball._gif_suction_progress, 0.0)
+            self.assertTrue(ball._collapse_timer.isActive())
+            self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_drag_hover_closes_on_mouse_up_for_leaf_audio_and_gif(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            for kind in ("leaf", "audio", "gif"):
+                ball._collapse_timer.stop()
+                if ball._drop_open_animation is not None:
+                    ball._drop_open_animation.stop()
+                ball._set_drop_open_progress(1.0)
+                ball._drop_visual_kind = kind
+                ball._drag_hover = True
+                ball._drag_prepare_active = False
+                with patch.object(ball, "_global_left_button_down", return_value=False):
+                    ball._poll_external_drag_candidate()
+                self.assertFalse(ball._drag_hover)
+                self.assertTrue(ball._collapse_timer.isActive())
+                self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+                ball._collapse_timer.stop()
+                ball._drop_open_animation.stop()
+                ball._set_drop_open_progress(0.0)
         finally:
             ball.close()
             self.app.processEvents()
