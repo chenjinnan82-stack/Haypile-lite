@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.api.v1.bundles import get_bundle_service, router as bundles_router
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.models.bundle import BundlePayload
 from app.services.asset_provenance import write_asset_provenance
 from app.services.bundle_service import BundleService
@@ -719,26 +719,24 @@ class GifGuiTests(unittest.TestCase):
             root = Path(raw)
             path = root / "motion.gif"
             _write_gif(path, durations=[40, 60], loop=0)
-            panel = MaterialPanelWindow()
+            panel = MaterialPanelWindow(
+                settings=Settings(_env_file=None, ASSETS_DIR=root)
+            )
             self.addCleanup(panel.close)
             item = SimpleNamespace(
                 asset_type="image",
                 source_key="motion.gif",
             )
-            with patch(
-                "app_gui.get_settings",
-                return_value=SimpleNamespace(ASSETS_DIR=root),
-            ):
+            panel._show_preview_for_item(
+                item,
+                {"content_type": "image/gif", "frame_count": 2},
+            )
+            self.assertIsNone(panel._gif_movie)
+            with patch.object(panel, "isVisible", return_value=True):
                 panel._show_preview_for_item(
                     item,
                     {"content_type": "image/gif", "frame_count": 2},
                 )
-                self.assertIsNone(panel._gif_movie)
-                with patch.object(panel, "isVisible", return_value=True):
-                    panel._show_preview_for_item(
-                        item,
-                        {"content_type": "image/gif", "frame_count": 2},
-                    )
 
             self.assertIsNotNone(panel._gif_movie)
             self.assertTrue(panel._gif_movie.isValid())

@@ -1256,8 +1256,15 @@ class ConfirmationPreviewWindow(QWidget):
 
 
 class MaterialPanelWindow(QWidget):
-    def __init__(self, parent: QWidget | None = None, *, embedded: bool = False) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        embedded: bool = False,
+        settings: Settings | None = None,
+    ) -> None:
         super().__init__(parent)
+        self.settings = settings or get_settings()
         self._embedded = bool(embedded)
         if not self._embedded:
             self.setWindowFlags(
@@ -1793,24 +1800,19 @@ class MaterialPanelWindow(QWidget):
 
     def refresh(self) -> None:
         self._stop_gif_preview(reset_to_first=True, discard=True)
-        summary = build_material_panel_summary()
-        service = BundleService()
-        list_bundles = getattr(service, "list_bundles", None)
+        service = self._bundle_service()
         catalog_unavailable = False
         try:
-            all_bundles = list_bundles() if callable(list_bundles) else []
+            scoped_bundles = service.list_bundles(
+                batch_id="latest" if self._batch_scope == "latest" else None
+            )
         except ManifestReadinessError:
-            all_bundles = []
+            scoped_bundles = []
             catalog_unavailable = True
-        if not callable(list_bundles) and not catalog_unavailable:
-            # Keep lightweight adapters usable while the production service
-            # still takes the single full-scan path above.
-            for item in summary.recent_items:
-                source_key = str(item.source_key or "").strip()
-                bundle_id = Path(source_key).stem or Path(item.preview_url).stem
-                bundle = service.get_bundle(bundle_id) if bundle_id else None
-                if isinstance(bundle, dict):
-                    all_bundles.append(bundle)
+        summary = build_material_panel_summary(
+            scoped_bundles,
+            assets_dir=self.settings.ASSETS_DIR,
+        )
         if getattr(service, "theme_recoveries", []):
             if self._toast_callback is not None:
                 self._toast_callback(
@@ -1824,29 +1826,10 @@ class MaterialPanelWindow(QWidget):
                 self._theme_recovery_notice_pending = True
         self._bundle_by_source_key = {
             str(bundle.get("source_key") or ""): bundle
-            for bundle in all_bundles
+            for bundle in scoped_bundles
             if str(bundle.get("source_key") or "")
         }
-        if catalog_unavailable:
-            scoped_bundles = []
-            scoped_items = []
-        elif self._batch_scope == "latest":
-            try:
-                scoped_bundles = list_bundles(batch_id="latest") if callable(list_bundles) else all_bundles
-            except ManifestReadinessError:
-                catalog_unavailable = True
-                scoped_bundles = []
-            scoped_ids = {str(bundle.get("id") or "") for bundle in scoped_bundles}
-            scoped_items = [] if catalog_unavailable else [
-                item for item in summary.recent_items if self._bundle_for_item(item)["id"] in scoped_ids
-            ]
-        else:
-            scoped_items = list(summary.recent_items)
-            scoped_bundles = [
-                self._bundle_by_source_key[str(item.source_key or "").strip()]
-                for item in scoped_items
-                if str(item.source_key or "").strip() in self._bundle_by_source_key
-            ]
+        scoped_items = [] if catalog_unavailable else list(summary.recent_items)
         self._all_recent_items = scoped_items
         self._recent_items = self._filter_recent_items(scoped_items)
         page_size = len(self.item_labels)
@@ -1880,21 +1863,35 @@ class MaterialPanelWindow(QWidget):
                     "素材已保存，Agent 接口待恢复",
                     "Assets are saved; Agent access is pending recovery",
                 )
-                if catalog_unavailable and summary.total_count > 0
+                if catalog_unavailable
                 else ui_text("拖入图片或音频开始收纳", "Drop images or audio to start storing")
             )
             self.detail_label.show()
         elif not self._recent_items:
             self.detail_label.setText(ui_text("没有匹配资源", "No matching assets"))
             self.detail_label.show()
-        if summary.project_display_label:
-            self.project_label.setText(summary.project_display_label)
-            self.project_label.setToolTip(summary.real_project_root)
-            self.project_label.setStyleSheet(
-                "QLabel { "
-                f"color: {self._project_display_color(summary.project_display_state)}; "
-                "font-size: 11px; background: transparent; border: none; }"
+        project_summary = None
+        if not self._embedded:
+            from app.services.experimental_project_summary import (
+                build_material_panel_summary as build_experimental_project_summary,
             )
+
+            project_summary = build_experimental_project_summary(
+                assets_dir=self.settings.ASSETS_DIR,
+                manifest_path=self.settings.MANIFEST_PATH,
+                themes_dir=self.settings.THEMES_DIR,
+            )
+            if project_summary.project_display_label:
+                self.project_label.setText(project_summary.project_display_label)
+                self.project_label.setToolTip(project_summary.real_project_root)
+                self.project_label.setStyleSheet(
+                    "QLabel { "
+                    f"color: {self._project_display_color(project_summary.project_display_state)}; "
+                    "font-size: 11px; background: transparent; border: none; }"
+                )
+            else:
+                self.project_label.setText("")
+                self.project_label.setToolTip("")
         else:
             self.project_label.setText("")
             self.project_label.setToolTip("")
@@ -1946,31 +1943,39 @@ class MaterialPanelWindow(QWidget):
             self._show_detail_for_bundle(selected_bundle)
 
         service_lines = [summary.recognition_status, summary.service_status]
-        if summary.project_picker_status_line:
-            service_lines.append(summary.project_picker_status_line)
+        if project_summary is not None and project_summary.project_picker_status_line:
+            service_lines.append(project_summary.project_picker_status_line)
         self.service_label.setText("\n".join(line for line in service_lines if line))
-        if summary.panel_display_text:
-            self.rehearsal_label.setText(summary.panel_display_text)
-            self.rehearsal_label.setToolTip(summary.project_picker_tooltip or summary.panel_status_text)
+        if project_summary is not None and project_summary.panel_display_text:
+            self.rehearsal_label.setText(project_summary.panel_display_text)
+            self.rehearsal_label.setToolTip(
+                project_summary.project_picker_tooltip or project_summary.panel_status_text
+            )
         else:
             self.rehearsal_label.setText("")
             self.rehearsal_label.setToolTip("")
         self.rehearsal_label.hide()
         self.service_label.hide()
-        self._confirmation_available = summary.confirmation_available
-        latest = service.get_latest_batch() if hasattr(service, "get_latest_batch") else None
+        self._confirmation_available = bool(
+            project_summary is not None and project_summary.confirmation_available
+        )
+        latest = (
+            service.get_latest_batch()
+            if not catalog_unavailable and hasattr(service, "get_latest_batch")
+            else None
+        )
         self.retry_batch_button.setEnabled(
             self._batch_scope == "latest" and latest is not None and bool(scoped_bundles)
         )
-        if self.confirmation_preview is not None:
+        if self.confirmation_preview is not None and project_summary is not None:
             self.confirmation_preview.update_prompt(
-                title=summary.confirmation_title,
-                body=summary.confirmation_body,
-                summary=summary.confirmation_summary,
-                warning=summary.confirmation_warning,
-                action=summary.confirmation_action,
-                project_root=summary.real_project_root,
-                primary_label=summary.confirmation_primary_label,
+                title=project_summary.confirmation_title,
+                body=project_summary.confirmation_body,
+                summary=project_summary.confirmation_summary,
+                warning=project_summary.confirmation_warning,
+                action=project_summary.confirmation_action,
+                project_root=project_summary.real_project_root,
+                primary_label=project_summary.confirmation_primary_label,
             )
             if not self._confirmation_available:
                 self.confirmation_preview.hide()
@@ -2191,11 +2196,11 @@ class MaterialPanelWindow(QWidget):
         self.retry_ai_button.setEnabled(False)
         self.retry_ai_button.setText(ui_text("AI 分拣中...", "AI sorting..."))
         if self._ai_provider_factory is None:
-            self.ai_refresh_worker = AIRefreshWorker(bundle, get_settings().ASSETS_DIR)
+            self.ai_refresh_worker = AIRefreshWorker(bundle, self.settings.ASSETS_DIR)
         else:
             self.ai_refresh_worker = AIRefreshWorker(
                 bundle,
-                get_settings().ASSETS_DIR,
+                self.settings.ASSETS_DIR,
                 self._ai_provider_factory(),
             )
         self.ai_refresh_worker.finished_signal.connect(self._on_ai_refresh_finished)
@@ -2226,7 +2231,7 @@ class MaterialPanelWindow(QWidget):
     def _panel_ai_enabled(self) -> bool:
         if self._ai_enabled_callback is not None:
             return bool(self._ai_enabled_callback())
-        settings = get_settings()
+        settings = self.settings
         if settings.HAYPILE_LOW_POWER_MODE or not settings.VISION_CLASSIFIER_ENABLED:
             return False
         try:
@@ -2242,7 +2247,7 @@ class MaterialPanelWindow(QWidget):
         if not self._selected_bundle_id:
             return
         try:
-            updated = BundleService().set_bundle_role(self._selected_bundle_id, role)
+            updated = self._bundle_service().set_bundle_role(self._selected_bundle_id, role)
         except (ManifestReadinessError, ValueError):
             updated = None
         if updated is None:
@@ -2257,7 +2262,7 @@ class MaterialPanelWindow(QWidget):
         if not self._selected_bundle_id:
             return
         try:
-            updated = BundleService().set_bundle_audio_usage(self._selected_bundle_id, usage)
+            updated = self._bundle_service().set_bundle_audio_usage(self._selected_bundle_id, usage)
         except (ManifestReadinessError, ValueError):
             updated = None
         if updated is None:
@@ -2287,7 +2292,7 @@ class MaterialPanelWindow(QWidget):
 
     def _get_bundle_safely(self, bundle_id: str) -> dict[str, object] | None:
         try:
-            return BundleService().get_bundle(bundle_id)
+            return self._bundle_service().get_bundle(bundle_id)
         except ManifestReadinessError:
             self.detail_label.setText(
                 ui_text(
@@ -2327,7 +2332,7 @@ class MaterialPanelWindow(QWidget):
         if asset_type != "image" or not item.source_key:
             self.preview_label.hide()
             return
-        asset_path = get_settings().ASSETS_DIR / item.source_key
+        asset_path = self.settings.ASSETS_DIR / item.source_key
         pixmap = QPixmap(str(asset_path))
         if pixmap.isNull():
             self.preview_label.hide()
@@ -2574,7 +2579,7 @@ class MaterialPanelWindow(QWidget):
     def _copy_ready_handoff(self) -> None:
         self._leave_search_input_mode()
         try:
-            bundles = BundleService().list_bundles(status="ready")
+            bundles = self._bundle_service().list_bundles(status="ready")
         except ManifestReadinessError:
             self.detail_label.setText(
                 ui_text(
@@ -2644,6 +2649,14 @@ class MaterialPanelWindow(QWidget):
             "audio_usage": "unknown",
         }
 
+    def _bundle_service(self) -> BundleService:
+        return BundleService(
+            assets_dir=self.settings.ASSETS_DIR,
+            manifest_path=self.settings.MANIFEST_PATH,
+            themes_dir=self.settings.THEMES_DIR,
+            runtime_db_path=self.settings.INDEX_DIR / "storage_runtime.db",
+        )
+
     def _handoff_for_bundles(
         self,
         bundles: list[dict[str, object]],
@@ -2652,7 +2665,7 @@ class MaterialPanelWindow(QWidget):
     ) -> dict[str, object]:
         base_url = self._base_url()
         try:
-            readiness = read_manifest_readiness(get_settings().MANIFEST_PATH)
+            readiness = read_manifest_readiness(self.settings.MANIFEST_PATH)
             manifest_generation = str(readiness["manifest_generation"])
         except ManifestReadinessError:
             manifest_generation = ""
@@ -2717,11 +2730,9 @@ class MaterialPanelWindow(QWidget):
             },
         }
 
-    @staticmethod
-    def _base_url() -> str:
-        settings = get_settings()
-        host = settings.HOST if settings.HOST != "0.0.0.0" else "127.0.0.1"
-        return f"http://{host}:{settings.PORT}"
+    def _base_url(self) -> str:
+        host = self.settings.HOST if self.settings.HOST != "0.0.0.0" else "127.0.0.1"
+        return f"http://{host}:{self.settings.PORT}"
 
     def _leave_search_input_mode(self) -> None:
         self.search_input.clearFocus()
@@ -3177,7 +3188,8 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
     DRAWER_HEIGHT = 392
     CONNECTOR_REACH = 48
 
-    def __init__(self) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
         super().__init__()
         self._hide_timer.stop()
         self.setWindowFlags(
@@ -3244,7 +3256,11 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
 
         self.drawer_stack = QStackedWidget(self.drawer_shell)
         self.drawer_stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
-        self.material_panel = MaterialPanelWindow(self.drawer_stack, embedded=True)
+        self.material_panel = MaterialPanelWindow(
+            self.drawer_stack,
+            embedded=True,
+            settings=self.settings,
+        )
         self.agent_page = self._build_agent_page()
         self.settings_page = self._build_settings_page()
         self.ai_page = self._build_ai_page()
@@ -4054,7 +4070,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         try:
             from mcp_server import active_mcp_sessions
 
-            sessions = active_mcp_sessions(get_settings().INDEX_DIR)
+            sessions = active_mcp_sessions(self.settings.INDEX_DIR)
         except (OSError, ValueError):
             sessions = []
         if sessions:
@@ -4304,7 +4320,7 @@ class HaypileFloatingBall(QWidget):
         self.move(self._window_position_from_state(stored_state))
         self._update_window_mask()
 
-        self.quick_menu = QuickMenuWindow()
+        self.quick_menu = QuickMenuWindow(self.settings)
         self.material_panel = self.quick_menu.material_panel
         self.material_panel.set_toast_handler(self.show_toast)
         self.material_panel.set_low_power_enabled(self.low_power_enabled)
@@ -5367,7 +5383,7 @@ class HaypileFloatingBall(QWidget):
         while self._ai_batch_queue:
             batch_id = self._ai_batch_queue.pop(0)
             try:
-                bundles = BundleService().list_bundles(
+                bundles = self._bundle_service().list_bundles(
                     status="pending",
                     asset_type="image",
                     batch_id=batch_id,
@@ -5413,7 +5429,7 @@ class HaypileFloatingBall(QWidget):
         self._start_next_ai_batch()
 
     def _retry_latest_ai_batch(self) -> None:
-        latest = BundleService().get_latest_batch()
+        latest = self._bundle_service().get_latest_batch()
         if latest is None:
             self.show_toast(ui_text("还没有可重试的批次", "No batch to retry"), success=False)
             return
@@ -5953,7 +5969,7 @@ class HaypileFloatingBall(QWidget):
             self.show_toast(ui_text(f"已复制 HTTP 地址 {base_url}", f"HTTP URL copied {base_url}"), success=True)
             return
         if action == "latest_handoff":
-            service = BundleService()
+            service = self._bundle_service()
             latest = service.get_latest_batch()
             if latest is None:
                 self.show_toast(ui_text("还没有最新批次", "No latest batch"), success=False)
@@ -5987,7 +6003,7 @@ class HaypileFloatingBall(QWidget):
             return
         if action == "ready_handoff":
             try:
-                bundles = BundleService().list_bundles(status="ready")
+                bundles = self._bundle_service().list_bundles(status="ready")
             except ManifestReadinessError:
                 self.show_toast(
                     ui_text(
@@ -6089,6 +6105,7 @@ class HaypileFloatingBall(QWidget):
 
     def _on_backend_phase_changed(self, phase: str) -> None:
         if phase == "ready":
+            self._refresh_pending_badge()
             self._refresh_ai_menu_status()
 
     def _on_backend_notice(self, code: str, details: object) -> None:
@@ -6194,16 +6211,27 @@ class HaypileFloatingBall(QWidget):
 
     def _status_text(self) -> str:
         try:
-            read_manifest_readiness(self.settings.MANIFEST_PATH)
+            bundles = self._bundle_service().list_bundles()
         except ManifestReadinessError:
             return ui_text(
                 "素材已保存 · Agent 接口待恢复",
                 "Assets saved · Agent access pending recovery",
             )
-        summary = build_material_panel_summary()
+        summary = build_material_panel_summary(
+            bundles,
+            assets_dir=self.settings.ASSETS_DIR,
+        )
         return ui_text(
             f"运行中 · 可用 {summary.recognized_count} · 待确认 {summary.pending_count}",
             f"Running · ready {summary.recognized_count} · pending {summary.pending_count}",
+        )
+
+    def _bundle_service(self) -> BundleService:
+        return BundleService(
+            assets_dir=self.settings.ASSETS_DIR,
+            manifest_path=self.settings.MANIFEST_PATH,
+            themes_dir=self.settings.THEMES_DIR,
+            runtime_db_path=self.settings.INDEX_DIR / "storage_runtime.db",
         )
 
     def _base_url(self) -> str:
@@ -6794,8 +6822,11 @@ class HaypileFloatingBall(QWidget):
 
     def _refresh_pending_badge(self) -> None:
         try:
-            self._has_pending_assets = build_material_panel_summary().pending_count > 0
-        except Exception:
+            self._has_pending_assets = bool(
+                self._storage_ready
+                and self._bundle_service().list_bundles(status="pending", limit=1)
+            )
+        except (ManifestReadinessError, OSError, ValueError):
             logger.debug("Failed to refresh Haypile pending badge")
             self._has_pending_assets = False
         if not self._has_pending_assets and self.quick_menu._attention_action == "status":

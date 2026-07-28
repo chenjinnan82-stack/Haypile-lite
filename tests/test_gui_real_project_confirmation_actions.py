@@ -31,8 +31,9 @@ try:
     from PySide6.QtWidgets import QApplication
 
     import app_gui as app_gui_module
+    from app.services import experimental_project_summary as experimental_summary_module
     from app.services.asset_provenance import read_asset_provenance, write_asset_provenance
-    from app.services.material_summary import MaterialPanelSummary, MaterialSummaryItem
+    from app.services.experimental_project_summary import MaterialPanelSummary, MaterialSummaryItem
     from app.services.style_classifier import StyleClassificationResult
     from app_gui import MaterialPanelWindow, QuickMenuWindow
 except ImportError as exc:  # pragma: no cover - depends on optional GUI runtime
@@ -883,8 +884,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             project_picker_status_line="Project Picker：已读取 /tmp/picker.json",
             project_picker_tooltip="Project Picker preview",
         )
-        previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.build_material_panel_summary = lambda: summary
+        previous_builder = experimental_summary_module.build_material_panel_summary
+        experimental_summary_module.build_material_panel_summary = lambda **_kwargs: summary
         panel = MaterialPanelWindow()
         try:
             panel.refresh()
@@ -906,7 +907,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel.confirmation_preview._action, "reapply")
             self.assertEqual(panel.confirmation_preview._project_root, project_root.as_posix())
         finally:
-            app_gui_module.build_material_panel_summary = previous_builder
+            experimental_summary_module.build_material_panel_summary = previous_builder
             panel.confirmation_preview.close()
             panel.close()
 
@@ -932,11 +933,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
         previous_builder = app_gui_module.build_material_panel_summary
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
             {
+                "list_bundles": lambda _self, **_filters: [],
                 "get_bundle": lambda _self, _bundle_id: {
                     "id": "hero",
                     "theme_id": "generic",
@@ -1135,8 +1137,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         previous_bundle_service = app_gui_module.BundleService
         previous_ai_worker = app_gui_module.AIRefreshWorker
         previous_panel_ai_enabled = MaterialPanelWindow._panel_ai_enabled
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type("FakeBundleService", (), {"get_bundle": lambda _self, _id: dict(bundle)})()
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
+            "FakeBundleService",
+            (),
+            {
+                "list_bundles": lambda _self, **_filters: [],
+                "get_bundle": lambda _self, _id: dict(bundle),
+            },
+        )()
         app_gui_module.AIRefreshWorker = FakeWorker
         MaterialPanelWindow._panel_ai_enabled = staticmethod(lambda: True)
         panel = MaterialPanelWindow()
@@ -1209,8 +1218,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         previous_bundle_service = app_gui_module.BundleService
         previous_ai_worker = app_gui_module.AIRefreshWorker
         previous_panel_ai_enabled = MaterialPanelWindow._panel_ai_enabled
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type("FakeBundleService", (), {"get_bundle": lambda _self, bundle_id: dict(bundles[bundle_id])})()
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
+            "FakeBundleService",
+            (),
+            {
+                "list_bundles": lambda _self, **_filters: [],
+                "get_bundle": lambda _self, bundle_id: dict(bundles[bundle_id]),
+            },
+        )()
         app_gui_module.AIRefreshWorker = FakeWorker
         MaterialPanelWindow._panel_ai_enabled = staticmethod(lambda: True)
         panel = MaterialPanelWindow()
@@ -1246,7 +1262,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             recognition_status="分类：可用",
         )
         previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.build_material_panel_summary = lambda: summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         panel = MaterialPanelWindow()
         try:
             panel.refresh()
@@ -1267,7 +1283,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             recognition_status="Classifier: ready",
         )
         previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.build_material_panel_summary = lambda: summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         panel = MaterialPanelWindow()
         try:
             panel.refresh()
@@ -1352,11 +1368,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         }
         previous_builder = app_gui_module.build_material_panel_summary
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
-            {"get_bundle": lambda _self, bundle_id: bundles[bundle_id]},
+            {
+                "list_bundles": lambda _self, **_filters: list(bundles.values()),
+                "get_bundle": lambda _self, bundle_id: bundles[bundle_id],
+            },
         )()
         panel = MaterialPanelWindow()
         toasts: list[tuple[str, bool]] = []
@@ -1436,11 +1455,21 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         }
         previous_builder = app_gui_module.build_material_panel_summary
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
-            {"get_bundle": lambda _self, bundle_id: {**bundles[bundle_id], "theme_id": "generic", "sha256": "", "url": "", "access": "manifest_static", "source_key": ""}},
+            {
+                "list_bundles": lambda _self, **_filters: [],
+                "get_bundle": lambda _self, bundle_id: {
+                    **bundles[bundle_id],
+                    "theme_id": "generic",
+                    "sha256": "",
+                    "url": "",
+                    "access": "manifest_static",
+                    "source_key": "",
+                },
+            },
         )()
         panel = MaterialPanelWindow()
         try:
@@ -1504,6 +1533,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
 
         class FakeBundleService:
+            def __init__(self, **_kwargs):
+                pass
+
+            def list_bundles(self, **_filters):
+                return []
+
             def get_bundle(self, bundle_id):
                 return {
                     "id": bundle_id,
@@ -1519,7 +1554,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
         previous_builder = app_gui_module.build_material_panel_summary
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.build_material_panel_summary = lambda: summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         app_gui_module.BundleService = FakeBundleService
         panel = MaterialPanelWindow()
         try:
@@ -1590,6 +1625,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         previous_bundle_service = app_gui_module.BundleService
 
         class FakeBundleService:
+            def __init__(self, **_kwargs):
+                pass
+
+            def list_bundles(self, **_filters):
+                return []
+
             def get_bundle(self, _bundle_id):
                 return dict(bundle_state)
 
@@ -1598,7 +1639,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 bundle_state.update({"role": role, "status": "ready"})
                 return dict(bundle_state)
 
-        app_gui_module.build_material_panel_summary = lambda: summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         app_gui_module.BundleService = FakeBundleService
         panel = MaterialPanelWindow()
         toasts: list[tuple[str, bool]] = []
@@ -1633,11 +1674,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_material_panel_copy_ready_handoff_copies_all_ready_assets(self) -> None:
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
             {
-                "list_bundles": lambda _self, status=None: [
+                "list_bundles": lambda _self, status=None, **_filters: [
                     {
                         "id": "hero",
                         "theme_id": "generic",
@@ -1689,10 +1730,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_material_panel_copy_ready_handoff_handles_empty_ready_assets(self) -> None:
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
-            {"list_bundles": lambda _self, status=None: []},
+            {"list_bundles": lambda _self, status=None, **_filters: []},
         )()
         panel = MaterialPanelWindow()
         toasts: list[tuple[str, bool]] = []
@@ -1958,7 +1999,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_floating_ball_quick_menu_actions_are_wired(self) -> None:
         previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.build_material_panel_summary = lambda: MaterialPanelSummary(
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: MaterialPanelSummary(
             total_count=3,
             recognized_count=2,
             pending_count=1,
@@ -2254,15 +2295,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.app.processEvents()
 
     def test_floating_ball_pending_badge_highlights_status_on_quick_menu_open(self) -> None:
-        previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.build_material_panel_summary = lambda: MaterialPanelSummary(
-            total_count=1,
-            recognized_count=0,
-            pending_count=1,
-            service_status="Haypile：运行中",
-            recognition_status="分类：有待确认",
-        )
         ball = app_gui_module.HaypileFloatingBall()
+        ball._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [{"id": "pending"}]
+        )
         try:
             ball._refresh_pending_badge()
             ball._toggle_quick_menu()
@@ -2272,7 +2308,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.build_material_panel_summary = previous_builder
 
     def test_quick_menu_stays_anchored_when_ball_is_at_screen_edge(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
@@ -3722,15 +3757,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.app.processEvents()
 
     def test_floating_ball_pending_badge_renders_when_assets_need_review(self) -> None:
-        previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.build_material_panel_summary = lambda: MaterialPanelSummary(
-            total_count=1,
-            recognized_count=0,
-            pending_count=1,
-            service_status="Haypile：运行中",
-            recognition_status="分类：有待确认",
-        )
         ball = app_gui_module.HaypileFloatingBall()
+        ball._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [{"id": "pending"}]
+        )
         try:
             ball._refresh_pending_badge()
             self.assertTrue(ball._has_pending_assets)
@@ -3746,7 +3776,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.build_material_panel_summary = previous_builder
 
     def test_floating_ball_drag_and_shake_stay_on_screen_edge(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
@@ -3926,6 +3955,104 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
 
+    def test_embedded_catalog_uses_shared_settings_and_one_bundle_query(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "catalog-storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+        constructed: list[dict[str, object]] = []
+        queries: list[dict[str, object]] = []
+
+        class FakeBundleService:
+            theme_recoveries = []
+
+            def __init__(self, **kwargs):
+                constructed.append(kwargs)
+
+            def list_bundles(self, **filters):
+                queries.append(filters)
+                return [
+                    {
+                        "id": "gif",
+                        "theme_id": "generic",
+                        "type": "image",
+                        "role": "unknown",
+                        "status": "pending",
+                        "source_key": "generic/images/clip.gif",
+                        "url": "/static/generic/images/clip.gif",
+                    }
+                ]
+
+            def get_latest_batch(self):
+                return None
+
+        with (
+            patch.object(app_gui_module, "BundleService", FakeBundleService),
+            patch.object(
+                experimental_summary_module,
+                "build_material_panel_summary",
+                side_effect=AssertionError("embedded catalog must not load experiments"),
+            ),
+        ):
+            menu = QuickMenuWindow(settings)
+            try:
+                panel = menu.material_panel
+                panel.refresh()
+
+                self.assertIs(panel.settings, settings)
+                self.assertEqual(queries, [{"batch_id": "latest"}])
+                self.assertEqual(
+                    constructed,
+                    [
+                        {
+                            "assets_dir": settings.ASSETS_DIR,
+                            "manifest_path": settings.MANIFEST_PATH,
+                            "themes_dir": settings.THEMES_DIR,
+                            "runtime_db_path": settings.INDEX_DIR / "storage_runtime.db",
+                        }
+                    ],
+                )
+                self.assertIn("clip.gif", panel.item_labels[0].text())
+            finally:
+                menu.close()
+                self.app.processEvents()
+
+    def test_dirty_catalog_clears_panel_status_and_pending_badge(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "dirty-storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+
+        class DirtyBundleService:
+            theme_recoveries = []
+
+            def list_bundles(self, **_filters):
+                raise app_gui_module.ManifestReadinessError("manifest_dirty", "dirty")
+
+            def get_latest_batch(self):
+                return None
+
+        panel = MaterialPanelWindow(embedded=True, settings=settings)
+        panel._all_recent_items = [
+            MaterialSummaryItem("old.png", "主视觉", "中等把握", "已识别")
+        ]
+        ball = app_gui_module.HaypileFloatingBall(settings=settings)
+        panel._bundle_service = lambda: DirtyBundleService()
+        ball._bundle_service = lambda: DirtyBundleService()
+        ball._has_pending_assets = True
+        try:
+            panel.refresh()
+            ball._refresh_pending_badge()
+
+            self.assertEqual(panel._all_recent_items, [])
+            self.assertIn("Agent 接口待恢复", panel.detail_label.text())
+            self.assertFalse(ball._has_pending_assets)
+            self.assertIn("Agent 接口待恢复", ball._status_text())
+        finally:
+            panel.close()
+            ball.close()
+            self.app.processEvents()
+
     def test_desktop_runtime_hydrates_once_and_enables_api_session(self) -> None:
         settings = app_gui_module.Settings(
             STORAGE_DIR=self.tmpdir / "storage",
@@ -4035,8 +4162,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         ball = app_gui_module.HaypileFloatingBall()
         shown: list[tuple[str, bool]] = []
         refreshes: list[bool] = []
+        pending_refreshes: list[bool] = []
         ball.show_toast = lambda message, *, success: shown.append((message, success))
         ball._refresh_ai_menu_status = lambda: refreshes.append(True)
+        ball._refresh_pending_badge = lambda: pending_refreshes.append(True)
         try:
             ball._on_backend_notice("port_conflict", {"port": 18110})
             ball._on_backend_notice("auto_start_disabled", {})
@@ -4053,6 +4182,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertTrue(shown[2][1])
             self.assertEqual(len(shown), 3)
             self.assertEqual(refreshes, [True])
+            self.assertEqual(pending_refreshes, [True])
         finally:
             ball.close()
             self.app.processEvents()
