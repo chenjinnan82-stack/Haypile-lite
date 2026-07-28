@@ -94,6 +94,14 @@ See [Security Policy](SECURITY.md) or [report privately on GitHub](https://githu
   through the manifest, HTTP, MCP, and `asset-handoff.v1`.
 - A Qt-free shared intake transaction and cross-process writer lock keep GUI
   intake and startup recovery from modifying the same open batch.
+- Image, audio, and GIF entry motion now uses one reproducible renderer that can
+  be verified offscreen without starting storage or the backend.
+- The floating UI appears before storage hydration and backend startup. If
+  storage is unavailable, intake stays disabled while Settings and Quit remain
+  usable; shutdown only stops a backend owned by this GUI.
+- The Assets drawer, pending badge, and service status share the same explicit
+  storage configuration and manifest fail-close catalog. Experimental
+  real-project workflows stay outside normal drawer startup.
 - A privacy-safe clipboard diagnostic reports only format names, sizes, and the
   selected route; app-private animated emoji remain unsupported.
 - Intake finishes before AI sorting, so an offline or slow model never blocks storage.

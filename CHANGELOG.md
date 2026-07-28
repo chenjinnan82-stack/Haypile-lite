@@ -21,6 +21,14 @@ shared intake transaction and clipboard entry landed on the same source line.
   direct URLs, and an honest static-PNG fallback when only pixels are available.
 - Add a local privacy-safe clipboard-format diagnostic that reports format
   names, sizes, and selected intake route without exposing content or locations.
+- Render image, audio, and GIF intake through one reproducible, offscreen-testable
+  entry renderer while preserving the existing leaf, nest, and three-frame motion.
+- Move backend ownership and deferred storage hydration out of the floating
+  window constructor so the UI can appear first, degrade safely when storage is
+  unavailable, and coordinate shutdown without stopping a reused backend.
+- Make the Assets drawer, pending badge, and service status share explicit
+  storage settings and the same manifest fail-close catalog; keep real-project
+  rehearsal and Project Picker logic outside the embedded product path.
 - Refuse release package builds from a dirty Git worktree so `BUILD_INFO.json`
   always identifies the exact committed source bytes.
 

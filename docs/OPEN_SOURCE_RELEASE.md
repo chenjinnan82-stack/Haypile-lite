@@ -1,10 +1,10 @@
 # v0.3 Open Source Release Copy
 
 Draft copy for `v0.3.0-alpha.8`. Alpha.7 was not published; alpha.8 supersedes
-that candidate after the GIF slice, shared intake transaction, and clipboard
-entry landed together. Do not publish until the security regression and
-macOS/Windows package checks have passed. After publication, limit it to a
-3–5 user pilot.
+that candidate after the GIF slice, shared intake transaction, clipboard
+entry, and desktop runtime hardening landed together. Do not publish until the
+security regression and macOS/Windows package checks have passed. After
+publication, limit it to a 3–5 user pilot.
 
 ## GitHub About
 
@@ -60,6 +60,14 @@ supported.
   URLs, and a static-PNG fallback when the source exposes pixels only.
 - Expose verified MIME, frame count, declared duration, and loop count through
   the manifest, HTTP, MCP, and handoff.
+- Reproduce image, audio, and GIF entry motion through an offscreen-testable
+  renderer without starting storage or the backend.
+- Show the floating UI before deferred storage and backend startup, retain
+  Settings and Quit in storage-degraded mode, and stop only a backend owned by
+  this GUI during coordinated shutdown.
+- Read the Assets drawer, pending indicator, and service status from one
+  explicit manifest fail-close catalog while keeping real-project experiments
+  outside the embedded product path.
 - Reject package builds from dirty Git worktrees so embedded build metadata maps
   to exact committed source.
 
