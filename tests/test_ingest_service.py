@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -107,7 +108,7 @@ class IngestServiceTests(unittest.TestCase):
             stored.relative_to(self.assets_dir).as_posix(),
         )
         runtime = StorageRuntimeDB(self.runtime_db_path)
-        with runtime.get_connection() as connection:
+        with closing(runtime.get_connection()) as connection:
             origins = [
                 str(row[0])
                 for row in connection.execute(
@@ -354,12 +355,12 @@ class IngestServiceTests(unittest.TestCase):
         try:
             self.assertTrue(active.wait(timeout=5.0))
             runtime = StorageRuntimeDB(self.runtime_db_path)
-            with runtime.get_connection() as connection:
+            with closing(runtime.get_connection()) as connection:
                 state_before = connection.execute(
                     "SELECT state FROM ingest_batches"
                 ).fetchone()[0]
             second = self.service.recover_and_project(lock_timeout=0.0)
-            with runtime.get_connection() as connection:
+            with closing(runtime.get_connection()) as connection:
                 state_after = connection.execute(
                     "SELECT state FROM ingest_batches"
                 ).fetchone()[0]

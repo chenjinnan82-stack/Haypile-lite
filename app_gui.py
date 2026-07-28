@@ -2403,6 +2403,7 @@ class MaterialPanelWindow(QWidget):
                 pass
             self.preview_label.setMovie(None)
             self.preview_label.clear()
+            movie.setFileName("")
             movie.deleteLater()
             self._gif_movie = None
             self._gif_frame_count = 0

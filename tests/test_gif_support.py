@@ -618,6 +618,7 @@ class GifGuiTests(unittest.TestCase):
                     self.assertTrue(movie.currentPixmap().hasAlphaChannel())
                     ready = service.set_bundle_role(bundles[0]["id"], "reaction")
                     self.assertEqual(ready["status"], "ready")
+                    movie.setFileName("")
                 finally:
                     get_settings.cache_clear()
 
@@ -713,6 +714,7 @@ class GifGuiTests(unittest.TestCase):
             self.assertEqual(movie.loopCount(), -1)
             self.assertTrue(movie.jumpToFrame(0))
             self.assertEqual(movie.nextFrameDelay(), 100)
+            movie.setFileName("")
 
     def test_panel_uses_qmovie_only_for_multiframe_gif(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

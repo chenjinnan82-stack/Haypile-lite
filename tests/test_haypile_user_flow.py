@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 import wave
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -207,7 +208,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         IngestWorker([first, second], self.assets_dir).run()
 
         runtime = StorageRuntimeDB(self.runtime_db_path)
-        with runtime.get_connection() as conn:
+        with closing(runtime.get_connection()) as conn:
             origins = [
                 row[0]
                 for row in conn.execute(
