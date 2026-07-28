@@ -44,10 +44,15 @@ def _run_early_mode() -> None:
 _run_early_mode()
 
 import httpx
-from app.core.config import configure_packaged_logging, get_settings, runtime_mode_command
+from app.core.config import Settings, configure_packaged_logging, get_settings, runtime_mode_command
 from app.core.exceptions import ResourceExhaustedError
 from app.core.file_lock import InterProcessFileLock
 from app.gui.backend_runtime import BackendRuntimeController
+from app.gui.desktop_startup import (
+    DesktopStartupResult,
+    prepare_desktop_runtime,
+    read_desktop_gui_state,
+)
 from app.gui.intake_visual import (
     GIF_EXPAND_SECONDS as INTAKE_GIF_EXPAND_SECONDS,
     GIF_FRAME_STAGGER_SECONDS as INTAKE_GIF_FRAME_STAGGER_SECONDS,
@@ -4138,14 +4143,29 @@ class HaypileFloatingBall(QWidget):
     GIF_SUCTION_MS = round(INTAKE_GIF_SUCTION_SECONDS * 1000)
     GIF_CLOSE_MS = 170
 
-    def __init__(self, *, managed_shutdown: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings | None = None,
+        initial_state: dict[str, object] | None = None,
+        deferred_runtime: bool = False,
+        managed_shutdown: bool = False,
+    ) -> None:
         super().__init__()
         self._managed_shutdown = bool(managed_shutdown)
-        self.settings = get_settings()
+        self.settings = settings or get_settings()
         self.project_root: Path = self.settings.BASE_DIR
         self.assets_dir: Path = self.settings.ASSETS_DIR
         self.themes_dir: Path = self.settings.THEMES_DIR
         self.manifest_path: Path = self.settings.MANIFEST_PATH
+        self._desktop_runtime_applied = not deferred_runtime
+        self._storage_ready = not deferred_runtime
+        self._storage_error_code = ""
+        self._service_status_override = (
+            ui_text("正在准备素材库", "Preparing asset library")
+            if deferred_runtime
+            else ""
+        )
         self.haypile_icon = QPixmap(str(self.project_root / "ui_assets" / "haypile-icon.png"))
         self._haypile_alpha_image = self.haypile_icon.toImage()
         self._haypile_glow_pixmap = self._tinted_haypile_pixmap(QColor("#FFD66D"))
@@ -4153,11 +4173,8 @@ class HaypileFloatingBall(QWidget):
         self._haypile_exit_glow_pixmap = self._tinted_haypile_pixmap(QColor("#9B4C37"))
         self._intake_renderer = IntakeEntryRenderer(self.project_root / "ui_assets")
         self._gui_state_path = self.settings.INDEX_DIR / "gui_state.json"
-        self.assets_dir.mkdir(parents=True, exist_ok=True)
-        self.themes_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
-        stored_state = self._read_gui_state()
+        stored_state = dict(initial_state or {})
         self.language_mode = str(stored_state.get("language") or "auto")
         if self.language_mode not in {"auto", "zh", "en"}:
             self.language_mode = "auto"
@@ -4176,21 +4193,12 @@ class HaypileFloatingBall(QWidget):
         self.ai_api_base_url = str(stored_state.get("ai_api_base_url") or "").strip()
         self.ai_api_model = str(stored_state.get("ai_api_model") or "").strip()
         self.ai_api_authorized_host = str(stored_state.get("ai_api_authorized_host") or "").strip()
-        self.ai_api_key_present = bool(stored_state.get("ai_api_key_present", False))
+        self.ai_api_key_present = False
         self._session_api_key = ""
-        if self.ai_provider_mode == "api" and self.ai_api_key_present:
-            try:
-                current_host = api_authority(self.ai_api_base_url)
-            except ValueError:
-                current_host = ""
-            if current_host and current_host == self.ai_api_authorized_host:
-                self._session_api_key = SystemCredentialStore.get(current_host)
-            self.ai_api_key_present = bool(self._session_api_key)
 
         self.worker: IngestWorker | None = None
         self.remote_worker: RemoteDownloadWorker | None = None
         self._remote_ingest_paths: set[Path] = set()
-        self._cleanup_stale_browser_downloads()
         self.ai_batch_worker: AIBatchWorker | None = None
         self._ai_batch_queue: list[str] = []
         self.latest_batch_id = ""
@@ -4289,11 +4297,11 @@ class HaypileFloatingBall(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAutoFillBackground(False)
-        self.setAcceptDrops(True)
+        self.setAcceptDrops(self._storage_ready)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.resize(self.COLLAPSED_SIZE, self.COLLAPSED_SIZE)
-        self.move(self._restore_window_position())
+        self.move(self._window_position_from_state(stored_state))
         self._update_window_mask()
 
         self.quick_menu = QuickMenuWindow()
@@ -4307,8 +4315,12 @@ class HaypileFloatingBall(QWidget):
         )
         self.quick_menu.set_action_handler(self._handle_quick_menu_action)
         self.quick_menu.set_close_handler(self._close_attached_ui)
-        self._refresh_ai_menu_status()
-        self._refresh_pending_badge()
+        self._refresh_ai_menu_status(
+            service_status=(
+                self._service_status_override
+                or ui_text("素材状态待刷新", "Asset status pending refresh")
+            )
+        )
 
     def _configure_window_surface(self) -> None:
         if sys.platform.startswith("win"):
@@ -4642,6 +4654,9 @@ class HaypileFloatingBall(QWidget):
         super().mouseReleaseEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if not self._storage_ready:
+            event.ignore()
+            return
         files = self._extract_local_files(event.mimeData())
         remote_urls = self._extract_remote_media_urls(event.mimeData())
         if files or remote_urls:
@@ -4683,6 +4698,9 @@ class HaypileFloatingBall(QWidget):
         self.update()
 
     def dropEvent(self, event: QDropEvent) -> None:
+        if not self._ensure_storage_ready():
+            event.ignore()
+            return
         mime_data = event.mimeData()
         route = resolve_intake_route(
             local_files=self._extract_local_files(mime_data),
@@ -4924,6 +4942,8 @@ class HaypileFloatingBall(QWidget):
     def _ingest_clipboard_data(self, mime_data) -> None:
         if self._closing:
             return
+        if not self._ensure_storage_ready():
+            return
         if self._ingest_busy():
             self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), success=False)
             return
@@ -5095,6 +5115,20 @@ class HaypileFloatingBall(QWidget):
             or self._pending_ingest_finish is not None
         )
 
+    def _ensure_storage_ready(self) -> bool:
+        if self._storage_ready:
+            return True
+        message = (
+            ui_text(
+                "素材目录不可用，请检查存储权限",
+                "Asset storage is unavailable; check storage permissions",
+            )
+            if self._storage_error_code == "storage_unavailable"
+            else ui_text("正在准备素材库", "Preparing asset library")
+        )
+        self.show_toast(message, success=False)
+        return False
+
     def _start_remote_download_worker(
         self,
         urls: list[str],
@@ -5102,7 +5136,7 @@ class HaypileFloatingBall(QWidget):
         *,
         fallback_file: Path | None = None,
     ) -> None:
-        if self._closing:
+        if self._closing or not self._ensure_storage_ready():
             return
         self.remote_worker = RemoteDownloadWorker(urls, self.settings.STORAGE_DIR / "incoming" / "browser")
         self.remote_worker.progress_signal.connect(self._on_ingest_progress)
@@ -5133,20 +5167,6 @@ class HaypileFloatingBall(QWidget):
         for path in self._remote_ingest_paths:
             self._delete_remote_temp(path)
         self._remote_ingest_paths.clear()
-
-    def _cleanup_stale_browser_downloads(self) -> None:
-        incoming_dir = self.settings.STORAGE_DIR / "incoming" / "browser"
-        try:
-            candidates = list(incoming_dir.iterdir())
-        except OSError:
-            return
-        cutoff = time.time() - 24 * 60 * 60
-        for path in candidates:
-            try:
-                if path.is_file() and path.stat().st_mtime < cutoff:
-                    path.unlink(missing_ok=True)
-            except OSError:
-                continue
 
     def _on_remote_download_finished(
         self,
@@ -5185,7 +5205,7 @@ class HaypileFloatingBall(QWidget):
         self._start_worker(files)
 
     def _start_worker(self, files: list[Path]) -> None:
-        if self._closing:
+        if self._closing or not self._ensure_storage_ready():
             return
         merged_files: list[Path] = []
         seen: set[str] = set()
@@ -5518,6 +5538,39 @@ class HaypileFloatingBall(QWidget):
         x, y = self._clamp_window_position(point.x(), point.y(), self.width(), self.height())
         return QPoint(x, y)
 
+    def apply_desktop_runtime(self, result: DesktopStartupResult) -> bool:
+        if self._desktop_runtime_applied:
+            return self._storage_ready
+        self._desktop_runtime_applied = True
+        self._storage_ready = bool(result.storage_ready)
+        self._storage_error_code = str(result.error_code or "")
+        self.setAcceptDrops(self._storage_ready)
+
+        if not self._storage_ready:
+            self._service_status_override = ui_text(
+                "素材目录不可用",
+                "Asset storage unavailable",
+            )
+            self._refresh_ai_menu_status(
+                service_status=self._service_status_override,
+            )
+            self.show_toast(
+                ui_text(
+                    "素材目录不可用，请检查存储权限",
+                    "Asset storage is unavailable; check storage permissions",
+                ),
+                success=False,
+            )
+            return False
+
+        self._session_api_key = str(result.session_api_key or "")
+        self.ai_api_key_present = bool(self._session_api_key)
+        self.ai_enabled = self._restore_ai_enabled()
+        self._service_status_override = ""
+        self._refresh_ai_menu_status()
+        self._refresh_pending_badge()
+        return True
+
     def _read_gui_state(self) -> dict[str, object]:
         try:
             payload = json.loads(self._gui_state_path.read_text(encoding="utf-8"))
@@ -5531,8 +5584,13 @@ class HaypileFloatingBall(QWidget):
         atomic_write_json(self._gui_state_path, payload)
 
     def _restore_window_position(self) -> QPoint:
+        return self._window_position_from_state(self._read_gui_state())
+
+    def _window_position_from_state(
+        self,
+        payload: dict[str, object],
+    ) -> QPoint:
         try:
-            payload = self._read_gui_state()
             point = QPoint(int(payload.get("x", 60)), int(payload.get("y", 60)))
         except (ValueError, TypeError):
             point = QPoint(60, 60)
@@ -6003,17 +6061,26 @@ class HaypileFloatingBall(QWidget):
                 return
             self.close()
 
-    def _refresh_ai_menu_status(self) -> None:
+    def _refresh_ai_menu_status(
+        self,
+        *,
+        service_status: str | None = None,
+    ) -> None:
         if not hasattr(self, "quick_menu"):
             return
         ai_status = self._ai_status_text()
         self.quick_menu.set_ai_enabled(self.ai_enabled, ai_status)
+        resolved_service_status = (
+            service_status
+            if service_status is not None
+            else self._service_status_override or self._status_text()
+        )
         self.quick_menu.update_settings_state(
             ai_enabled=self.ai_enabled,
             ai_status=ai_status,
             low_power=self.low_power_enabled,
             language=self.language_mode,
-            service_status=self._status_text(),
+            service_status=resolved_service_status,
             ai_provider=self.ai_provider_mode,
             api_base_url=self.ai_api_base_url,
             api_model=self.ai_api_model,
@@ -6880,12 +6947,28 @@ def main(argv: list[str] | None = None) -> int:
     settings = get_settings()
     configure_packaged_logging("gui", settings.LOG_DIR)
     instance_lock = InterProcessFileLock(settings.INDEX_DIR / "gui.instance.lock")
-    if not instance_lock.acquire(timeout=0.1):
+    instance_lock_acquired = False
+    startup_error = ""
+    try:
+        instance_lock_acquired = instance_lock.acquire(timeout=0.1)
+    except OSError as exc:
+        startup_error = "storage_unavailable"
+        logger.error(
+            "GUI instance lock unavailable error_type=%s",
+            type(exc).__name__,
+        )
+    if not instance_lock_acquired and not startup_error:
         logger.info("Haypile GUI is already running")
         return 0
+    initial_state = read_desktop_gui_state(settings)
     app = QApplication([sys.argv[0], *args])
     app.setQuitOnLastWindowClosed(False)
-    widget = HaypileFloatingBall(managed_shutdown=True)
+    widget = HaypileFloatingBall(
+        settings=settings,
+        initial_state=initial_state,
+        deferred_runtime=True,
+        managed_shutdown=True,
+    )
     backend = BackendRuntimeController(settings, settings.BASE_DIR, parent=app)
     shutdown_state = {
         "requested": False,
@@ -6913,8 +6996,18 @@ def main(argv: list[str] | None = None) -> int:
         shutdown_state["window_ready"] = True
         maybe_complete_shutdown()
 
-    def start_backend() -> None:
-        if not shutdown_state["requested"]:
+    def hydrate_desktop() -> None:
+        if shutdown_state["requested"]:
+            return
+        result = (
+            DesktopStartupResult(
+                storage_ready=False,
+                error_code=startup_error,
+            )
+            if startup_error
+            else prepare_desktop_runtime(settings, initial_state)
+        )
+        if widget.apply_desktop_runtime(result) and not shutdown_state["requested"]:
             backend.start()
 
     widget.shutdown_requested.connect(request_shutdown)
@@ -6924,11 +7017,12 @@ def main(argv: list[str] | None = None) -> int:
     backend.phase_changed.connect(widget._on_backend_phase_changed)
     app.aboutToQuit.connect(widget.shutdown)
     widget.show()
-    QTimer.singleShot(0, start_backend)
+    QTimer.singleShot(0, hydrate_desktop)
     try:
         return app.exec()
     finally:
-        instance_lock.release()
+        if instance_lock_acquired:
+            instance_lock.release()
 
 
 if __name__ == "__main__":

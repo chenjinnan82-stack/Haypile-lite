@@ -10,7 +10,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image
 
@@ -156,26 +156,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             panel.close()
 
-    def test_browser_temp_cleanup_removes_sidecar_and_only_stale_files(self) -> None:
-        storage = self.tmpdir / "storage"
-        incoming = storage / "incoming/browser"
-        incoming.mkdir(parents=True)
-        stale = incoming / "stale.png"
-        recent = incoming / "recent.png"
-        stale.write_bytes(b"stale")
-        recent.write_bytes(b"recent")
-        write_asset_provenance(stale, {"origin_url": "https://stale.example/a.png"})
-        old = time.time() - 25 * 60 * 60
-        os.utime(stale, (old, old))
-        os.utime(stale.with_name(stale.name + ".provenance.json"), (old, old))
-        dummy = SimpleNamespace(settings=SimpleNamespace(STORAGE_DIR=storage))
-
-        app_gui_module.HaypileFloatingBall._cleanup_stale_browser_downloads(dummy)
-
-        self.assertFalse(stale.exists())
-        self.assertFalse(stale.with_name(stale.name + ".provenance.json").exists())
-        self.assertTrue(recent.exists())
-
     def test_remote_ingest_cleanup_removes_owned_file_and_sidecar(self) -> None:
         downloaded = self.tmpdir / "incoming/browser/audio.mp3"
         downloaded.parent.mkdir(parents=True)
@@ -316,8 +296,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                     callback(*args)
 
         class FakeWidget:
-            def __init__(self, *, managed_shutdown: bool) -> None:
-                self.managed_shutdown = managed_shutdown
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
                 self.shutdown_requested = FakeSignal()
                 self.shutdown_ready = FakeSignal()
                 instances["widget"] = self
@@ -331,6 +311,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             def complete_shutdown(self) -> None:
                 events.append("window_completed")
 
+            def apply_desktop_runtime(self, result) -> bool:
+                events.append("runtime_applied")
+                return bool(result.storage_ready)
+
             def _on_backend_notice(self, _code, _details) -> None:
                 pass
 
@@ -342,7 +326,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 self.stopped = FakeSignal()
                 self.notice = FakeSignal()
                 self.phase_changed = FakeSignal()
-                self._stopped = False
+                self._stopped = True
                 instances["backend"] = self
 
             @property
@@ -350,12 +334,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 return self._stopped
 
             def start(self) -> None:
+                self._stopped = False
                 events.append("backend_started")
 
             def stop(self) -> None:
                 events.append("backend_stop_requested")
 
         class FakeApplication:
+            backend_first = False
+
             def __init__(self, _args) -> None:
                 self.aboutToQuit = FakeSignal()
                 instances["app"] = self
@@ -369,10 +356,16 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 widget = instances["widget"]
                 backend = instances["backend"]
                 widget.shutdown_requested.emit()
-                widget.shutdown_ready.emit()
-                self.assert_waiting_for_backend()
-                backend._stopped = True
-                backend.stopped.emit()
+                if self.backend_first:
+                    backend._stopped = True
+                    backend.stopped.emit()
+                    self.assert_waiting_for_other_side()
+                    widget.shutdown_ready.emit()
+                else:
+                    widget.shutdown_ready.emit()
+                    self.assert_waiting_for_other_side()
+                    backend._stopped = True
+                    backend.stopped.emit()
                 return 0
 
             @staticmethod
@@ -385,9 +378,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                     raise AssertionError(events)
 
             @staticmethod
-            def assert_waiting_for_backend() -> None:
+            def assert_waiting_for_other_side() -> None:
                 if "window_completed" in events:
-                    raise AssertionError("window completed before backend stopped")
+                    raise AssertionError("window completed before both sides were ready")
 
         class FakeLock:
             def acquire(self, *, timeout: float) -> bool:
@@ -406,6 +399,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             patch.object(app_gui_module, "get_settings", return_value=settings),
             patch.object(app_gui_module, "configure_packaged_logging"),
             patch.object(app_gui_module, "InterProcessFileLock", return_value=FakeLock()),
+            patch.object(app_gui_module, "read_desktop_gui_state", return_value={"language": "zh"}),
+            patch.object(
+                app_gui_module,
+                "prepare_desktop_runtime",
+                side_effect=lambda _settings, _state: app_gui_module.DesktopStartupResult(
+                    storage_ready=True,
+                ),
+            ),
             patch.object(app_gui_module, "QApplication", FakeApplication),
             patch.object(app_gui_module, "HaypileFloatingBall", FakeWidget),
             patch.object(app_gui_module, "BackendRuntimeController", FakeBackend),
@@ -415,18 +416,173 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 side_effect=lambda _delay, callback: scheduled.append(callback),
             ),
         ):
-            result = app_gui_module.main([])
+            for backend_first in (False, True):
+                events.clear()
+                scheduled.clear()
+                instances.clear()
+                FakeApplication.backend_first = backend_first
 
-        self.assertEqual(result, 0)
-        self.assertEqual(events[:3], ["lock_acquired:0.1", "quit_on_last:False", "window_shown"])
-        self.assertLess(events.index("window_shown"), events.index("backend_started"))
-        self.assertLess(
-            events.index("backend_stop_requested"),
-            events.index("window_completed"),
+                result = app_gui_module.main([])
+
+                self.assertEqual(result, 0)
+                self.assertEqual(
+                    events[:3],
+                    ["lock_acquired:0.1", "quit_on_last:False", "window_shown"],
+                )
+                self.assertLess(
+                    events.index("window_shown"),
+                    events.index("runtime_applied"),
+                )
+                self.assertLess(
+                    events.index("runtime_applied"),
+                    events.index("backend_started"),
+                )
+                self.assertLess(
+                    events.index("backend_stop_requested"),
+                    events.index("window_completed"),
+                )
+                self.assertEqual(events.count("window_completed"), 1)
+                self.assertEqual(events[-1], "lock_released")
+                self.assertEqual(len(scheduled), 1)
+                widget = instances["widget"]
+                self.assertIs(widget.kwargs["settings"], settings)
+                self.assertEqual(widget.kwargs["initial_state"], {"language": "zh"})
+                self.assertTrue(widget.kwargs["deferred_runtime"])
+                self.assertTrue(widget.kwargs["managed_shutdown"])
+
+    def test_desktop_main_storage_failure_and_early_close_skip_backend_start(self) -> None:
+        def run_case(*, lock_fails: bool, close_before_hydrate: bool) -> list[str]:
+            events: list[str] = []
+            scheduled: list[object] = []
+            instances: dict[str, object] = {}
+
+            class FakeSignal:
+                def __init__(self) -> None:
+                    self.callbacks = []
+
+                def connect(self, callback) -> None:
+                    self.callbacks.append(callback)
+
+                def emit(self, *args) -> None:
+                    for callback in list(self.callbacks):
+                        callback(*args)
+
+            class FakeWidget:
+                def __init__(self, **_kwargs) -> None:
+                    self.shutdown_requested = FakeSignal()
+                    self.shutdown_ready = FakeSignal()
+                    instances["widget"] = self
+
+                def show(self) -> None:
+                    events.append("window_shown")
+
+                def shutdown(self) -> None:
+                    pass
+
+                def complete_shutdown(self) -> None:
+                    events.append("window_completed")
+
+                def apply_desktop_runtime(self, result) -> bool:
+                    events.append(f"runtime_ready:{result.storage_ready}")
+                    return bool(result.storage_ready)
+
+                def _on_backend_notice(self, _code, _details) -> None:
+                    pass
+
+                def _on_backend_phase_changed(self, _phase) -> None:
+                    pass
+
+            class FakeBackend:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self.stopped = FakeSignal()
+                    self.notice = FakeSignal()
+                    self.phase_changed = FakeSignal()
+                    instances["backend"] = self
+
+                @property
+                def is_stopped(self) -> bool:
+                    return True
+
+                def start(self) -> None:
+                    events.append("backend_started")
+
+                def stop(self) -> None:
+                    events.append("backend_stop_requested")
+
+            class FakeApplication:
+                def __init__(self, _args) -> None:
+                    self.aboutToQuit = FakeSignal()
+
+                def setQuitOnLastWindowClosed(self, _enabled: bool) -> None:
+                    pass
+
+                def exec(self) -> int:
+                    widget = instances["widget"]
+                    if close_before_hydrate:
+                        widget.shutdown_requested.emit()
+                        widget.shutdown_ready.emit()
+                        scheduled.pop(0)()
+                    else:
+                        scheduled.pop(0)()
+                        widget.shutdown_requested.emit()
+                        widget.shutdown_ready.emit()
+                    return 0
+
+            class FakeLock:
+                def acquire(self, *, timeout: float) -> bool:
+                    self.timeout = timeout
+                    if lock_fails:
+                        raise OSError("storage blocked")
+                    return True
+
+                def release(self) -> None:
+                    events.append("lock_released")
+
+            settings = SimpleNamespace(
+                INDEX_DIR=self.tmpdir / "index",
+                LOG_DIR=self.tmpdir / "logs",
+                BASE_DIR=self.tmpdir,
+            )
+            prepare = Mock(
+                return_value=app_gui_module.DesktopStartupResult(
+                    storage_ready=True,
+                )
+            )
+            with (
+                patch.object(app_gui_module, "get_settings", return_value=settings),
+                patch.object(app_gui_module, "configure_packaged_logging"),
+                patch.object(app_gui_module, "InterProcessFileLock", return_value=FakeLock()),
+                patch.object(app_gui_module, "read_desktop_gui_state", return_value={}),
+                patch.object(app_gui_module, "prepare_desktop_runtime", prepare),
+                patch.object(app_gui_module, "QApplication", FakeApplication),
+                patch.object(app_gui_module, "HaypileFloatingBall", FakeWidget),
+                patch.object(app_gui_module, "BackendRuntimeController", FakeBackend),
+                patch.object(
+                    app_gui_module.QTimer,
+                    "singleShot",
+                    side_effect=lambda _delay, callback: scheduled.append(callback),
+                ),
+            ):
+                self.assertEqual(app_gui_module.main([]), 0)
+
+            prepare.assert_not_called()
+            return events
+
+        storage_failure = run_case(
+            lock_fails=True,
+            close_before_hydrate=False,
         )
-        self.assertEqual(events.count("window_completed"), 1)
-        self.assertEqual(events[-1], "lock_released")
-        self.assertEqual(len(scheduled), 1)
+        early_close = run_case(
+            lock_fails=False,
+            close_before_hydrate=True,
+        )
+
+        self.assertIn("runtime_ready:False", storage_failure)
+        self.assertNotIn("backend_started", storage_failure)
+        self.assertNotIn("lock_released", storage_failure)
+        self.assertNotIn("runtime_ready:True", early_close)
+        self.assertNotIn("backend_started", early_close)
+        self.assertIn("lock_released", early_close)
 
     def test_clipboard_raw_gif_runs_real_ingest_and_cleans_temp_file(self) -> None:
         storage = self.tmpdir / "storage"
@@ -2108,6 +2264,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
         ball = app_gui_module.HaypileFloatingBall()
         try:
+            ball._refresh_pending_badge()
             ball._toggle_quick_menu()
 
             self.assertTrue(ball.quick_menu.isVisible())
@@ -3575,6 +3732,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
         ball = app_gui_module.HaypileFloatingBall()
         try:
+            ball._refresh_pending_badge()
             self.assertTrue(ball._has_pending_assets)
             pixmap = QPixmap(ball.size())
             pixmap.fill(Qt.GlobalColor.transparent)
@@ -3684,8 +3842,59 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
 
-    def test_floating_ball_constructor_has_no_backend_runtime_side_effects(self) -> None:
+    def test_floating_ball_constructor_has_no_product_runtime_side_effects(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+        initial_state = {
+            "x": 123,
+            "y": 145,
+            "language": "en",
+            "low_power_enabled": True,
+            "ai_enabled": True,
+            "ai_provider": "api",
+            "ai_api_base_url": "https://api.example.com",
+            "ai_api_model": "model",
+            "ai_api_authorized_host": "api.example.com",
+            "ai_api_key_present": True,
+        }
         with (
+            patch.object(
+                app_gui_module,
+                "get_settings",
+                side_effect=AssertionError("explicit settings must be used"),
+            ),
+            patch.object(
+                app_gui_module,
+                "build_material_panel_summary",
+                side_effect=AssertionError("manifest summary must not load"),
+            ),
+            patch.object(
+                app_gui_module.SystemCredentialStore,
+                "get",
+                side_effect=AssertionError("credential store must not load"),
+            ),
+            patch.object(
+                Path,
+                "mkdir",
+                side_effect=AssertionError("storage directories must not be created"),
+            ),
+            patch.object(
+                app_gui_module.HaypileFloatingBall,
+                "_read_gui_state",
+                side_effect=AssertionError("product state must not be read"),
+            ),
+            patch.object(
+                app_gui_module,
+                "read_desktop_gui_state",
+                side_effect=AssertionError("startup loader must not run"),
+            ),
+            patch.object(
+                Path,
+                "unlink",
+                side_effect=AssertionError("temporary files must not be cleaned"),
+            ),
             patch.object(
                 app_gui_module.BackendRuntimeController,
                 "_probe_backend_response",
@@ -3696,13 +3905,128 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ) as port_probe,
             patch("app.gui.backend_runtime.subprocess.Popen") as popen,
         ):
-            ball = app_gui_module.HaypileFloatingBall()
+            ball = app_gui_module.HaypileFloatingBall(
+                settings=settings,
+                initial_state=initial_state,
+            )
         try:
             ipc_probe.assert_not_called()
             port_probe.assert_not_called()
             popen.assert_not_called()
             self.assertFalse(hasattr(ball, "api_process"))
             self.assertFalse(hasattr(ball, "_backend_timer"))
+            self.assertIs(ball.settings, settings)
+            self.assertEqual(ball.language_mode, "en")
+            self.assertTrue(ball.low_power_enabled)
+            self.assertEqual(ball.pos(), app_gui_module.QPoint(123, 145))
+            self.assertEqual(ball.ai_provider_mode, "api")
+            self.assertFalse(ball.ai_enabled)
+            self.assertEqual(ball._session_api_key, "")
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_desktop_runtime_hydrates_once_and_enables_api_session(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+        ball = app_gui_module.HaypileFloatingBall(
+            settings=settings,
+            initial_state={
+                "ai_enabled": True,
+                "ai_provider": "api",
+                "ai_api_base_url": "https://api.example.com",
+                "ai_api_model": "model",
+                "ai_api_authorized_host": "api.example.com",
+                "ai_api_key_present": True,
+            },
+            deferred_runtime=True,
+        )
+        status_refreshes: list[bool] = []
+        pending_refreshes: list[bool] = []
+        ball._refresh_ai_menu_status = lambda **_kwargs: status_refreshes.append(True)
+        ball._refresh_pending_badge = lambda: pending_refreshes.append(True)
+        try:
+            self.assertFalse(ball.acceptDrops())
+            self.assertFalse(ball.ai_enabled)
+
+            result = app_gui_module.DesktopStartupResult(
+                storage_ready=True,
+                session_api_key="secret",
+            )
+            self.assertTrue(ball.apply_desktop_runtime(result))
+            self.assertTrue(ball.apply_desktop_runtime(result))
+
+            self.assertTrue(ball.acceptDrops())
+            self.assertEqual(ball._session_api_key, "secret")
+            self.assertTrue(ball.ai_api_key_present)
+            self.assertTrue(ball.ai_enabled)
+            self.assertEqual(status_refreshes, [True])
+            self.assertEqual(pending_refreshes, [True])
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_storage_failure_keeps_settings_but_blocks_all_ingest_entries(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+        ball = app_gui_module.HaypileFloatingBall(
+            settings=settings,
+            deferred_runtime=True,
+        )
+        messages: list[tuple[str, bool]] = []
+        ball.show_toast = lambda message, *, success: messages.append((message, success))
+        source = self.tmpdir / "blocked.gif"
+        source.write_bytes(b"GIF89a")
+        try:
+            self.assertFalse(
+                ball.apply_desktop_runtime(
+                    app_gui_module.DesktopStartupResult(
+                        storage_ready=False,
+                        error_code="storage_unavailable",
+                    )
+                )
+            )
+            self.assertFalse(ball.acceptDrops())
+
+            mime_data = QMimeData()
+            mime_data.setData("image/gif", b"GIF89a")
+            with patch.object(
+                ball,
+                "_write_clipboard_bytes",
+                side_effect=AssertionError("clipboard bytes must not be written"),
+            ):
+                ball._ingest_clipboard_data(mime_data)
+            ball._start_remote_download_worker(["https://example.com/a.gif"])
+            ball._start_worker([source])
+
+            drag_mime = QMimeData()
+            drag_mime.setUrls([QUrl.fromLocalFile(str(source))])
+            drag_event = QDragEnterEvent(
+                QPoint(10, 10),
+                Qt.DropAction.CopyAction,
+                drag_mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            ball.dragEnterEvent(drag_event)
+
+            opened: list[str] = []
+            ball.quick_menu.open_drawer = (
+                lambda action, _anchor, _available: opened.append(action)
+            )
+            ball._handle_quick_menu_action("settings")
+
+            self.assertFalse(drag_event.isAccepted())
+            self.assertIsNone(ball.worker)
+            self.assertIsNone(ball.remote_worker)
+            self.assertEqual(opened, ["settings"])
+            self.assertTrue(messages)
+            self.assertTrue(all(not success for _message, success in messages))
+            self.assertTrue(any("素材目录不可用" in message for message, _success in messages))
         finally:
             ball.close()
             self.app.processEvents()
