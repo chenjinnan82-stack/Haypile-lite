@@ -1264,6 +1264,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         previous_builder = app_gui_module.build_material_panel_summary
         app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         panel = MaterialPanelWindow()
+        panel._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [],
+            theme_recoveries=[],
+        )
         try:
             panel.refresh()
 
@@ -1285,6 +1289,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         previous_builder = app_gui_module.build_material_panel_summary
         app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         panel = MaterialPanelWindow()
+        panel._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [],
+            theme_recoveries=[],
+        )
         try:
             panel.refresh()
 
