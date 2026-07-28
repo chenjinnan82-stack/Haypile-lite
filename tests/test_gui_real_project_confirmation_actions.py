@@ -1878,7 +1878,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.app.processEvents()
             app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
-    def test_floating_ball_ingest_feedback_tracks_closing_drop_visual(self) -> None:
+    def test_floating_ball_ingest_feedback_keeps_fixed_target_anchor(self) -> None:
         previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
@@ -1898,17 +1898,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.app.processEvents()
 
             feedback_x = []
+            fixed_anchor = ball._toast_anchor()
             for progress in (1.0, 0.5, 0.0):
                 ball._set_drop_open_progress(progress)
                 self.app.processEvents()
-                visual_center = (
-                    app_gui_module.QPointF(ball.pos())
-                    + app_gui_module.QRectF(ball.rect()).center()
-                    + ball._drop_visual_offset(progress)
-                )
                 anchor = ball._toast_anchor()
-                self.assertLessEqual(abs(anchor.center().x() - visual_center.x()), 2)
-                self.assertLessEqual(abs(anchor.center().y() - visual_center.y()), 2)
+                self.assertEqual(anchor, fixed_anchor)
                 self.assertEqual(ball.quick_menu._anchor, anchor)
                 self.assertEqual(
                     ball.quick_menu.drawer_shell.geometry(),
@@ -1921,7 +1916,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 )
                 feedback_x.append(ball.quick_menu.x())
 
-            self.assertNotEqual(feedback_x[0], feedback_x[-1])
+            self.assertEqual(len(set(feedback_x)), 1)
             long_message = (
                 "Blocked: only safe images/audio are supported, "
                 "or an asset exceeds its size limit"
@@ -2326,21 +2321,24 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertGreater(center.alpha(), 120)
             self.assertGreater(center.red(), center.green())
 
-            def render_symbol(timestamp: float):
+            def render_symbol(elapsed: float):
                 symbol = QPixmap(160, 160)
                 symbol.fill(Qt.GlobalColor.transparent)
                 symbol_painter = QPainter(symbol)
-                with patch.object(app_gui_module.time, "monotonic", return_value=timestamp):
-                    ball._draw_gif_intake(
-                        symbol_painter,
-                        app_gui_module.QRectF(9.5, 9.5, 141, 141),
-                        1.0,
-                        0.0,
-                    )
+                ball._intake_renderer.paint(
+                    symbol_painter,
+                    app_gui_module.QRectF(symbol.rect()),
+                    app_gui_module.QRectF(9.5, 9.5, 141, 141),
+                    app_gui_module.IntakeVisualState(
+                        kind="gif",
+                        open_progress=1.0,
+                        gif_elapsed_seconds=elapsed,
+                    ),
+                )
                 symbol_painter.end()
                 return symbol.toImage()
 
-            symbol_image = render_symbol(expanded_at)
+            symbol_image = render_symbol(ball.GIF_EXPAND_SECONDS)
             colors = {
                 symbol_image.pixelColor(x, y).name().upper()
                 for y in range(symbol_image.height())
@@ -2352,27 +2350,24 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 x
                 for y in range(symbol_image.height())
                 for x in range(symbol_image.width())
-                if symbol_image.pixelColor(x, y).alpha() > 30
+                if symbol_image.pixelColor(x, y).name().upper()
+                in {"#78945B", "#D5A73D", "#D9795F"}
             ]
             visible_width = max(occupied_x) - min(occupied_x) + 1
             self.assertGreaterEqual(visible_width, 68)
             self.assertGreater(visible_width, 52)
 
-            ball._gif_expand_started_at = expanded_at
-            centered_image = render_symbol(expanded_at)
-            centered_x = [
-                x
-                for y in range(centered_image.height())
-                for x in range(centered_image.width())
-                if centered_image.pixelColor(x, y).alpha() > 30
-            ]
-            centered_width = max(centered_x) - min(centered_x) + 1
-            self.assertGreaterEqual(visible_width - centered_width, 14)
-            ball._gif_expand_started_at = expanded_at - ball.GIF_EXPAND_SECONDS
-
             ball._set_gif_suction_progress(1.0)
             contracted = render_at(expanded_at).toImage()
             self.assertNotEqual(contracted, first)
+            self.assertFalse(
+                any(
+                    contracted.pixelColor(x, y).name().upper()
+                    in {"#78945B", "#D5A73D", "#D9795F"}
+                    for y in range(contracted.height())
+                    for x in range(contracted.width())
+                )
+            )
 
             ball._set_gif_suction_progress(0.0)
             ball.low_power_enabled = True
@@ -2502,6 +2497,34 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.app.processEvents()
             app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
+    def test_floating_ball_gif_failure_clears_cards_and_feedback_delay(self) -> None:
+        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
+        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball.worker = SimpleNamespace(
+                result=app_gui_module.IngestResult(status="failed"),
+                deleteLater=lambda: None,
+                isRunning=lambda: False,
+            )
+            ball._active_ingest_visual_kind = "gif"
+            ball._drop_visual_kind = "gif"
+            ball._set_drop_open_progress(1.0)
+            ball._ingest_feedback_not_before = app_gui_module.time.monotonic() + 10
+            ball._ingest_feedback_timer.start(10_000)
+
+            ball._on_ingest_finished("GIF 已被拒绝", False)
+
+            self.assertIsNone(ball._pending_ingest_finish)
+            self.assertFalse(ball._ingest_feedback_timer.isActive())
+            self.assertEqual(ball._drop_visual_kind, "leaf")
+            self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+            self.assertTrue(ball._reject_feedback_active())
+        finally:
+            ball.close()
+            self.app.processEvents()
+            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
     def test_floating_ball_gif_intake_resets_on_hide_and_low_power(self) -> None:
         previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
@@ -2599,7 +2622,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 panel_size,
                 panel_size,
             )
-            aperture_center = ball._audio_center_path(panel_rect, 1.0).boundingRect().center()
+            aperture_center = (
+                ball._intake_renderer.audio_center_path(panel_rect, 1.0)
+                .boundingRect()
+                .center()
+            )
             self.assertLess(app_gui_module.math.hypot(
                 aperture_center.x() - panel_rect.center().x(),
                 aperture_center.y() - panel_rect.center().y(),
@@ -3647,11 +3674,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.render(pixmap)
 
             self.assertEqual(ball._drop_open_progress, 1.0)
-            self.assertGreater(len(ball._drop_leaf_frame_runs), 1000)
-            leaf_buckets = {run[3] for run in ball._drop_leaf_frame_runs if len(run) > 3}
+            self.assertGreater(len(ball._intake_renderer.leaf_frame_runs), 1000)
+            leaf_buckets = {
+                run[3]
+                for run in ball._intake_renderer.leaf_frame_runs
+                if len(run) > 3
+            }
             self.assertGreater(len(leaf_buckets), 1)
             self.assertLessEqual(leaf_buckets, {0, 1, 2})
-            self.assertEqual(len(ball._drop_leaf_renderers), 5)
+            self.assertEqual(ball._intake_renderer.leaf_renderer_count, 5)
             self.assertFalse(ball.quick_menu.isVisible())
             image = pixmap.toImage()
             center_color = image.pixelColor(ball.width() // 2, ball.height() // 2)

@@ -49,6 +49,14 @@ from app.core.config import configure_packaged_logging, get_settings, runtime_mo
 from app.core.exceptions import ResourceExhaustedError
 from app.core.file_lock import InterProcessFileLock
 from app.core.ipc import send_ipc_request
+from app.gui.intake_visual import (
+    GIF_EXPAND_SECONDS as INTAKE_GIF_EXPAND_SECONDS,
+    GIF_FRAME_STAGGER_SECONDS as INTAKE_GIF_FRAME_STAGGER_SECONDS,
+    GIF_SUCTION_SECONDS as INTAKE_GIF_SUCTION_SECONDS,
+    GIF_TICK_SECONDS as INTAKE_GIF_TICK_SECONDS,
+    IntakeEntryRenderer,
+    IntakeVisualState,
+)
 from app.services.asset_provenance import (
     provenance_path_for,
     public_origin_url,
@@ -142,7 +150,6 @@ from PySide6.QtGui import (
     QRadialGradient,
     QResizeEvent,
 )
-from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
     QGraphicsOpacityEffect,
@@ -4122,11 +4129,11 @@ AttachedHubWindow = QuickMenuWindow
 class HaypileFloatingBall(QWidget):
     COLLAPSED_SIZE = 72
     EXPANDED_SIZE = 300
-    GIF_TICK_SECONDS = 0.11
-    GIF_FRAME_STAGGER_SECONDS = 0.045
-    GIF_EXPAND_SECONDS = 0.18
+    GIF_TICK_SECONDS = INTAKE_GIF_TICK_SECONDS
+    GIF_FRAME_STAGGER_SECONDS = INTAKE_GIF_FRAME_STAGGER_SECONDS
+    GIF_EXPAND_SECONDS = INTAKE_GIF_EXPAND_SECONDS
     GIF_OPEN_MS = 210
-    GIF_SUCTION_MS = 190
+    GIF_SUCTION_MS = round(INTAKE_GIF_SUCTION_SECONDS * 1000)
     GIF_CLOSE_MS = 170
 
     def __init__(self) -> None:
@@ -4141,11 +4148,7 @@ class HaypileFloatingBall(QWidget):
         self._haypile_glow_pixmap = self._tinted_haypile_pixmap(QColor("#FFD66D"))
         self._haypile_direction_glow_pixmap = self._tinted_haypile_pixmap(QColor("#FFF1B2"))
         self._haypile_exit_glow_pixmap = self._tinted_haypile_pixmap(QColor("#9B4C37"))
-        self._drop_leaf_frame_runs = self._load_drop_leaf_frame_runs()
-        self._drop_leaf_frame_renderer = QSvgRenderer(str(self.project_root / "ui_assets" / "drop-leaf-frame.svg"))
-        self._drop_leaf_renderers = self._load_drop_leaf_renderers()
-        self._audio_leaf_layer_key: tuple[int, int, int] | None = None
-        self._audio_leaf_layer_buffers: tuple[QPixmap, ...] = ()
+        self._intake_renderer = IntakeEntryRenderer(self.project_root / "ui_assets")
         self._gui_state_path = self.settings.INDEX_DIR / "gui_state.json"
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.themes_dir.mkdir(parents=True, exist_ok=True)
@@ -4219,6 +4222,7 @@ class HaypileFloatingBall(QWidget):
         self._has_pending_assets = False
         self._drag_prepare_active = False
         self._drop_anchor_global: QPoint | None = None
+        self._drop_feedback_anchor_global: QRect | None = None
         self._drop_visual_kind = "leaf"
         self._audio_suction_progress = 0.0
         self._audio_suction_animation: QVariantAnimation | None = None
@@ -4397,25 +4401,27 @@ class HaypileFloatingBall(QWidget):
                 painter.drawEllipse(panel_rect.adjusted(-6, -6, 6, 6))
                 painter.restore()
 
-            if self._drop_visual_kind == "audio":
-                self._draw_audio_intake(
-                    painter,
-                    panel_rect,
-                    progress,
-                    self._audio_suction_progress,
-                )
-            elif self._drop_visual_kind == "gif":
-                self._draw_drop_leaf_frame(painter, panel_rect, progress)
-                self._draw_drop_center_cutout(painter, panel_rect, progress)
-                self._draw_gif_intake(
-                    painter,
-                    panel_rect,
-                    progress,
-                    self._gif_suction_progress,
-                )
-            else:
-                self._draw_drop_leaf_frame(painter, panel_rect, progress)
-                self._draw_drop_center_cutout(painter, panel_rect, progress)
+            gif_elapsed = (
+                max(0.0, time.monotonic() - self._gif_expand_started_at)
+                if self._gif_expand_started_at > 0.0
+                else 0.0
+            )
+            self._intake_renderer.paint(
+                painter,
+                QRectF(self.rect()),
+                panel_rect,
+                IntakeVisualState(
+                    kind=self._drop_visual_kind,
+                    open_progress=progress,
+                    audio_suction_progress=self._audio_suction_progress,
+                    gif_suction_progress=self._gif_suction_progress,
+                    gif_elapsed_seconds=gif_elapsed,
+                    direction_angle=self._drag_awareness_angle,
+                    has_direction=self._drag_awareness_has_direction,
+                    low_power=self.low_power_enabled,
+                ),
+                device_pixel_ratio=self.devicePixelRatioF(),
+            )
 
             transition_span = 0.24 if self._drop_visual_kind == "audio" else 0.45
             pile_opacity = max(0.0, 1.0 - progress / transition_span)
@@ -4497,6 +4503,7 @@ class HaypileFloatingBall(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_external_drag_candidate()
         self._reset_drop_visual_state()
+        self._drop_feedback_anchor_global = None
         super().hideEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -4726,8 +4733,7 @@ class HaypileFloatingBall(QWidget):
         self._drag_prepare_active = False
         if self._drop_visual_kind == "gif":
             self._gif_expand_started_at = time.monotonic()
-        if self._drop_anchor_global is None:
-            self._drop_anchor_global = self.mapToGlobal(self._get_collapsed_circle_rect().center())
+        self._capture_drop_anchors()
         self._animate_drop_open(True)
         self._sync_visual_timer()
         self._animate_size(self.EXPANDED_SIZE)
@@ -5450,6 +5456,13 @@ class HaypileFloatingBall(QWidget):
         if self.worker is not None:
             self.worker.deleteLater()
             self.worker = None
+        if self._active_ingest_visual_kind == "gif" and not success:
+            self._ingest_feedback_timer.stop()
+            self._pending_ingest_finish = None
+            self._reset_drop_visual_state()
+            self._close_drop_target()
+            self._finalize_ingest_finish(message, False, ingest_result)
+            return
         if (
             self._active_ingest_visual_kind == "gif"
             and time.monotonic() < self._ingest_feedback_not_before
@@ -5623,10 +5636,10 @@ class HaypileFloatingBall(QWidget):
         self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=False)
 
     def _toast_anchor(self) -> QRect:
+        if self._drop_feedback_anchor_global is not None:
+            return QRect(self._drop_feedback_anchor_global)
         circle = self._get_collapsed_circle_rect()
-        top_left = self.mapToGlobal(circle.topLeft()) + self._drop_visual_offset(
-            self._drop_open_progress
-        ).toPoint()
+        top_left = self.mapToGlobal(circle.topLeft())
         return QRect(top_left, circle.size())
 
     def _ball_anchor_rect(self) -> QRect:
@@ -5647,6 +5660,7 @@ class HaypileFloatingBall(QWidget):
             self._update_window_mask()
             if target_size == self.COLLAPSED_SIZE:
                 self._drop_anchor_global = None
+                self._drop_feedback_anchor_global = None
                 self._reset_drop_visual_state()
             self.update()
             return
@@ -5657,6 +5671,7 @@ class HaypileFloatingBall(QWidget):
                 self.setGeometry(clamped)
             self.setFixedSize(target_size, target_size)
             if target_size == self.COLLAPSED_SIZE:
+                self._drop_feedback_anchor_global = None
                 self._reset_drop_visual_state()
             self._update_window_mask()
             self.update()
@@ -5680,6 +5695,7 @@ class HaypileFloatingBall(QWidget):
         self.is_expanded = target_size > self.COLLAPSED_SIZE
         self.setFixedSize(target_size, target_size)
         if target_size == self.COLLAPSED_SIZE:
+            self._drop_feedback_anchor_global = None
             self._reset_drop_visual_state()
         self._update_window_mask()
         self.update()
@@ -5695,6 +5711,20 @@ class HaypileFloatingBall(QWidget):
             target_size,
         )
         return QRect(x, y, target_size, target_size)
+
+    def _capture_drop_anchors(self) -> None:
+        if self._drop_anchor_global is None:
+            self._drop_anchor_global = self.mapToGlobal(
+                self._get_collapsed_circle_rect().center()
+            )
+        if self._drop_feedback_anchor_global is None:
+            target_center = self._clamped_geometry_for_size(self.EXPANDED_SIZE).center()
+            self._drop_feedback_anchor_global = QRect(
+                target_center.x() - 33,
+                target_center.y() - 33,
+                68,
+                68,
+            )
 
     def _clamped_window_point(self, point: QPoint) -> QPoint:
         x, y = self._clamp_window_position(point.x(), point.y(), self.width(), self.height())
@@ -6430,8 +6460,7 @@ class HaypileFloatingBall(QWidget):
         if self._drop_open_progress > 0.05:
             self._animate_gif_suction()
             return
-        if self._drop_anchor_global is None:
-            self._drop_anchor_global = self.mapToGlobal(self._get_collapsed_circle_rect().center())
+        self._capture_drop_anchors()
         self._collapse_timer.stop()
         self._animate_drop_open(True)
         self._animate_size(self.EXPANDED_SIZE)
@@ -6463,535 +6492,6 @@ class HaypileFloatingBall(QWidget):
         animation.setStartValue(self._drop_open_progress)
         animation.setEndValue(target)
         animation.start()
-
-    def _draw_audio_intake(
-        self,
-        painter: QPainter,
-        panel_rect: QRectF,
-        progress: float,
-        suction: float,
-    ) -> None:
-        progress = max(0.0, min(progress, 1.0))
-        suction = max(0.0, min(suction, 1.0))
-        if progress <= 0.0:
-            return
-        self._draw_audio_leaf_nest(painter, panel_rect, progress, suction)
-        self._draw_audio_center_cutout(painter, panel_rect, progress)
-
-    def _draw_audio_leaf_nest(
-        self,
-        painter: QPainter,
-        panel_rect: QRectF,
-        progress: float,
-        suction: float,
-    ) -> None:
-        if not self._drop_leaf_renderers:
-            self._draw_drop_leaf_frame(painter, panel_rect, progress, leaf_width_scale=0.78)
-            return
-
-        layers = (
-            (
-                QColor("#A8A96F"),
-                (
-                    (0, -165, 0.96, 0.40, 28, 0.42),
-                    (1, -105, 0.92, 0.37, -25, 0.39),
-                    (0, -45, 0.98, 0.41, 30, 0.43),
-                    (1, 15, 0.93, 0.38, -26, 0.40),
-                    (0, 75, 0.97, 0.40, 27, 0.42),
-                    (1, 135, 0.92, 0.37, -24, 0.39),
-                ),
-            ),
-            (
-                QColor("#C4963C"),
-                (
-                    (2, -145, 0.86, 0.34, -24, 0.72),
-                    (2, -85, 0.81, 0.32, 26, 0.69),
-                    (2, -25, 0.88, 0.35, -22, 0.73),
-                    (2, 35, 0.82, 0.33, 28, 0.70),
-                    (2, 95, 0.87, 0.34, -25, 0.72),
-                    (2, 155, 0.80, 0.32, 24, 0.69),
-                ),
-            ),
-            (
-                QColor("#4D582F"),
-                (
-                    (4, 179, 0.70, 0.33, -10, 0.92),
-                    (3, -121, 0.75, 0.30, 8, 0.90),
-                    (4, -61, 0.69, 0.32, -9, 0.93),
-                    (3, -1, 0.74, 0.30, 11, 0.90),
-                    (4, 59, 0.71, 0.33, -8, 0.92),
-                    (3, 119, 0.76, 0.30, 10, 0.91),
-                ),
-            ),
-        )
-        buffers = self._audio_leaf_buffers()
-        center = panel_rect.center()
-        source_angle = self._drag_awareness_angle if self._drag_awareness_has_direction else -math.pi / 2
-        source_degrees = math.degrees(source_angle)
-        source_vector = QPointF(math.cos(source_angle), math.sin(source_angle))
-        layer_delays = (0.0, 25.0 / 210.0, 50.0 / 210.0)
-        tint_opacities = (0.82, 0.92, 1.0)
-
-        for layer_index, ((color, placements), buffer) in enumerate(zip(layers, buffers)):
-            buffer.fill(Qt.GlobalColor.transparent)
-            layer_painter = QPainter(buffer)
-            layer_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            layer_painter.setClipPath(self._drop_outer_path(panel_rect))
-            for leaf_index, angle, radius_scale, width_scale, rotation_offset, opacity in placements:
-                if leaf_index >= len(self._drop_leaf_renderers):
-                    continue
-                renderer = self._drop_leaf_renderers[leaf_index]
-                svg_size = renderer.defaultSize()
-                if svg_size.width() <= 0:
-                    continue
-
-                delta = (angle - source_degrees + 180.0) % 360.0 - 180.0
-                source_weight = max(0.0, math.cos(math.radians(delta))) if abs(delta) <= 65.0 else 0.0
-                delay = max(0.0, layer_delays[layer_index] - source_weight * (15.0 / 210.0))
-                leaf_progress = self._staggered_progress(progress, delay)
-                suction_delay = (55.0 / 150.0) * (abs(delta) / 180.0)
-                leaf_suction = self._staggered_progress(suction, suction_delay)
-
-                radians = math.radians(angle)
-                radius = panel_rect.width() * radius_scale
-                full_center = center + QPointF(math.cos(radians) * radius, math.sin(radians) * radius)
-                slide = 0.98 - 0.18 * leaf_progress
-                draw_center = center + (full_center - center) * slide
-                greeting = (6.0 if layer_index < 2 else 1.8) * source_weight * leaf_progress * (1.0 - leaf_suction)
-                draw_center += source_vector * greeting
-                toward_center = center - draw_center
-                toward_length = math.hypot(toward_center.x(), toward_center.y())
-                if toward_length > 0.5:
-                    draw_center += toward_center * ((9.0 * leaf_suction) / toward_length)
-
-                open_scale = 0.72 + 0.28 * leaf_progress
-                suction_scale = 1.0 - 0.06 * leaf_suction
-                draw_width = min(self.width(), self.height()) * width_scale * open_scale * 0.68 * suction_scale
-                draw_height = draw_width * svg_size.height() / svg_size.width()
-                direction_turn = -math.sin(math.radians(delta)) * 10.0 * source_weight * (1.0 - leaf_suction)
-                draw_rotation = angle - 90 + rotation_offset * (1.0 - 0.38 * leaf_suction) + direction_turn
-
-                layer_painter.save()
-                layer_painter.setOpacity(
-                    opacity
-                    * (0.18 + 0.82 * leaf_progress)
-                    * (1.0 - 0.68 * leaf_suction)
-                )
-                layer_painter.translate(draw_center)
-                layer_painter.rotate(draw_rotation)
-                clip_height = 0.42 if leaf_index in {3, 4} else 0.48
-                layer_painter.setClipRect(
-                    QRectF(-draw_width * 0.56, -draw_height * 0.52, draw_width * 1.12, draw_height * clip_height),
-                    Qt.ClipOperation.IntersectClip,
-                )
-                renderer.render(
-                    layer_painter,
-                    QRectF(-draw_width * 0.5, -draw_height * 0.5, draw_width, draw_height),
-                )
-                layer_painter.restore()
-
-            layer_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-            layer_color = QColor(color)
-            layer_color.setAlphaF(tint_opacities[layer_index])
-            layer_painter.fillRect(QRectF(self.rect()), layer_color)
-            layer_painter.end()
-            painter.drawPixmap(QPointF(0.0, 0.0), buffer)
-
-    def _audio_leaf_buffers(self) -> tuple[QPixmap, ...]:
-        dpr = max(1.0, self.devicePixelRatioF())
-        key = (self.width(), self.height(), round(dpr * 100))
-        if self._audio_leaf_layer_key != key:
-            pixel_size = self.size() * dpr
-            self._audio_leaf_layer_buffers = tuple(QPixmap(pixel_size) for _ in range(3))
-            for buffer in self._audio_leaf_layer_buffers:
-                buffer.setDevicePixelRatio(dpr)
-            self._audio_leaf_layer_key = key
-        return self._audio_leaf_layer_buffers
-
-    @staticmethod
-    def _staggered_progress(value: float, delay: float) -> float:
-        if value <= delay:
-            return 0.0
-        progress = min(1.0, (value - delay) / max(0.001, 1.0 - delay))
-        return progress * progress * (3.0 - 2.0 * progress)
-
-    @staticmethod
-    def _audio_center_path(panel_rect: QRectF, progress: float) -> QPainterPath:
-        center = panel_rect.center()
-        radius = panel_rect.width() * 0.155 * (0.72 + 0.28 * progress)
-        points = (
-            (-8, 0.93), (24, 1.13), (57, 0.86), (91, 1.08),
-            (126, 0.90), (163, 1.16), (199, 0.84), (234, 1.09),
-            (270, 0.89), (306, 1.14), (339, 0.87),
-        )
-        vertices = [
-            center
-            + QPointF(
-                math.cos(math.radians(angle)) * radius * scale,
-                math.sin(math.radians(angle)) * radius * scale,
-            )
-            for angle, scale in points
-        ]
-        path = QPainterPath()
-        path.moveTo((vertices[-1] + vertices[0]) * 0.5)
-        for index, point in enumerate(vertices):
-            path.quadTo(point, (point + vertices[(index + 1) % len(vertices)]) * 0.5)
-        path.closeSubpath()
-        return path
-
-    def _draw_audio_center_cutout(self, painter: QPainter, panel_rect: QRectF, progress: float) -> None:
-        painter.save()
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(Qt.GlobalColor.transparent)
-        painter.drawPath(self._audio_center_path(panel_rect, progress))
-        painter.restore()
-
-    def _draw_gif_intake(
-        self,
-        painter: QPainter,
-        panel_rect: QRectF,
-        progress: float,
-        suction: float,
-    ) -> None:
-        progress = max(0.0, min(progress, 1.0))
-        suction = max(0.0, min(suction, 1.0))
-        if progress <= 0.0:
-            return
-
-        now = time.monotonic()
-        elapsed = max(0.0, now - self._gif_expand_started_at)
-        active_frame = int(now / self.GIF_TICK_SECONDS) % 3
-        lift_phase = (now % self.GIF_TICK_SECONDS) / self.GIF_TICK_SECONDS
-        lift = 3.0 * math.sin(lift_phase * math.pi)
-        width = min(52.0, panel_rect.width() * 0.38)
-        height = width * 37.0 / 52.0
-        center = panel_rect.center() + QPointF(0.0, -panel_rect.height() * 0.045)
-        layers = (
-            (-9.0, -9.0, -9.0, QColor("#78945B"), 2),
-            (7.0, 7.0, 7.0, QColor("#D5A73D"), 1),
-            (0.0, 0.0, 0.0, QColor("#D9795F"), 0),
-        )
-
-        painter.save()
-        clip = QPainterPath()
-        clip.addEllipse(panel_rect.adjusted(3.0, 3.0, -3.0, -3.0))
-        painter.setClipPath(clip)
-        inherited_opacity = painter.opacity()
-        for index, (offset_x, offset_y, rotation, color, suction_order) in enumerate(layers):
-            expand_start = index * self.GIF_FRAME_STAGGER_SECONDS
-            expand = max(
-                0.0,
-                min(
-                    (elapsed - expand_start)
-                    / max(
-                        0.001,
-                        self.GIF_EXPAND_SECONDS
-                        - 2 * self.GIF_FRAME_STAGGER_SECONDS,
-                    ),
-                    1.0,
-                ),
-            )
-            expand = expand * expand * (3.0 - 2.0 * expand)
-            if self.low_power_enabled or suction > 0.0:
-                expand = 1.0
-
-            suction_start = suction_order * (
-                self.GIF_FRAME_STAGGER_SECONDS / (self.GIF_SUCTION_MS / 1000.0)
-            )
-            layer_suction = max(
-                0.0,
-                min(
-                    (suction - suction_start)
-                    / max(0.001, 1.0 - suction_start),
-                    1.0,
-                ),
-            )
-            layer_suction = layer_suction * layer_suction * (3.0 - 2.0 * layer_suction)
-            scale = (0.82 + 0.18 * progress) * (1.0 - 0.68 * layer_suction)
-            frame_lift = (
-                lift
-                if not self.low_power_enabled
-                and suction <= 0.0
-                and index == active_frame
-                else 0.0
-            )
-            layer_center = center + QPointF(
-                offset_x * expand,
-                offset_y * expand - frame_lift + 22.0 * layer_suction,
-            )
-            painter.save()
-            painter.setOpacity(
-                inherited_opacity
-                * progress
-                * (0.22 + 0.78 * expand)
-                * (1.0 - 0.82 * layer_suction)
-            )
-            painter.translate(layer_center)
-            painter.rotate(rotation * expand)
-            card = QRectF(
-                -width * scale / 2.0,
-                -height * scale / 2.0,
-                width * scale,
-                height * scale,
-            )
-            if index == 2 and layer_suction <= 0.0:
-                painter.setBrush(QColor(35, 28, 13, 28))
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawRoundedRect(card.translated(0.0, 1.6), 4.5, 4.5)
-            painter.setBrush(color)
-            painter.setPen(QPen(QColor("#4E5F3D"), 1.15))
-            painter.drawRoundedRect(card, 4.5, 4.5)
-            if index == 2:
-                inset_x = max(4.5, card.width() * 0.11)
-                inset_y = max(4.0, card.height() * 0.13)
-                core = card.adjusted(inset_x, inset_y, -inset_x, -inset_y)
-                painter.setBrush(QColor("#FFF9EA"))
-                painter.setPen(QPen(QColor("#4E5F3D"), 0.8))
-                painter.drawRoundedRect(core, 2.8, 2.8)
-            painter.restore()
-        painter.restore()
-
-    def _load_drop_leaf_renderers(self) -> list[QSvgRenderer]:
-        leaf_dir = self.project_root / "ui_assets"
-        return [
-            renderer
-            for renderer in (
-                QSvgRenderer(str(leaf_dir / f"drop-leaf-{index}.svg"))
-                for index in range(1, 6)
-            )
-            if renderer.isValid()
-        ]
-
-    def _load_drop_leaf_frame_runs(self) -> list[tuple[int, ...]]:
-        runs_path = self.project_root / "ui_assets" / "drop-leaf-frame-runs.txt"
-        try:
-            return [
-                tuple(int(part) for part in line.split())
-                for line in runs_path.read_text(encoding="ascii").splitlines()
-                if line.strip()
-            ]
-        except (OSError, ValueError):
-            return []
-
-    def _draw_drop_leaf_frame(
-        self,
-        painter: QPainter,
-        panel_rect: QRectF,
-        progress: float,
-        *,
-        leaf_width_scale: float = 1.0,
-    ) -> None:
-        progress = max(0.0, min(progress, 1.0))
-        if self._drop_leaf_renderers:
-            self._draw_vector_leaf_frame(painter, panel_rect, progress, leaf_width_scale)
-            return
-        if self._drop_leaf_frame_renderer.isValid():
-            size = min(self.width(), self.height())
-            scale = 0.88 + 0.12 * progress
-            draw_size = size * scale
-            frame_rect = QRectF(
-                (self.width() - draw_size) * 0.5,
-                (self.height() - draw_size) * 0.5,
-                draw_size,
-                draw_size,
-            )
-            painter.save()
-            painter.setOpacity(0.18 + 0.82 * progress)
-            self._drop_leaf_frame_renderer.render(painter, frame_rect)
-            painter.restore()
-            return
-        if self._drop_leaf_frame_runs:
-            size = min(self.width(), self.height())
-            scale = 0.88 + 0.12 * progress
-            draw_size = size * scale
-            offset_x = (self.width() - draw_size) * 0.5
-            offset_y = (self.height() - draw_size) * 0.5
-            step = draw_size / 512.0
-            leaf_colors = (QColor("#7b9b3a"), QColor("#556729"), QColor("#3c4819"))
-            fallback_color = leaf_colors[1]
-            painter.save()
-            painter.setOpacity(0.18 + 0.82 * progress)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-            for run in self._drop_leaf_frame_runs:
-                x, y, width = run[:3]
-                bucket = run[3] if len(run) > 3 else 1
-                leaf_color = leaf_colors[bucket] if 0 <= bucket < len(leaf_colors) else fallback_color
-                painter.fillRect(QRectF(offset_x + x * step, offset_y + y * step, width * step, step), leaf_color)
-            painter.restore()
-            return
-    def _draw_vector_leaf_frame(
-        self,
-        painter: QPainter,
-        panel_rect: QRectF,
-        progress: float,
-        leaf_width_scale: float,
-    ) -> None:
-        center = panel_rect.center()
-        placements = [
-            (0, -171, 0.91, 0.39, -10, 0.44),
-            (1, -132, 0.93, 0.43, 8, 0.46),
-            (0, -91, 0.90, 0.38, -7, 0.42),
-            (1, -49, 0.94, 0.42, 10, 0.45),
-            (0, -8, 0.91, 0.39, -8, 0.42),
-            (1, 34, 0.93, 0.41, 9, 0.44),
-            (0, 76, 0.89, 0.37, -9, 0.42),
-            (1, 118, 0.94, 0.42, 7, 0.45),
-            (0, 158, 0.90, 0.38, -10, 0.42),
-            (2, -150, 0.78, 0.31, 7, 0.54),
-            (2, -102, 0.75, 0.29, -6, 0.52),
-            (2, -57, 0.77, 0.31, 8, 0.56),
-            (2, -15, 0.74, 0.28, -7, 0.52),
-            (2, 31, 0.76, 0.30, 6, 0.54),
-            (2, 78, 0.74, 0.28, -9, 0.52),
-            (2, 126, 0.77, 0.30, 8, 0.56),
-            (4, -178, 0.68, 0.34, 6, 0.90),
-            (3, -126, 0.67, 0.29, -8, 0.92),
-            (4, -73, 0.69, 0.33, 9, 0.92),
-            (3, -21, 0.66, 0.28, -7, 0.90),
-            (4, 36, 0.68, 0.32, 8, 0.91),
-            (3, 91, 0.66, 0.28, -9, 0.92),
-            (4, 146, 0.69, 0.33, 7, 0.90),
-        ]
-        painter.save()
-        painter.setClipPath(self._drop_outer_path(panel_rect))
-        for leaf_index, angle, radius_scale, width_scale, rotation_offset, opacity in placements:
-            if leaf_index >= len(self._drop_leaf_renderers):
-                continue
-            renderer = self._drop_leaf_renderers[leaf_index]
-            svg_size = renderer.defaultSize()
-            if svg_size.width() <= 0:
-                continue
-            radians = math.radians(angle)
-            full_width = min(self.width(), self.height()) * width_scale
-            full_height = full_width * svg_size.height() / svg_size.width()
-            radius = panel_rect.width() * radius_scale
-            full_center = center + QPointF(math.cos(radians) * radius, math.sin(radians) * radius)
-            slide = 0.98 - 0.18 * progress
-            scale = 0.72 + 0.28 * progress
-            draw_center = center + (full_center - center) * slide
-            draw_width = full_width * scale * 0.84 * leaf_width_scale
-            draw_height = full_height * scale * 0.84
-
-            painter.save()
-            painter.setOpacity(opacity * (0.18 + 0.82 * progress))
-            painter.translate(draw_center)
-            painter.rotate(angle - 90 + rotation_offset)
-            clip_height = 0.42 if leaf_index in {3, 4} else 0.48
-            painter.setClipRect(
-                QRectF(-draw_width * 0.56, -draw_height * 0.52, draw_width * 1.12, draw_height * clip_height),
-                Qt.ClipOperation.IntersectClip,
-            )
-            renderer.render(painter, QRectF(-draw_width * 0.5, -draw_height * 0.5, draw_width, draw_height))
-            painter.restore()
-        painter.restore()
-
-    @staticmethod
-    def _drop_outer_path(panel_rect: QRectF) -> QPainterPath:
-        center = panel_rect.center()
-        radius = panel_rect.width() * 0.51
-        points = [
-            (-2, 0.94), (22, 1.08), (49, 0.96), (73, 1.06),
-            (101, 0.93), (128, 1.09), (154, 0.97), (181, 1.07),
-            (208, 0.94), (236, 1.08), (263, 0.93), (291, 1.07),
-            (319, 0.96), (343, 1.05),
-        ]
-        outer_points = [
-            center + QPointF(math.cos(math.radians(angle)) * radius * scale, math.sin(math.radians(angle)) * radius * scale)
-            for angle, scale in points
-        ]
-        path = QPainterPath()
-        first_mid = (outer_points[-1] + outer_points[0]) * 0.5
-        path.moveTo(first_mid)
-        for index, point in enumerate(outer_points):
-            next_point = outer_points[(index + 1) % len(outer_points)]
-            path.quadTo(point, (point + next_point) * 0.5)
-        path.closeSubpath()
-        return path
-
-    def _draw_drop_center_cutout(self, painter: QPainter, panel_rect: QRectF, progress: float) -> None:
-        progress = max(0.0, min(progress, 1.0))
-        center = panel_rect.center()
-        base = panel_rect.width() * (0.095 + 0.072 * progress)
-        points = [
-            (0, 0.82), (17, 1.22), (39, 0.78), (62, 1.08),
-            (84, 0.90), (109, 1.18), (132, 0.76), (153, 1.05),
-            (177, 0.84), (199, 1.24), (223, 0.86), (247, 1.12),
-            (270, 0.79), (292, 1.18), (318, 0.81), (342, 1.10),
-        ]
-        cutout_points = []
-        for angle, scale in points:
-            radians = math.radians(angle)
-            cutout_points.append(center + QPointF(math.cos(radians) * base * scale, math.sin(radians) * base * scale))
-        path = QPainterPath()
-        first_mid = (cutout_points[-1] + cutout_points[0]) * 0.5
-        path.moveTo(first_mid)
-        for index, point in enumerate(cutout_points):
-            next_point = cutout_points[(index + 1) % len(cutout_points)]
-            midpoint = (point + next_point) * 0.5
-            path.quadTo(point, midpoint)
-        path.closeSubpath()
-
-        painter.save()
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 0))
-        painter.drawPath(path)
-        painter.restore()
-
-        painter.save()
-        mist = QRadialGradient(center, base * 1.15)
-        mist.setColorAt(0.0, QColor(255, 252, 232, 30))
-        mist.setColorAt(1.0, QColor(255, 252, 232, 18))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(mist)
-        painter.drawPath(path)
-        painter.restore()
-
-    def _draw_drop_inner_leaf_edges(self, painter: QPainter, panel_rect: QRectF, progress: float) -> None:
-        if not self._drop_leaf_renderers:
-            return
-        progress = max(0.0, min(progress, 1.0))
-        center = panel_rect.center()
-        base = panel_rect.width() * (0.11 + 0.075 * progress)
-        placements = [
-            (3, -162, 0.92, 0.15, -7, 0.76),
-            (4, -116, 1.03, 0.18, 8, 0.70),
-            (3, -63, 0.94, 0.14, -8, 0.76),
-            (4, -10, 1.02, 0.17, 7, 0.68),
-            (3, 42, 0.93, 0.14, -7, 0.74),
-            (4, 95, 1.03, 0.17, 8, 0.68),
-            (3, 148, 0.94, 0.14, -8, 0.74),
-        ]
-        painter.save()
-        clip = QPainterPath()
-        clip.addEllipse(panel_rect.adjusted(-1, -1, 1, 1))
-        painter.setClipPath(clip)
-        leaf_band = QPainterPath()
-        outer_radius = base * 1.45
-        inner_radius = base * 0.98
-        leaf_band.addEllipse(QRectF(center.x() - outer_radius, center.y() - outer_radius, outer_radius * 2, outer_radius * 2))
-        inner_hole = QPainterPath()
-        inner_hole.addEllipse(QRectF(center.x() - inner_radius, center.y() - inner_radius, inner_radius * 2, inner_radius * 2))
-        painter.setClipPath(leaf_band.subtracted(inner_hole), Qt.ClipOperation.IntersectClip)
-        for leaf_index, angle, radius_scale, width_scale, rotation_offset, opacity in placements:
-            if leaf_index >= len(self._drop_leaf_renderers):
-                continue
-            renderer = self._drop_leaf_renderers[leaf_index]
-            svg_size = renderer.defaultSize()
-            if svg_size.width() <= 0:
-                continue
-            radians = math.radians(angle)
-            draw_center = center + QPointF(math.cos(radians) * base * radius_scale, math.sin(radians) * base * radius_scale)
-            draw_width = min(self.width(), self.height()) * width_scale
-            draw_height = draw_width * svg_size.height() / svg_size.width()
-            painter.save()
-            painter.setOpacity(opacity * (0.18 + 0.82 * progress))
-            painter.translate(draw_center)
-            painter.rotate(angle - 90 + rotation_offset)
-            renderer.render(painter, QRectF(-draw_width * 0.5, -draw_height * 0.5, draw_width, draw_height))
-            painter.restore()
-        painter.restore()
 
     def _tinted_haypile_pixmap(self, color: QColor) -> QPixmap:
         if self.haypile_icon.isNull():
