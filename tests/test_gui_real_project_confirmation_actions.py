@@ -699,7 +699,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         messages: list[str] = []
         ball._start_worker = lambda files: received.append(files)
         ball._start_remote_download_worker = lambda urls, local_files=None: remote.append(urls)
-        ball.show_toast = lambda message, success: messages.append(message)
+        ball.show_toast = lambda message, tone: messages.append(message)
         mime_data = QMimeData()
         mime_data.setData("image/gif", b"")
         mime_data.setText("https://cdn.example.com/asset.gif")
@@ -784,9 +784,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         original_settings = ball.settings
         ball.settings = SimpleNamespace(STORAGE_DIR=self.tmpdir / "storage")
         received: list[list[Path]] = []
-        messages: list[tuple[str, bool]] = []
+        messages: list[tuple[str, str]] = []
         ball._start_worker = lambda files: received.append(files)
-        ball.show_toast = lambda message, success: messages.append((message, success))
+        ball.show_toast = lambda message, tone: messages.append((message, tone))
         image = QPixmap(2, 2)
         image.fill(Qt.GlobalColor.transparent)
         mime_data = QMimeData()
@@ -800,7 +800,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertFalse(stored.isNull())
             self.assertEqual(stored.pixelColor(0, 0).alpha(), 0)
             self.assertIn("将按 PNG 收纳", messages[-1][0])
-            self.assertTrue(messages[-1][1])
+            self.assertEqual(messages[-1][1], "progress")
 
             ball._cleanup_remote_ingest_paths()
             self.assertFalse(path.exists())
@@ -815,9 +815,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         storage_dir = self.tmpdir / "storage"
         ball.settings = SimpleNamespace(STORAGE_DIR=storage_dir)
         received: list[list[Path]] = []
-        messages: list[tuple[str, bool]] = []
+        messages: list[tuple[str, str]] = []
         ball._start_worker = lambda files: received.append(files)
-        ball.show_toast = lambda message, success: messages.append((message, success))
+        ball.show_toast = lambda message, tone: messages.append((message, tone))
         mime_data = QMimeData()
         mime_data.setData("image/gif", b"GIF89a")
         try:
@@ -851,12 +851,13 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         invoked: list[bool] = []
         ball._ingest_clipboard = lambda: invoked.append(True)
         try:
-            self.assertIn("paste_ingest", ball.quick_menu._detail_buttons)
+            self.assertNotIn("paste_ingest", ball.quick_menu._detail_buttons)
             self.assertEqual(
-                ball.quick_menu._detail_buttons["paste_ingest"].text(),
+                ball.material_panel.paste_ingest_button.text(),
                 "从剪贴板收纳",
             )
-            ball._handle_quick_menu_action("paste_ingest")
+            self.assertFalse(ball.material_panel.paste_ingest_button.isHidden())
+            ball.material_panel.paste_ingest_button.click()
             self.assertEqual(invoked, [True])
         finally:
             ball.close()
@@ -965,13 +966,19 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         try:
             QApplication.clipboard().clear()
             panel.refresh()
-            point = panel.item_labels[0].rect().center()
-            event = QMouseEvent(QEvent.Type.MouseButtonPress, point, point, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
-
-            panel._select_recent_item(0, event)
+            panel.show()
+            panel.item_labels[0].setFocus()
+            for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+                panel._selected_bundle_id = ""
+                panel.item_labels[0].setChecked(False)
+                QTest.keyClick(panel.item_labels[0], key)
+                self.app.processEvents()
+                self.assertEqual(panel._selected_bundle_id, "hero")
+                self.assertTrue(panel.item_labels[0].isChecked())
 
             self.assertEqual(QApplication.clipboard().text(), "")
-            self.assertEqual(panel._selected_bundle_id, "hero")
+            self.assertEqual(panel.item_labels[0].accessibleName(), "hero.png")
+            self.assertIn("可用", panel.item_labels[0].accessibleDescription())
             self.assertIn("handoff 可复制", panel.detail_label.text())
             panel._copy_selected_handoff()
 
@@ -991,7 +998,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("AI high · 主视觉 · 适合作为主视觉。", panel.detail_label.text())
             self.assertIn("origin https://cdn.example.com", panel.detail_label.text())
             self.assertIn("provenance 已包含", panel.detail_label.text())
-            self.assertIn("border: 2px solid #C8A24A", panel.item_labels[0].styleSheet())
+            self.assertTrue(panel.item_labels[0].isChecked())
             self.assertFalse(panel.retry_ai_button.isHidden())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
@@ -1149,8 +1156,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         app_gui_module.AIRefreshWorker = FakeWorker
         MaterialPanelWindow._panel_ai_enabled = staticmethod(lambda: True)
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             QApplication.clipboard().clear()
             panel.refresh()
@@ -1162,7 +1169,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("model_call_failed", panel.detail_label.text())
             self.assertIn("AI 分拣未得到模型结果：model_call_failed", panel.detail_label.text())
             self.assertTrue(panel.retry_ai_button.isEnabled())
-            self.assertEqual(toasts, [("AI 分拣未得到模型结果：model_call_failed", False)])
+            self.assertEqual(toasts, [("AI 分拣未得到模型结果：model_call_failed", "error")])
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -1386,8 +1393,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             },
         )()
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             QApplication.clipboard().clear()
             panel.refresh()
@@ -1408,8 +1415,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("Winter Ridge", panel.detail_label.text())
             self.assertFalse(panel.audio_usage_row.isHidden())
             self.assertTrue(panel.role_row.isHidden())
-            self.assertIn("border: 2px solid #C8A24A", panel.item_labels[0].styleSheet())
-            self.assertNotIn("border: 2px solid #C8A24A", panel.item_labels[1].styleSheet())
+            self.assertTrue(panel.item_labels[0].isChecked())
+            self.assertFalse(panel.item_labels[1].isChecked())
             self.assertEqual(toasts, [])
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
@@ -1592,6 +1599,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel._page_index, 0)
             self.assertTrue(panel.page_row.isHidden())
             self.assertIn("asset-1.png", panel.item_labels[0].text())
+            self.assertFalse(panel.item_labels[0].isChecked())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -1650,8 +1658,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         app_gui_module.BundleService = FakeBundleService
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             QApplication.clipboard().clear()
             panel.refresh()
@@ -1665,7 +1673,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(calls, [("unknown", "hero_image")])
             self.assertIn("已确认：主视觉", panel.detail_label.text())
             self.assertIn("agent 可用", panel.detail_label.text())
-            self.assertIn("background: #6F7F5A", panel.role_buttons["hero_image"].styleSheet())
+            self.assertTrue(panel.role_buttons["hero_image"].isChecked())
             self.assertEqual(QApplication.clipboard().text(), "")
             self.assertIn("handoff 可复制", panel.detail_label.text())
 
@@ -1674,7 +1682,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(payload["assets"][0]["role"], "hero_image")
             self.assertEqual(payload["assets"][0]["status"], "ready")
             self.assertIn("已复制 handoff", panel.detail_label.text())
-            self.assertEqual(toasts, [("已复制 handoff", True)])
+            self.assertEqual(toasts, [("已复制 handoff", "success")])
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -1713,8 +1721,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             },
         )()
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             panel._copy_ready_handoff()
 
@@ -1744,8 +1752,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             {"list_bundles": lambda _self, status=None, **_filters: []},
         )()
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         QApplication.clipboard().setText("keep")
         try:
             panel._copy_ready_handoff()
@@ -1759,8 +1767,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_material_panel_copy_agent_recipe_describes_agent_contract(self) -> None:
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             panel._copy_agent_recipe()
 
@@ -1925,7 +1933,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             flags = panel.windowFlags()
             self.assertTrue(bool(flags & Qt.WindowType.WindowStaysOnTopHint))
             self.assertFalse(bool(flags & Qt.WindowType.WindowDoesNotAcceptFocus))
-            self.assertEqual(panel.search_input.focusPolicy(), Qt.FocusPolicy.ClickFocus)
+            self.assertEqual(panel.search_input.focusPolicy(), Qt.FocusPolicy.StrongFocus)
         finally:
             panel.close()
 
@@ -2015,8 +2023,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             recognition_status="分类：有待确认 · 模型：未安装 qwen3-vl:8b",
         )
         ball = app_gui_module.HaypileFloatingBall()
-        toasts: list[tuple[str, bool]] = []
-        ball.show_toast = lambda message, success=True: toasts.append((message, success))
+        toasts: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, tone="success": toasts.append((message, tone))
         try:
             ball._handle_quick_menu_action("assets")
             self.assertTrue(ball.material_panel.isVisible())
@@ -2026,7 +2034,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             ball._handle_quick_menu_action("mcp")
             self.assertIn('"haypile"', QApplication.clipboard().text())
-            self.assertIn(("已复制 MCP 配置", True), toasts)
+            self.assertIn(("已复制 MCP 配置", "success"), toasts)
 
             initial_ai = ball.ai_enabled
             ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
@@ -2035,7 +2043,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(ball.ai_enabled, not initial_ai)
             self.assertEqual(ball.quick_menu._ai_enabled, ball.ai_enabled)
             self.assertIn(
-                ("AI 分拣已开启" if ball.ai_enabled else "AI 分拣已关闭", True),
+                ("AI 分拣已开启" if ball.ai_enabled else "AI 分拣已关闭", "success"),
                 toasts,
             )
         finally:
@@ -2046,8 +2054,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_floating_ball_ai_action_opens_setup_when_model_missing(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
-        toasts: list[tuple[str, bool]] = []
-        ball.show_toast = lambda message, success=True: toasts.append((message, success))
+        toasts: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, tone="success": toasts.append((message, tone))
         ball._ai_model_state = lambda: ("missing", "模型未安装 qwen2.5vl:3b")
         try:
             ball.ai_enabled = False
@@ -2058,15 +2066,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertTrue(ball.quick_menu.is_drawer_open())
             self.assertEqual(ball.quick_menu.current_page(), "ai")
             self.assertIn("模型未安装", ball.quick_menu.ai_status_label.text())
-            self.assertIn(("先安装本地视觉模型", False), toasts)
+            self.assertIn(("先安装本地视觉模型", "pending"), toasts)
         finally:
             ball.close()
             self.app.processEvents()
 
     def test_floating_ball_ai_setup_recheck_enables_when_model_ready(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
-        toasts: list[tuple[str, bool]] = []
-        ball.show_toast = lambda message, success=True: toasts.append((message, success))
+        toasts: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, tone="success": toasts.append((message, tone))
         ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
         ball._ai_status_text = lambda: "AI 分拣已开启"
         try:
@@ -2077,7 +2085,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             self.assertTrue(ball.ai_enabled)
             self.assertEqual(ball.quick_menu._ai_enabled, True)
-            self.assertIn(("AI 分拣已开启", True), toasts)
+            self.assertIn(("AI 分拣已开启", "success"), toasts)
         finally:
             ball.close()
             self.app.processEvents()
@@ -2108,12 +2116,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
     def test_floating_ball_toast_anchors_to_grass_pile_when_material_panel_visible(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
         anchors = []
-        ball.quick_menu.show_feedback = lambda _message, _success, anchor, available: anchors.append(anchor)
+        ball.quick_menu.show_feedback = lambda _message, _tone, anchor, available: anchors.append(anchor)
         try:
             ball.move(120, 140)
             ball._handle_quick_menu_action("assets")
 
-            ball.show_toast("ok", success=True)
+            ball.show_toast("ok", tone="success")
 
             self.assertEqual(anchors[-1], ball._toast_anchor())
             self.assertNotEqual(anchors[-1].topLeft(), ball.material_panel.frameGeometry().topLeft())
@@ -2170,7 +2178,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball._open_drop_target()
             ball._drop_open_animation.stop()
             ball._set_drop_open_progress(1.0)
-            ball.show_toast("正在收纳", success=True)
+            ball.show_toast("正在收纳", tone="progress")
             ball.quick_menu.begin_progress(
                 ball._toast_anchor(),
                 ball._available_geometry(),
@@ -2217,14 +2225,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                     ball.quick_menu.progress_bar.geometry()
                 )
             )
-            ball.quick_menu.complete_progress(True, "收纳完成")
+            ball.quick_menu.complete_progress("success", "收纳完成")
             self.assertEqual(
                 ball.quick_menu.drawer_shell.geometry(),
                 app_gui_module.QRect(0, 0, 270, 50),
             )
             ball.quick_menu.show_feedback(
                 long_message,
-                False,
+                "error",
                 ball._toast_anchor(),
                 ball._available_geometry(),
             )
@@ -2272,7 +2280,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball.show()
-            ball.show_toast("ok", success=True)
+            ball.show_toast("ok", tone="success")
             before = ball.quick_menu.geometry()
 
             ball.move(400, 300)
@@ -2288,7 +2296,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         ball = app_gui_module.HaypileFloatingBall()
         anchors: list[app_gui_module.QRect] = []
         ball.quick_menu.begin_progress = lambda anchor, available, text: anchors.append(anchor)
-        ball.show_toast = lambda message, success=True: None
+        ball.show_toast = lambda message, tone="success": None
         try:
             source = self.tmpdir / "queued.svg"
             source.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"/>', encoding="utf-8")
@@ -2703,10 +2711,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         ball = app_gui_module.HaypileFloatingBall()
         source = self.tmpdir / "downloaded.gif"
         source.write_bytes(b"GIF89a")
-        shown: list[tuple[str, bool]] = []
-        completed: list[tuple[bool, str]] = []
-        ball.show_toast = lambda message, *, success: shown.append((message, success))
-        ball.quick_menu.complete_progress = lambda success, message: completed.append((success, message))
+        shown: list[tuple[str, str]] = []
+        completed: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
+        ball.quick_menu.complete_progress = lambda tone, message: completed.append((tone, message))
         try:
             with patch.object(app_gui_module.IngestWorker, "start", lambda _worker: None):
                 ball._on_remote_download_finished([source], "ok", True, [])
@@ -2714,7 +2722,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(ball._active_ingest_visual_kind, "gif")
             self.assertEqual(ball._drop_visual_kind, "gif")
             self.assertTrue(ball._gif_open_timer.isActive())
-            self.assertEqual(shown[-1], ("正在校验 GIF…", True))
+            self.assertEqual(shown[-1], ("正在校验 GIF…", "progress"))
             self.assertEqual(ball.quick_menu._anchor, ball._toast_anchor())
 
             ball.worker.result = app_gui_module.IngestResult(
@@ -2729,8 +2737,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(completed, [])
             ball._ingest_feedback_timer.stop()
             ball._flush_pending_ingest_finish()
-            self.assertEqual(shown[-1], ("GIF 已收纳 · 请选择用途", True))
-            self.assertEqual(completed[-1], (True, "GIF 已收纳 · 请选择用途"))
+            self.assertEqual(shown[-1], ("GIF 已收纳 · 请选择用途", "pending"))
+            self.assertEqual(completed[-1], ("pending", "GIF 已收纳 · 请选择用途"))
             self.assertEqual(ball._active_ingest_visual_kind, "leaf")
         finally:
             ball.close()
@@ -4112,8 +4120,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             settings=settings,
             deferred_runtime=True,
         )
-        messages: list[tuple[str, bool]] = []
-        ball.show_toast = lambda message, *, success: messages.append((message, success))
+        messages: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: messages.append((message, tone))
         source = self.tmpdir / "blocked.gif"
         source.write_bytes(b"GIF89a")
         try:
@@ -4160,18 +4168,18 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIsNone(ball.remote_worker)
             self.assertEqual(opened, ["settings"])
             self.assertTrue(messages)
-            self.assertTrue(all(not success for _message, success in messages))
-            self.assertTrue(any("素材目录不可用" in message for message, _success in messages))
+            self.assertTrue(all(tone == "error" for _message, tone in messages))
+            self.assertTrue(any("素材目录不可用" in message for message, _tone in messages))
         finally:
             ball.close()
             self.app.processEvents()
 
     def test_backend_notices_are_localized_and_ready_refreshes_status(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
-        shown: list[tuple[str, bool]] = []
+        shown: list[tuple[str, str]] = []
         refreshes: list[bool] = []
         pending_refreshes: list[bool] = []
-        ball.show_toast = lambda message, *, success: shown.append((message, success))
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
         ball._refresh_ai_menu_status = lambda: refreshes.append(True)
         ball._refresh_pending_badge = lambda: pending_refreshes.append(True)
         try:
@@ -4183,11 +4191,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball._on_backend_phase_changed("ready")
 
             self.assertIn("18110", shown[0][0])
-            self.assertFalse(shown[0][1])
+            self.assertEqual(shown[0][1], "error")
             self.assertIn("禁止", shown[1][0])
-            self.assertFalse(shown[1][1])
+            self.assertEqual(shown[1][1], "error")
             self.assertIn("准备素材库", shown[2][0])
-            self.assertTrue(shown[2][1])
+            self.assertEqual(shown[2][1], "progress")
             self.assertEqual(len(shown), 3)
             self.assertEqual(refreshes, [True])
             self.assertEqual(pending_refreshes, [True])

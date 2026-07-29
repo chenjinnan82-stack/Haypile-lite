@@ -10,6 +10,7 @@ from unittest.mock import patch
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QEvent, QRect, Qt
+    from PySide6.QtGui import QFont
     from PySide6.QtTest import QSignalSpy, QTest
     from PySide6.QtWidgets import QApplication
 
@@ -135,14 +136,121 @@ class AttachedHubTests(unittest.TestCase):
             self.assertFalse(payload["low_power_enabled"])
             self.assertTrue(payload["ai_enabled"])
 
+    def test_settings_and_selection_controls_expose_native_state(self) -> None:
+        app_gui.set_ui_language("en")
+        menu = self.ball.quick_menu
+        menu.update_settings_state(
+            ai_enabled=False,
+            ai_status="API authorization needed",
+            low_power=True,
+            language="en",
+            service_status="Ready",
+            ai_provider="api",
+            api_base_url="https://vision.example/v1",
+            api_model="vision-model",
+            api_key_present=False,
+        )
+
+        self.assertTrue(menu.low_power_button.isCheckable())
+        self.assertTrue(menu.low_power_button.isChecked())
+        self.assertIn("Low power: on", menu.low_power_button.text())
+        self.assertFalse(menu.ai_settings_button.isCheckable())
+        self.assertEqual(menu.ai_state_badge.text(), "Off")
+        self.assertIn("currently Off", menu.ai_settings_button.accessibleDescription())
+        self.assertTrue(menu.language_buttons["en"].isChecked())
+        self.assertTrue(menu.ai_provider_buttons["api"].isChecked())
+        self.assertEqual(
+            sum(button.isChecked() for button in menu.language_buttons.values()),
+            1,
+        )
+        self.assertEqual(
+            sum(button.isChecked() for button in menu.ai_provider_buttons.values()),
+            1,
+        )
+        self.assertIn("QPushButton:focus", menu.low_power_button.styleSheet())
+        self.assertIn("QPushButton:focus", menu.language_buttons["en"].styleSheet())
+
+    def test_feedback_tones_are_semantic_and_distinct(self) -> None:
+        menu = self.ball.quick_menu
+        anchor = QRect(100, 100, 72, 72)
+        available = QRect(0, 0, 800, 600)
+        styles: dict[str, str] = {}
+
+        for tone in ("progress", "success", "pending", "duplicate", "error"):
+            menu.show_feedback(tone, tone, anchor, available)
+            styles[tone] = menu.feedback_label.styleSheet()
+            self.assertEqual(menu.feedback_label.property("feedbackTone"), tone)
+
+        self.assertEqual(len(set(styles.values())), 5)
+        self.assertIn("#4E5F3D", styles["success"])
+        self.assertIn("#A67624", styles["pending"])
+        self.assertIn("#625B4C", styles["duplicate"])
+        self.assertIn("#9B4C37", styles["error"])
+
+    def test_material_choices_use_groups_and_three_by_two_role_grid(self) -> None:
+        panel = self.ball.material_panel
+        panel._refresh_role_buttons("hero_image")
+        self.assertTrue(panel.role_buttons["hero_image"].isChecked())
+        panel._refresh_gif_role_buttons("reaction")
+        self.assertTrue(panel.gif_role_buttons["reaction"].isChecked())
+        self.assertFalse(panel.role_buttons["hero_image"].isChecked())
+
+        positions = {
+            panel.role_row.layout().getItemPosition(
+                panel.role_row.layout().indexOf(button)
+            )[:2]
+            for button in panel.role_buttons.values()
+        }
+        self.assertEqual(
+            positions,
+            {(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)},
+        )
+        self.assertTrue(panel.filter_buttons["all"].isChecked())
+        self.assertTrue(panel.scope_buttons["latest"].isChecked())
+        self.assertIn("QLineEdit:focus", panel.search_input.styleSheet())
+
+    def test_english_asset_status_casing_is_stable(self) -> None:
+        app_gui.set_ui_language("en")
+        self.ball.material_panel.retranslate()
+
+        self.assertEqual(
+            self.ball.material_panel.filter_buttons["ready"].text(),
+            "Ready",
+        )
+        self.assertEqual(
+            self.ball.material_panel._bundle_status_label("ready"),
+            "Ready",
+        )
+        self.assertEqual(
+            self.ball.material_panel._bundle_status_label("pending"),
+            "Pending",
+        )
+
+    def test_enlarged_english_role_labels_fit_the_grid(self) -> None:
+        app_gui.set_ui_language("en")
+        self.ball._handle_quick_menu_action("assets")
+        panel = self.ball.material_panel
+        panel.retranslate()
+        enlarged = QFont(panel.font())
+        enlarged.setPointSizeF(max(11.0, enlarged.pointSizeF() * 1.25))
+        for button in panel.role_buttons.values():
+            button.setFont(enlarged)
+        panel.role_row.show()
+        panel.role_row.layout().activate()
+        self.app.processEvents()
+
+        for button in panel.role_buttons.values():
+            required = button.fontMetrics().horizontalAdvance(button.text()) + 4
+            self.assertGreaterEqual(button.width(), required, button.text())
+
     def test_api_key_never_enters_gui_state_when_credential_store_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.ball._gui_state_path = Path(tmp) / "gui_state.json"
             self.ball.quick_menu.ai_api_base_input.setText("https://vision.example/v1")
             self.ball.quick_menu.ai_api_model_input.setText("vision-model")
             self.ball.quick_menu.ai_api_key_input.setText("session-secret")
-            toasts: list[tuple[str, bool]] = []
-            self.ball.show_toast = lambda message, success=True: toasts.append((message, success))
+            toasts: list[tuple[str, str]] = []
+            self.ball.show_toast = lambda message, tone="success": toasts.append((message, tone))
 
             with patch.object(app_gui.SystemCredentialStore, "set", return_value=False):
                 self.ball._save_api_provider()
@@ -155,7 +263,7 @@ class AttachedHubTests(unittest.TestCase):
             self.assertFalse(payload["ai_api_key_present"])
             self.assertEqual(self.ball._session_api_key, "session-secret")
             self.assertTrue(
-                any(success and ("本次" in message or "session" in message) for message, success in toasts)
+                any(tone == "success" and ("本次" in message or "session" in message) for message, tone in toasts)
             )
 
     def test_agent_primary_handoff_uses_resolved_latest_batch(self) -> None:

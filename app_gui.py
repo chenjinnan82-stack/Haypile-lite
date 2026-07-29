@@ -156,18 +156,84 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QGraphicsOpacityEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 logger = logging.getLogger(__name__)
+
+_UI_MOSS = "#4E5F3D"
+_UI_GOLD_TEXT = "#A67624"
+_UI_ERROR = "#9B4C37"
+
+_CHOICE_BUTTON_STYLE = (
+    "QPushButton { color: #4E5F3D; background: #F6F1E4; "
+    "border: 1px solid #DDD3BB; border-radius: 6px; padding: 2px; }"
+    "QPushButton:hover { background: #EFE3C7; color: #4E5F3D; }"
+    "QPushButton:checked { color: #FFF9EA; background: #6F7F5A; border: 2px solid #4E5F3D; }"
+    "QPushButton:focus { border: 2px solid #C8A24A; }"
+    "QPushButton:disabled { color: #A9A08A; background: #F6F1E4; }"
+)
+
+_ITEM_BUTTON_STYLE = (
+    "QPushButton { color: #444444; text-align: left; "
+    "padding: 7px 8px; background: #F6F1E4; "
+    "border: 1px solid #DDD3BB; border-radius: 8px; }"
+    "QPushButton:hover { background: #EFE3C7; }"
+    "QPushButton:checked { color: #2F3A26; font-weight: bold; "
+    "background: #FFF2C4; border: 2px solid #C8A24A; }"
+    "QPushButton:focus { border: 2px solid #C8A24A; }"
+)
+
+_LINE_EDIT_STYLE = (
+    "QLineEdit { color: #4A463A; background: #FFF9EA; "
+    "border: 1px solid #E5D8B9; border-radius: 7px; padding: 0 8px; }"
+    "QLineEdit:focus { border: 2px solid #C8A24A; }"
+)
+
+_ACTION_BUTTON_STYLE = (
+    "QPushButton { text-align: left; padding: 0 10px; color: #4E5F3D; "
+    "background: #F6F1E4; border: 1px solid #DDD3BB; border-radius: 7px; }"
+    "QPushButton:hover { background: #EFE3C7; }"
+    "QPushButton:checked { color: #FFF9EA; background: #6F7F5A; border: 2px solid #4E5F3D; }"
+    "QPushButton:focus { border: 2px solid #C8A24A; }"
+)
+
+_FEEDBACK_TONES = {
+    "progress": (_UI_GOLD_TEXT, "#F6F1E4"),
+    "success": (_UI_MOSS, "#F3EDDA"),
+    "pending": (_UI_GOLD_TEXT, "#FFF2C4"),
+    "duplicate": ("#625B4C", "#E9E4D4"),
+    "error": (_UI_ERROR, "#F4E2DC"),
+}
+
+
+def _configure_choice_button(button: QPushButton, group: QButtonGroup) -> None:
+    button.setCheckable(True)
+    button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    button.setMinimumHeight(26)
+    button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    button.setStyleSheet(_CHOICE_BUTTON_STYLE)
+    group.addButton(button)
+
+
+class _MaterialItemButton(QPushButton):
+    def keyPressEvent(self, event) -> None:
+        if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+            self.click()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 _UI_LANGUAGE_CACHE: tuple[tuple[str, ...], str] | None = None
@@ -1341,9 +1407,9 @@ class MaterialPanelWindow(QWidget):
         self.project_label.hide()
 
         initial_summary = (
-            ui_text("0 个素材 · 可用 0\n待确认 0", "0 assets · ready 0\npending 0")
+            ui_text("0 个素材 · 可用 0\n待确认 0", "0 assets · Ready 0\nPending 0")
             if self._embedded
-            else ui_text("0 个 bundle · 可用 0 · 待确认 0", "0 bundles · ready 0 · pending 0")
+            else ui_text("0 个 bundle · 可用 0 · 待确认 0", "0 bundles · Ready 0 · Pending 0")
         )
         self.summary_label = QLabel(initial_summary, self.container)
         self.summary_label.setWordWrap(True)
@@ -1366,18 +1432,20 @@ class MaterialPanelWindow(QWidget):
         scope_layout = QHBoxLayout(self.scope_row)
         scope_layout.setContentsMargins(0, 0, 0, 0)
         scope_layout.setSpacing(5)
+        self.scope_button_group = QButtonGroup(self)
         self.scope_buttons: dict[str, QPushButton] = {}
         for scope, label in (
             ("latest", ui_text("最新批次", "Latest batch")),
             ("all", ui_text("全部素材", "All assets")),
         ):
             button = QPushButton(label, self.scope_row)
-            button.setFixedHeight(24)
+            _configure_choice_button(button, self.scope_button_group)
             button.clicked.connect(lambda _checked=False, selected_scope=scope: self.set_batch_scope(selected_scope))
             self.scope_buttons[scope] = button
             scope_layout.addWidget(button)
         self.retry_batch_button = QPushButton(ui_text("重试整理", "Retry sorting"), self.scope_row)
-        self.retry_batch_button.setFixedHeight(24)
+        self.retry_batch_button.setMinimumHeight(26)
+        self.retry_batch_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.retry_batch_button.clicked.connect(self._retry_latest_batch)
         scope_layout.addWidget(self.retry_batch_button)
         self.scope_row.setVisible(self._embedded)
@@ -1388,16 +1456,17 @@ class MaterialPanelWindow(QWidget):
         filter_layout = QHBoxLayout(self.filter_row)
         filter_layout.setContentsMargins(0, 0, 0, 0)
         filter_layout.setSpacing(4)
+        self.filter_button_group = QButtonGroup(self)
         self.filter_buttons: dict[str, QPushButton] = {}
         for mode, label in (
             ("all", ui_text("全部", "All")),
-            ("ready", ui_text("可用", "ready")),
+            ("ready", ui_text("可用", "Ready")),
             ("pending", ui_text("待确认", "Pending")),
             ("image", ui_text("图片", "Images")),
             ("audio", ui_text("音频", "Audio")),
         ):
             button = QPushButton(label, self.filter_row)
-            button.setFixedHeight(24)
+            _configure_choice_button(button, self.filter_button_group)
             button.clicked.connect(lambda _checked=False, selected_mode=mode: self._set_filter_mode(selected_mode))
             self.filter_buttons[mode] = button
             filter_layout.addWidget(button)
@@ -1406,12 +1475,10 @@ class MaterialPanelWindow(QWidget):
 
         self.search_input = QLineEdit(self.container)
         self.search_input.setPlaceholderText(ui_text("搜索文件、用途、状态", "Search file, role, status"))
-        self.search_input.setFixedHeight(26)
-        self.search_input.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.search_input.setStyleSheet(
-            "QLineEdit { color: #4A463A; background: #FFF9EA; "
-            "border: 1px solid #E5D8B9; border-radius: 7px; padding: 0 8px; font-size: 11px; }"
-        )
+        self.search_input.setMinimumHeight(28)
+        self.search_input.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.search_input.setAccessibleName(ui_text("搜索素材", "Search assets"))
+        self.search_input.setStyleSheet(_LINE_EDIT_STYLE)
         self._search_refresh_timer = QTimer(self)
         self._search_refresh_timer.setSingleShot(True)
         self._search_refresh_timer.setInterval(180)
@@ -1419,14 +1486,31 @@ class MaterialPanelWindow(QWidget):
         self.search_input.textChanged.connect(self._on_search_changed)
         layout.addWidget(self.search_input)
 
-        self.item_labels: list[QLabel] = []
+        self.paste_ingest_button = QPushButton(
+            ui_text("从剪贴板收纳", "Import from clipboard"),
+            self.container,
+        )
+        self.paste_ingest_button.setMinimumHeight(30)
+        self.paste_ingest_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.paste_ingest_button.setAccessibleDescription(
+            ui_text(
+                "收纳剪贴板中的图片、音频或 GIF",
+                "Store an image, audio file, or GIF from the clipboard",
+            )
+        )
+        self.paste_ingest_button.setStyleSheet(_ACTION_BUTTON_STYLE)
+        self.paste_ingest_button.hide()
+
+        self.item_labels: list[QPushButton] = []
         for _ in range(3):
-            item = QLabel("", self.container)
-            item.setWordWrap(True)
+            item = _MaterialItemButton("", self.container)
+            item.setCheckable(True)
+            item.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             item.setMinimumHeight(46)
-            item.setStyleSheet(self._item_label_style(False))
+            item.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            item.setStyleSheet(_ITEM_BUTTON_STYLE)
             item.setCursor(Qt.CursorShape.PointingHandCursor)
-            item.mousePressEvent = lambda event, index=len(self.item_labels): self._select_recent_item(index, event)
+            item.clicked.connect(lambda _checked=False, index=len(self.item_labels): self._select_recent_item(index))
             self.item_labels.append(item)
             layout.addWidget(item)
 
@@ -1470,24 +1554,24 @@ class MaterialPanelWindow(QWidget):
 
         self.role_row = QWidget(self.container)
         self.role_row.setStyleSheet("QWidget { background: transparent; border: none; }")
-        role_layout = QHBoxLayout(self.role_row)
+        role_layout = QGridLayout(self.role_row)
         role_layout.setContentsMargins(0, 0, 0, 0)
         role_layout.setSpacing(4)
+        self.image_role_button_group = QButtonGroup(self)
         self.role_buttons: dict[str, QPushButton] = {}
-        for role, label in (
-            ("main_background", ui_text("背景", "Background")),
+        for index, (role, label) in enumerate((
+            ("main_background", ui_text("背景", "Backdrop")),
             ("hero_image", ui_text("主视觉", "Hero")),
             ("logo", "Logo"),
             ("icon", ui_text("图标", "Icon")),
             ("content_image", ui_text("内容图", "Content")),
             ("texture", ui_text("纹理", "Texture")),
-        ):
+        )):
             button = QPushButton(label, self.role_row)
-            button.setFixedHeight(24)
-            button.setStyleSheet(self._role_button_style(False))
+            _configure_choice_button(button, self.image_role_button_group)
             button.clicked.connect(lambda _checked=False, selected_role=role: self._set_selected_role(selected_role))
             self.role_buttons[role] = button
-            role_layout.addWidget(button)
+            role_layout.addWidget(button, index // 3, index % 3)
         self.role_row.hide()
         layout.addWidget(self.role_row)
 
@@ -1503,8 +1587,7 @@ class MaterialPanelWindow(QWidget):
             ("ui_animation", ui_text("界面动画", "UI motion")),
         ):
             button = QPushButton(label, self.gif_role_row)
-            button.setFixedHeight(24)
-            button.setStyleSheet(self._role_button_style(False))
+            _configure_choice_button(button, self.image_role_button_group)
             button.clicked.connect(
                 lambda _checked=False, selected_role=role: self._set_selected_role(selected_role)
             )
@@ -1518,6 +1601,7 @@ class MaterialPanelWindow(QWidget):
         audio_usage_layout = QHBoxLayout(self.audio_usage_row)
         audio_usage_layout.setContentsMargins(0, 0, 0, 0)
         audio_usage_layout.setSpacing(4)
+        self.audio_usage_button_group = QButtonGroup(self)
         self.audio_usage_buttons: dict[str, QPushButton] = {}
         for usage, label in (
             ("music", ui_text("音乐", "Music")),
@@ -1527,8 +1611,7 @@ class MaterialPanelWindow(QWidget):
             ("loop", ui_text("循环", "Loop")),
         ):
             button = QPushButton(label, self.audio_usage_row)
-            button.setFixedHeight(24)
-            button.setStyleSheet(self._role_button_style(False))
+            _configure_choice_button(button, self.audio_usage_button_group)
             button.clicked.connect(lambda _checked=False, selected_usage=usage: self._set_selected_audio_usage(selected_usage))
             self.audio_usage_buttons[usage] = button
             audio_usage_layout.addWidget(button)
@@ -1648,6 +1731,8 @@ class MaterialPanelWindow(QWidget):
         toolbar_layout.setSpacing(8)
         toolbar_layout.addWidget(self.search_input, 1)
         toolbar_layout.addWidget(self.filter_row, 0)
+        self.paste_ingest_button.show()
+        layout.addWidget(self.paste_ingest_button)
         layout.addWidget(self.scope_row)
         layout.addWidget(toolbar)
 
@@ -1675,6 +1760,8 @@ class MaterialPanelWindow(QWidget):
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(6)
         self.preview_label.setFixedHeight(72)
+        self.detail_label.setWordWrap(False)
+        self.detail_label.setMinimumHeight(54)
         detail_layout.addWidget(self.preview_label)
         detail_layout.addWidget(self.detail_label, 1)
         detail_layout.addWidget(self.accept_ai_button)
@@ -1697,7 +1784,7 @@ class MaterialPanelWindow(QWidget):
                     "已隔离损坏的主题记录并创建恢复副本",
                     "Damaged theme metadata was quarantined and replaced",
                 ),
-                success=False,
+                tone="error",
             )
 
     def set_ai_handlers(self, *, provider_factory, enabled_callback, retry_batch_callback) -> None:
@@ -1721,8 +1808,16 @@ class MaterialPanelWindow(QWidget):
         for mode, button in self.filter_buttons.items():
             button.setText(labels[mode])
         self.search_input.setPlaceholderText(ui_text("搜索文件、用途、状态", "Search file, role, status"))
+        self.search_input.setAccessibleName(ui_text("搜索素材", "Search assets"))
+        self.paste_ingest_button.setText(ui_text("从剪贴板收纳", "Import from clipboard"))
+        self.paste_ingest_button.setAccessibleDescription(
+            ui_text(
+                "收纳剪贴板中的图片、音频或 GIF",
+                "Store an image, audio file, or GIF from the clipboard",
+            )
+        )
         role_labels = {
-            "main_background": ui_text("背景", "Background"),
+            "main_background": ui_text("背景", "Backdrop"),
             "hero_image": ui_text("主视觉", "Hero"),
             "logo": "Logo",
             "icon": ui_text("图标", "Icon"),
@@ -1820,7 +1915,7 @@ class MaterialPanelWindow(QWidget):
                         "已隔离损坏的主题记录并创建恢复副本",
                         "Damaged theme metadata was quarantined and replaced",
                     ),
-                    success=False,
+                    tone="error",
                 )
             else:
                 self._theme_recovery_notice_pending = True
@@ -1903,12 +1998,12 @@ class MaterialPanelWindow(QWidget):
         if self._embedded:
             summary_text = ui_text(
                 f"{total_count} 个素材 · 可用 {recognized_count}\n待确认 {pending_count}",
-                f"{total_count} assets · ready {recognized_count}\npending {pending_count}",
+                f"{total_count} assets · Ready {recognized_count}\nPending {pending_count}",
             )
         else:
             summary_text = ui_text(
                 f"{summary.total_count} 个 bundle · 可用 {summary.recognized_count} · 待确认 {summary.pending_count}",
-                f"{summary.total_count} bundles · ready {summary.recognized_count} · pending {summary.pending_count}",
+                f"{summary.total_count} bundles · Ready {summary.recognized_count} · Pending {summary.pending_count}",
             )
         self.summary_label.setText(summary_text)
         if summary.pending_count and not self._embedded:
@@ -1921,6 +2016,9 @@ class MaterialPanelWindow(QWidget):
         selected_item = None
         for idx, label in enumerate(self.item_labels):
             if idx >= len(self._visible_items):
+                label.setChecked(False)
+                label.setAccessibleName("")
+                label.setAccessibleDescription("")
                 label.hide()
                 continue
             item = self._visible_items[idx]
@@ -1933,7 +2031,13 @@ class MaterialPanelWindow(QWidget):
                 f"{self._asset_type_label(item.asset_type)} · {self._display_role_label(item.usage_label)} · "
                 f"{self._agent_usability_label(bundle['status'])}"
             )
-            label.setStyleSheet(self._item_label_style(selected))
+            label.setChecked(selected)
+            label.setAccessibleName(item.title)
+            label.setAccessibleDescription(
+                f"{self._asset_type_label(item.asset_type)} · "
+                f"{self._display_role_label(item.usage_label)} · "
+                f"{self._bundle_status_label(str(bundle['status']))}"
+            )
             label.setToolTip(item.origin_url or item.source_key or item.preview_url)
             label.show()
 
@@ -2013,16 +2117,11 @@ class MaterialPanelWindow(QWidget):
 
     def _refresh_scope_buttons(self) -> None:
         for scope, button in self.scope_buttons.items():
-            active = scope == self._batch_scope
-            button.setStyleSheet(
-                "QPushButton { "
-                f"color: {'#FFF9EA' if active else '#4E5F3D'}; "
-                f"background: {'#6F7F5A' if active else '#F6F1E4'}; "
-                "border: 1px solid #DDD3BB; border-radius: 6px; font-size: 10px; }"
-            )
+            button.setChecked(scope == self._batch_scope)
         self.retry_batch_button.setStyleSheet(
             "QPushButton { color: #4E5F3D; background: #FFF9EA; "
             "border: 1px solid #E5D8B9; border-radius: 6px; font-size: 10px; }"
+            "QPushButton:focus { border: 2px solid #C8A24A; }"
         )
 
     def _retry_latest_batch(self) -> None:
@@ -2031,14 +2130,7 @@ class MaterialPanelWindow(QWidget):
 
     def _refresh_filter_buttons(self) -> None:
         for mode, button in self.filter_buttons.items():
-            active = mode == self._filter_mode
-            button.setStyleSheet(
-                "QPushButton { "
-                f"color: {'#FFF9EA' if active else '#4E5F3D'}; "
-                f"background: {'#6F7F5A' if active else '#F6F1E4'}; "
-                "border: 1px solid #DDD3BB; border-radius: 6px; font-size: 10px; }"
-                "QPushButton:hover { background: #EFE3C7; color: #4E5F3D; }"
-            )
+            button.setChecked(mode == self._filter_mode)
 
     def _filter_recent_items(self, items) -> list:
         query = self.search_input.text().strip().lower()
@@ -2089,9 +2181,10 @@ class MaterialPanelWindow(QWidget):
         )
         return query in haystack
 
-    def _select_recent_item(self, index: int, event: QMouseEvent) -> None:
+    def _select_recent_item(self, index: int, event: QMouseEvent | None = None) -> None:
         if index >= len(self._visible_items):
-            event.ignore()
+            if event is not None:
+                event.ignore()
             return
         self._leave_search_input_mode()
         item = self._visible_items[index]
@@ -2100,7 +2193,8 @@ class MaterialPanelWindow(QWidget):
         self._refresh_item_selection_styles()
         self._show_preview_for_item(item, bundle)
         self._show_detail_for_bundle(bundle)
-        event.accept()
+        if event is not None:
+            event.accept()
 
     def _show_detail_for_bundle(self, bundle: dict[str, object], *, copied: bool = False, confirmed: bool = False) -> None:
         handoff_line = (
@@ -2125,13 +2219,38 @@ class MaterialPanelWindow(QWidget):
         ai_line = "" if is_gif else self._ai_suggestion_line(bundle.get("ai_suggestions"))
         is_audio = str(bundle.get("type") or "").lower() == "audio"
         audio_line = self._audio_detail_line(bundle) if is_audio else ""
-        self.detail_label.setText(
+        full_detail_text = (
             f"{status_line}\n"
             f"{ui_text('用途', 'Role')} {self._role_label(bundle['role'])} · {ui_text('类型', 'Type')} {self._asset_type_label(bundle['type'])}\n"
             f"sha256 {str(bundle['sha256'])[:12] or '-'} · key {self._compact_text(str(bundle['source_key']) or '-', 24)}{audio_line}\n"
             f"url {self._compact_text(bundle['url'])}{origin_line}{ai_line}\n"
             f"{handoff_line}"
         )
+        if self._embedded:
+            compact_status = (
+                status_line
+                if confirmed
+                else (
+                    f"{self._compact_text(str(bundle['id']), 14)} · "
+                    f"{self._bundle_status_label(str(bundle['status']))} · "
+                    f"{self._agent_usability_label(str(bundle['status']))}"
+                )
+            )
+            compact_audio = self._compact_text(
+                audio_line.replace("\n", " · "),
+                34,
+            )
+            self.detail_label.setText(
+                f"{compact_status}\n"
+                f"{ui_text('用途', 'Role')} {self._role_label(bundle['role'])} · "
+                f"{ui_text('类型', 'Type')} {self._asset_type_label(bundle['type'])}{compact_audio}\n"
+                f"sha256 {str(bundle['sha256'])[:12] or '-'} · "
+                f"key {self._compact_text(str(bundle['source_key']) or '-', 18)}"
+            )
+            self.detail_label.setToolTip(full_detail_text)
+        else:
+            self.detail_label.setText(full_detail_text)
+            self.detail_label.setToolTip("")
         self.detail_label.show()
         self.copy_selected_button.setEnabled(bool(bundle.get("id")))
         self.role_row.setVisible(not is_audio and bundle["status"] != "missing")
@@ -2182,7 +2301,7 @@ class MaterialPanelWindow(QWidget):
             if self._toast_callback is not None:
                 self._toast_callback(
                     ui_text("AI 分拣未开启", "AI sorting is off"),
-                    success=False,
+                    tone="error",
                 )
             return
         bundle = self._get_bundle_safely(self._selected_bundle_id)
@@ -2212,7 +2331,7 @@ class MaterialPanelWindow(QWidget):
         if worker is not None:
             worker.deleteLater()
         if self._toast_callback is not None:
-            self._toast_callback(message, success=success)
+            self._toast_callback(message, tone="success" if success else "error")
         if bundle_id != self._selected_bundle_id:
             current = self._get_bundle_safely(self._selected_bundle_id) if self._selected_bundle_id else None
             if current is not None:
@@ -2287,7 +2406,7 @@ class MaterialPanelWindow(QWidget):
         if self._toast_callback is not None:
             self._toast_callback(
                 ui_text("已复制 handoff", "Handoff copied"),
-                success=True,
+                tone="success",
             )
 
     def _get_bundle_safely(self, bundle_id: str) -> dict[str, object] | None:
@@ -2500,55 +2619,40 @@ class MaterialPanelWindow(QWidget):
             return value
         return f"{value[:18]}...{value[-15:]}"
 
-    @staticmethod
-    def _item_label_style(selected: bool) -> str:
-        if selected:
-            return (
-                "QLabel { color: #2F3A26; font-size: 11px; font-weight: bold; "
-                "padding: 7px 8px; background: #FFF2C4; "
-                "border: 2px solid #C8A24A; border-radius: 8px; }"
-            )
-        return (
-            "QLabel { color: #444444; font-size: 11px; "
-            "padding: 7px 8px; background: #F6F1E4; "
-            "border: 1px solid #DDD3BB; border-radius: 8px; }"
-        )
-
-    @staticmethod
-    def _role_button_style(active: bool) -> str:
-        return (
-            "QPushButton { "
-            f"color: {'#FFF9EA' if active else '#4E5F3D'}; "
-            f"background: {'#6F7F5A' if active else '#F6F1E4'}; "
-            "border: 1px solid #DDD3BB; border-radius: 6px; font-size: 10px; }"
-            "QPushButton:hover { background: #EFE3C7; color: #4E5F3D; }"
-        )
-
     def _refresh_role_buttons(self, active_role: str = "") -> None:
-        for role, button in self.role_buttons.items():
-            button.setStyleSheet(self._role_button_style(role == active_role))
+        self._refresh_image_role_buttons(active_role)
 
     def _refresh_gif_role_buttons(self, active_role: str = "") -> None:
-        for role, button in self.gif_role_buttons.items():
-            button.setStyleSheet(self._role_button_style(role == active_role))
+        self._refresh_image_role_buttons(active_role)
+
+    def _refresh_image_role_buttons(self, active_role: str = "") -> None:
+        self.image_role_button_group.setExclusive(False)
+        for role, button in {
+            **self.role_buttons,
+            **self.gif_role_buttons,
+        }.items():
+            button.setChecked(role == active_role)
+        self.image_role_button_group.setExclusive(True)
 
     def _refresh_audio_usage_buttons(self, active_usage: str = "") -> None:
+        self.audio_usage_button_group.setExclusive(False)
         for usage, button in self.audio_usage_buttons.items():
-            button.setStyleSheet(self._role_button_style(usage == active_usage))
+            button.setChecked(usage == active_usage)
+        self.audio_usage_button_group.setExclusive(True)
 
     def _refresh_item_selection_styles(self) -> None:
         for idx, label in enumerate(self.item_labels):
             if idx >= len(self._visible_items) or label.isHidden():
                 continue
             bundle = self._bundle_for_item(self._visible_items[idx])
-            label.setStyleSheet(self._item_label_style(bundle["id"] == self._selected_bundle_id))
+            label.setChecked(bundle["id"] == self._selected_bundle_id)
 
     @staticmethod
     def _bundle_status_label(status: str) -> str:
         return {
-            "ready": ui_text("可用", "ready"),
-            "pending": ui_text("待确认", "pending"),
-            "missing": ui_text("缺失", "missing"),
+            "ready": ui_text("可用", "Ready"),
+            "pending": ui_text("待确认", "Pending"),
+            "missing": ui_text("缺失", "Missing"),
         }.get(status, status or "unknown")
 
     @staticmethod
@@ -3262,6 +3366,9 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             embedded=True,
             settings=self.settings,
         )
+        self.material_panel.paste_ingest_button.clicked.connect(
+            lambda: self._emit_action("paste_ingest")
+        )
         self.agent_page = self._build_agent_page()
         self.settings_page = self._build_settings_page()
         self.ai_page = self._build_ai_page()
@@ -3332,15 +3439,40 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        self.paste_ingest_button = self._action_button(
-            ui_text("从剪贴板收纳", "Import from clipboard"),
-            "paste_ingest",
+
+        ai_row = QWidget(page)
+        ai_row.setStyleSheet("QWidget { background: transparent; border: none; }")
+        ai_layout = QHBoxLayout(ai_row)
+        ai_layout.setContentsMargins(0, 0, 0, 0)
+        ai_layout.setSpacing(6)
+        self.ai_settings_button = self._action_button(
+            ui_text("AI 分拣", "AI sorting"),
+            "ai_setup",
+            ai_row,
+        )
+        self.ai_settings_button.setAccessibleDescription(
+            ui_text("打开 AI 分拣设置", "Open AI sorting settings")
+        )
+        self.ai_state_badge = QLabel(ui_text("已关闭", "Off"), ai_row)
+        self.ai_state_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ai_state_badge.setMinimumWidth(58)
+        self.ai_state_badge.setStyleSheet(
+            "QLabel { color: #625B4C; background: #E9E4D4; border: 1px solid #DDD3BB; "
+            "border-radius: 7px; padding: 4px 7px; font-size: 10px; font-weight: bold; }"
+        )
+        ai_layout.addWidget(self.ai_settings_button, 1)
+        ai_layout.addWidget(self.ai_state_badge)
+        layout.addWidget(ai_row)
+
+        self.low_power_button = self._action_button(
+            ui_text("低功耗：关", "Low power: off"),
+            "low_power",
             page,
         )
-        self.ai_settings_button = self._action_button(ui_text("AI 分拣", "AI sorting"), "ai_setup", page)
-        self.low_power_button = self._action_button(ui_text("低功耗：关", "Low power: off"), "low_power", page)
-        layout.addWidget(self.paste_ingest_button)
-        layout.addWidget(self.ai_settings_button)
+        self.low_power_button.setCheckable(True)
+        self.low_power_button.setAccessibleDescription(
+            ui_text("减少持续动画并暂停 AI 分拣", "Reduce continuous motion and pause AI sorting")
+        )
         layout.addWidget(self.low_power_button)
 
         self.language_section = self._section_label(ui_text("语言", "Language"), page)
@@ -3350,9 +3482,11 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         language_layout = QHBoxLayout(language_row)
         language_layout.setContentsMargins(0, 0, 0, 0)
         language_layout.setSpacing(5)
+        self.language_button_group = QButtonGroup(self)
         self.language_buttons: dict[str, QPushButton] = {}
         for mode, label in (("auto", ui_text("自动", "Auto")), ("zh", "简体中文"), ("en", "English")):
             button = self._action_button(label, f"language:{mode}", language_row)
+            _configure_choice_button(button, self.language_button_group)
             self.language_buttons[mode] = button
             language_layout.addWidget(button)
         layout.addWidget(language_row)
@@ -3391,6 +3525,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         provider_layout = QHBoxLayout(provider_row)
         provider_layout.setContentsMargins(0, 0, 0, 0)
         provider_layout.setSpacing(5)
+        self.ai_provider_button_group = QButtonGroup(self)
         self.ai_provider_buttons: dict[str, QPushButton] = {}
         for mode, label in (
             ("local", ui_text("本地模型", "Local model")),
@@ -3398,10 +3533,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             ("off", ui_text("关闭", "Off")),
         ):
             button = self._action_button(label, f"ai_provider:{mode}", provider_row)
-            button.setStyleSheet(
-                "QPushButton { text-align: center; color: #4E5F3D; background: #F6F1E4; "
-                "border: 1px solid #DDD3BB; border-radius: 7px; font-size: 10px; }"
-            )
+            _configure_choice_button(button, self.ai_provider_button_group)
             self.ai_provider_buttons[mode] = button
             provider_layout.addWidget(button)
         layout.addWidget(provider_row)
@@ -3414,11 +3546,9 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self.ai_api_key_input.setPlaceholderText(ui_text("API 密钥（不会写入配置文件）", "API key (not stored in config)"))
         self.ai_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         for field in (self.ai_api_base_input, self.ai_api_model_input, self.ai_api_key_input):
-            field.setFixedHeight(28)
-            field.setStyleSheet(
-                "QLineEdit { color: #4A463A; background: #FFF9EA; border: 1px solid #E5D8B9; "
-                "border-radius: 7px; padding: 0 8px; font-size: 11px; }"
-            )
+            field.setMinimumHeight(28)
+            field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            field.setStyleSheet(_LINE_EDIT_STYLE)
             layout.addWidget(field)
         self.ai_api_save_button = self._action_button(
             ui_text("保存并授权此域名", "Save and authorize domain"), "ai_save_api", page
@@ -3442,12 +3572,12 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
 
     def _action_button(self, text: str, action: str, parent: QWidget, *, danger: bool = False) -> QPushButton:
         button = QPushButton(text, parent)
-        button.setFixedHeight(30)
-        color = "#9B4C37" if danger else "#4E5F3D"
+        button.setMinimumHeight(30)
+        button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         button.setStyleSheet(
-            "QPushButton { text-align: left; padding: 0 10px; "
-            f"color: {color}; background: #F6F1E4; border: 1px solid #DDD3BB; border-radius: 7px; font-size: 11px; }}"
-            "QPushButton:hover { background: #EFE3C7; }"
+            _ACTION_BUTTON_STYLE
+            if not danger
+            else _ACTION_BUTTON_STYLE.replace("color: #4E5F3D", "color: #9B4C37", 1)
         )
         button.clicked.connect(lambda _checked=False, selected=action: self._emit_action(selected))
         self._detail_buttons[action] = button
@@ -3466,7 +3596,6 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             "latest_handoff": ui_text("复制最新批次 handoff", "Copy latest batch handoff"),
             "ready_handoff": ui_text("复制全部可用素材", "Copy all ready assets"),
             "agent_recipe": ui_text("复制 Agent 配方", "Copy Agent recipe"),
-            "paste_ingest": ui_text("从剪贴板收纳", "Import from clipboard"),
             "ai_setup": ui_text("AI 分拣", "AI sorting"),
             "logs": ui_text("打开日志目录", "Open logs folder"),
             "exit": ui_text("退出 Haypile", "Quit Haypile"),
@@ -3493,6 +3622,12 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             ui_text("低功耗：开", "Low power: on")
             if self._low_power_enabled
             else ui_text("低功耗：关", "Low power: off")
+        )
+        self.low_power_button.setChecked(self._low_power_enabled)
+        self._update_ai_nav_state(
+            ai_enabled=self._ai_enabled,
+            low_power=self._low_power_enabled,
+            ai_provider=self._ai_provider_mode,
         )
         self.material_panel.retranslate()
         if self._drawer_page:
@@ -3987,14 +4122,19 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             painter.setPen(QColor("#4E5F3D"))
             painter.drawText(label_rect, alignment, label)
 
-    def show_feedback(self, message: str, success: bool, anchor: QRect, available: QRect) -> None:
+    def show_feedback(self, message: str, tone: str, anchor: QRect, available: QRect) -> None:
         self._drawer_transition_id += 1
         self._cancel_pending_hide()
         self._feedback_timer.stop()
+        foreground, background = _FEEDBACK_TONES.get(
+            tone,
+            _FEEDBACK_TONES["error"],
+        )
         self.feedback_label.setText(message)
+        self.feedback_label.setProperty("feedbackTone", tone)
         self.feedback_label.setStyleSheet(
             "QLabel { padding: 4px 8px; border-radius: 8px; font-size: 11px; font-weight: bold; "
-            f"color: {'#4E5F3D' if success else '#9B4C37'}; background: {'#F3EDDA' if success else '#F4E2DC'}; }}"
+            f"color: {foreground}; background: {background}; }}"
         )
         self.feedback_label.show()
         if self.is_drawer_open():
@@ -4052,7 +4192,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._progress_active = True
         self.progress_bar.setValue(3)
         self.progress_bar.show()
-        self.show_feedback(text, True, anchor, available)
+        self.show_feedback(text, "progress", anchor, available)
 
     def set_progress(self, percent: int, text: str) -> None:
         self.progress_bar.setValue(max(0, min(100, percent)))
@@ -4060,12 +4200,14 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         if self._feedback_only and self.isVisible():
             self._apply_feedback_geometry()
 
-    def complete_progress(self, success: bool, message: str) -> None:
+    def complete_progress(self, tone: str, message: str) -> None:
         self._progress_active = False
-        self.progress_bar.setValue(100 if success else max(15, self.progress_bar.value()))
+        self.progress_bar.setValue(
+            100 if tone != "error" else max(15, self.progress_bar.value())
+        )
         self.progress_bar.hide()
         anchor = self._anchor if not self._anchor.isNull() else QRect(60, 60, 72, 72)
-        self.show_feedback(message, success, anchor, self._available)
+        self.show_feedback(message, tone, anchor, self._available)
 
     def refresh_agent_status(self) -> None:
         try:
@@ -4101,11 +4243,14 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self.low_power_button.setText(
             ui_text("低功耗：开", "Low power: on") if low_power else ui_text("低功耗：关", "Low power: off")
         )
+        self.low_power_button.setChecked(low_power)
         self._low_power_enabled = bool(low_power)
         self._language_mode = language
         self._ai_provider_mode = ai_provider
-        self.ai_settings_button.setText(
-            ui_text("AI 分拣：开", "AI sorting: on") if ai_enabled else ui_text("AI 分拣：关", "AI sorting: off")
+        self._update_ai_nav_state(
+            ai_enabled=ai_enabled,
+            low_power=low_power,
+            ai_provider=ai_provider,
         )
         self.ai_status_label.setText(ai_status)
         self.ai_api_base_input.setText(api_base_url)
@@ -4127,21 +4272,40 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self.ai_command_button.setVisible(ai_provider == "local")
         self.ai_recheck_button.setVisible(ai_provider == "local")
         for mode, button in self.ai_provider_buttons.items():
-            active = mode == ai_provider
-            button.setStyleSheet(
-                "QPushButton { text-align: center; "
-                f"color: {'#FFF9EA' if active else '#4E5F3D'}; "
-                f"background: {'#6F7F5A' if active else '#F6F1E4'}; "
-                "border: 1px solid #DDD3BB; border-radius: 7px; font-size: 10px; }"
-            )
+            button.setChecked(mode == ai_provider)
         self.service_status_label.setText(service_status)
         for mode, button in self.language_buttons.items():
-            active = mode == language
-            button.setStyleSheet(
-                "QPushButton { text-align: center; padding: 0 5px; "
-                f"color: {'#FFF9EA' if active else '#4E5F3D'}; background: {'#6F7F5A' if active else '#F6F1E4'}; "
-                "border: 1px solid #DDD3BB; border-radius: 7px; font-size: 10px; }"
+            button.setChecked(mode == language)
+
+    def _update_ai_nav_state(
+        self,
+        *,
+        ai_enabled: bool,
+        low_power: bool,
+        ai_provider: str,
+    ) -> None:
+        if ai_enabled:
+            label = ui_text("已开启", "On")
+            foreground, background = _UI_MOSS, "#F3EDDA"
+        elif low_power or ai_provider == "off":
+            label = ui_text("已关闭", "Off")
+            foreground, background = "#625B4C", "#E9E4D4"
+        else:
+            label = ui_text("需配置", "Setup needed")
+            foreground, background = _UI_GOLD_TEXT, "#FFF2C4"
+        self.ai_state_badge.setText(label)
+        self.ai_state_badge.setStyleSheet(
+            "QLabel { "
+            f"color: {foreground}; background: {background}; "
+            "border: 1px solid #DDD3BB; border-radius: 7px; "
+            "padding: 4px 7px; font-size: 10px; font-weight: bold; }"
+        )
+        self.ai_settings_button.setAccessibleDescription(
+            ui_text(
+                f"打开 AI 分拣设置，当前{label}",
+                f"Open AI sorting settings, currently {label}",
             )
+        )
 
 
 AttachedHubWindow = QuickMenuWindow
@@ -4742,10 +4906,10 @@ class HaypileFloatingBall(QWidget):
         self._sync_visual_timer()
 
         if route.name == ROUTE_UNSUPPORTED:
-            self.show_toast(ui_text("没有找到可收纳的图片或音频", "No images or audio to store"), success=False)
+            self.show_toast(ui_text("没有找到可收纳的图片或音频", "No images or audio to store"), tone="error")
             return
         if self._ingest_busy():
-            self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), success=False)
+            self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), tone="progress")
             return
         if route.has_remote:
             self._start_remote_download_worker(list(route.remote_urls), list(route.local_files))
@@ -4962,7 +5126,7 @@ class HaypileFloatingBall(QWidget):
         if not self._ensure_storage_ready():
             return
         if self._ingest_busy():
-            self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), success=False)
+            self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), tone="progress")
             return
 
         route = resolve_intake_route(
@@ -4984,7 +5148,7 @@ class HaypileFloatingBall(QWidget):
         if route.name == ROUTE_RAW_GIF:
             gif_payload = route.raw_gif or b""
             if len(gif_payload) > MAX_GIF_BYTES:
-                self.show_toast(ui_text("GIF 素材超过 50MB", "GIF asset is over 50MB"), success=False)
+                self.show_toast(ui_text("GIF 素材超过 50MB", "GIF asset is over 50MB"), tone="error")
                 return
             try:
                 path = self._write_clipboard_bytes(gif_payload, ".gif")
@@ -4992,7 +5156,7 @@ class HaypileFloatingBall(QWidget):
                 logger.exception("Failed to materialize clipboard GIF")
                 self.show_toast(
                     ui_text("无法保存剪贴板 GIF", "Clipboard GIF could not be saved"),
-                    success=False,
+                    tone="error",
                 )
                 return
             self._remote_ingest_paths.add(path)
@@ -5000,7 +5164,7 @@ class HaypileFloatingBall(QWidget):
             return
 
         if route.name == ROUTE_EMPTY_GIF:
-            self.show_toast(ui_text("剪贴板中的 GIF 为空", "Clipboard GIF is empty"), success=False)
+            self.show_toast(ui_text("剪贴板中的 GIF 为空", "Clipboard GIF is empty"), tone="error")
             return
 
         if route.name in {ROUTE_REMOTE_URL, ROUTE_REMOTE_URL_WITH_STATIC_PNG_FALLBACK}:
@@ -5029,14 +5193,14 @@ class HaypileFloatingBall(QWidget):
             except ValueError:
                 self.show_toast(
                     ui_text("剪贴板图片尺寸无效或过大", "Clipboard image dimensions are invalid or too large"),
-                    success=False,
+                    tone="error",
                 )
                 return
             except Exception:
                 logger.exception("Failed to materialize clipboard image")
                 self.show_toast(
                     ui_text("无法保存剪贴板图片", "Clipboard image could not be saved"),
-                    success=False,
+                    tone="error",
                 )
                 return
             self._remote_ingest_paths.add(path)
@@ -5046,7 +5210,7 @@ class HaypileFloatingBall(QWidget):
                     "剪贴板只提供静态画面，将按 PNG 收纳",
                     "Clipboard exposed a still image; it will be imported as PNG",
                 ),
-                success=True,
+                tone="progress",
             )
             return
 
@@ -5055,7 +5219,7 @@ class HaypileFloatingBall(QWidget):
                 "剪贴板里没有可收纳的文件、图片或直链",
                 "No supported file, image, or direct URL found on the clipboard",
             ),
-            success=False,
+            tone="error",
         )
 
     @classmethod
@@ -5143,7 +5307,7 @@ class HaypileFloatingBall(QWidget):
             if self._storage_error_code == "storage_unavailable"
             else ui_text("正在准备素材库", "Preparing asset library")
         )
-        self.show_toast(message, success=False)
+        self.show_toast(message, tone="error")
         return False
 
     def _start_remote_download_worker(
@@ -5167,7 +5331,7 @@ class HaypileFloatingBall(QWidget):
             )
         )
         self.remote_worker.start()
-        self.show_toast(ui_text("正在获取网页素材...", "Fetching web assets..."), success=True)
+        self.show_toast(ui_text("正在获取网页素材...", "Fetching web assets..."), tone="progress")
         self.quick_menu.begin_progress(
             self._toast_anchor(),
             self._available_geometry(),
@@ -5212,8 +5376,8 @@ class HaypileFloatingBall(QWidget):
                 if not success
                 else ui_text("没有找到可收纳的图片或音频", "No images or audio to store")
             )
-            self.show_toast(failure_message, success=False)
-            self.quick_menu.complete_progress(False, failure_message)
+            self.show_toast(failure_message, tone="error")
+            self.quick_menu.complete_progress("error", failure_message)
             return
         self._remote_ingest_paths.update(downloaded_files)
         self._drop_feedback_until = time.monotonic() + 0.65
@@ -5235,7 +5399,7 @@ class HaypileFloatingBall(QWidget):
                 seen.add(key)
         if not merged_files:
             self._cleanup_remote_ingest_paths()
-            self.show_toast(ui_text("没有可收纳的文件", "No files to store"), success=False)
+            self.show_toast(ui_text("没有可收纳的文件", "No files to store"), tone="error")
             return
 
         self._active_ingest_visual_kind = self._visual_kind_for_files(merged_files)
@@ -5266,7 +5430,7 @@ class HaypileFloatingBall(QWidget):
                 f"Received {len(merged_files)} files, storing...",
             )
         )
-        self.show_toast(initial_message, success=True)
+        self.show_toast(initial_message, tone="progress")
         self.quick_menu.begin_progress(
             self._toast_anchor(),
             self._available_geometry(),
@@ -5347,8 +5511,15 @@ class HaypileFloatingBall(QWidget):
             self._reject_feedback_until = now + 0.32
             self._sync_visual_timer()
             self.update()
-        self.show_toast(message, success=success)
-        self.quick_menu.complete_progress(success, message)
+        tone = (
+            "duplicate"
+            if success and duplicate_only
+            else "pending"
+            if success
+            else "error"
+        )
+        self.show_toast(message, tone=tone)
+        self.quick_menu.complete_progress(tone, message)
         if self.quick_menu.current_page() == "assets":
             self.material_panel.refresh()
         self._refresh_pending_badge()
@@ -5424,7 +5595,11 @@ class HaypileFloatingBall(QWidget):
         if batch_id == self.latest_batch_id:
             self.show_toast(
                 message,
-                success=result_status in {"success", "partial_success"},
+                tone="success"
+                if result_status == "success"
+                else "pending"
+                if result_status == "partial_success"
+                else "error",
             )
         self._sync_visual_timer()
         self._start_next_ai_batch()
@@ -5432,13 +5607,13 @@ class HaypileFloatingBall(QWidget):
     def _retry_latest_ai_batch(self) -> None:
         latest = self._bundle_service().get_latest_batch()
         if latest is None:
-            self.show_toast(ui_text("还没有可重试的批次", "No batch to retry"), success=False)
+            self.show_toast(ui_text("还没有可重试的批次", "No batch to retry"), tone="error")
             return
         if not self.ai_enabled or self.low_power_enabled:
-            self.show_toast(ui_text("请先开启 AI 整理", "Enable AI sorting first"), success=False)
+            self.show_toast(ui_text("请先开启 AI 整理", "Enable AI sorting first"), tone="error")
             return
         self._enqueue_ai_batch(str(latest["id"]))
-        self.show_toast(ui_text("已加入 AI 整理队列", "Added to AI sorting queue"), success=True)
+        self.show_toast(ui_text("已加入 AI 整理队列", "Added to AI sorting queue"), tone="progress")
 
     def _on_ingest_progress(self, percent: int, text: str) -> None:
         if self._active_ingest_visual_kind == "gif":
@@ -5449,10 +5624,10 @@ class HaypileFloatingBall(QWidget):
             )
         self.quick_menu.set_progress(percent, text)
 
-    def show_toast(self, message: str, *, success: bool) -> None:
+    def show_toast(self, message: str, *, tone: str) -> None:
         self.quick_menu.show_feedback(
             message,
-            success,
+            tone,
             self._toast_anchor(),
             self._available_geometry(),
         )
@@ -5576,7 +5751,7 @@ class HaypileFloatingBall(QWidget):
                     "素材目录不可用，请检查存储权限",
                     "Asset storage is unavailable; check storage permissions",
                 ),
-                success=False,
+                tone="error",
             )
             return False
 
@@ -5676,7 +5851,7 @@ class HaypileFloatingBall(QWidget):
             ui_text("低功耗模式已开启", "Low power enabled")
             if self.low_power_enabled
             else ui_text("低功耗模式已关闭", "Low power disabled"),
-            success=True,
+            tone="success",
         )
 
     def _current_ai_provider_config(self) -> AIProviderConfig:
@@ -5722,9 +5897,9 @@ class HaypileFloatingBall(QWidget):
             logger.debug("Failed to save Haypile AI provider")
         self._refresh_ai_menu_status()
         if mode == "api" and not self.ai_enabled:
-            self.show_toast(ui_text("填写 API 配置后保存授权", "Enter API settings and authorize"), success=False)
+            self.show_toast(ui_text("填写 API 配置后保存授权", "Enter API settings and authorize"), tone="pending")
         else:
-            self.show_toast(self._ai_status_text(), success=True)
+            self.show_toast(self._ai_status_text(), tone="success")
 
     def _save_api_provider(self) -> None:
         base_value = self.quick_menu.ai_api_base_input.text().strip()
@@ -5736,21 +5911,21 @@ class HaypileFloatingBall(QWidget):
         except ValueError:
             self.show_toast(
                 ui_text("API 地址无效；远程服务必须使用 HTTPS", "Invalid API URL; remote services require HTTPS"),
-                success=False,
+                tone="error",
             )
             return
         if not model:
-            self.show_toast(ui_text("请填写模型名称", "Enter a model name"), success=False)
+            self.show_toast(ui_text("请填写模型名称", "Enter a model name"), tone="error")
             return
         host_changed = bool(self.ai_api_authorized_host and host != self.ai_api_authorized_host)
         if host_changed and not entered_key:
-            self.show_toast(ui_text("更换域名后请重新填写密钥授权", "Enter the key again for the new domain"), success=False)
+            self.show_toast(ui_text("更换域名后请重新填写密钥授权", "Enter the key again for the new domain"), tone="error")
             return
         key = entered_key
         if not key and host == self.ai_api_authorized_host:
             key = self._session_api_key or SystemCredentialStore.get(host)
         if not key:
-            self.show_toast(ui_text("请填写 API 密钥", "Enter an API key"), success=False)
+            self.show_toast(ui_text("请填写 API 密钥", "Enter an API key"), tone="error")
             return
 
         stored = SystemCredentialStore.set(host, key)
@@ -5781,7 +5956,7 @@ class HaypileFloatingBall(QWidget):
             ui_text("API 已授权", "API authorized")
             if stored
             else ui_text("API 仅在本次会话可用", "API available for this session only"),
-            success=True,
+            tone="success",
         )
 
     def _set_language_mode(self, mode: str) -> None:
@@ -5794,7 +5969,7 @@ class HaypileFloatingBall(QWidget):
         self.quick_menu.retranslate()
         self.material_panel.refresh()
         self._refresh_ai_menu_status()
-        self.show_toast(ui_text("语言已更新", "Language updated"), success=True)
+        self.show_toast(ui_text("语言已更新", "Language updated"), tone="success")
 
     def _clear_exit_armed(self) -> None:
         self._exit_armed = False
@@ -5865,7 +6040,7 @@ class HaypileFloatingBall(QWidget):
         self.shutdown_requested.emit()
         self.show_toast(
             ui_text("正在安全结束当前操作", "Finishing the current operation safely"),
-            success=True,
+            tone="progress",
         )
         self._shutdown_timer.start()
         self._poll_shutdown()
@@ -5902,7 +6077,7 @@ class HaypileFloatingBall(QWidget):
                     "仍在安全结束；如必须立即退出，请使用系统强制退出",
                     "Still finishing safely; use the system Force Quit only if necessary",
                 ),
-                success=False,
+                tone="error",
             )
 
     def complete_shutdown(self) -> None:
@@ -5962,18 +6137,18 @@ class HaypileFloatingBall(QWidget):
             return
         if action == "mcp":
             QApplication.clipboard().setText(self._mcp_config_text())
-            self.show_toast(ui_text("已复制 MCP 配置", "MCP config copied"), success=True)
+            self.show_toast(ui_text("已复制 MCP 配置", "MCP config copied"), tone="success")
             return
         if action == "http":
             base_url = self._base_url()
             QApplication.clipboard().setText(base_url)
-            self.show_toast(ui_text(f"已复制 HTTP 地址 {base_url}", f"HTTP URL copied {base_url}"), success=True)
+            self.show_toast(ui_text(f"已复制 HTTP 地址 {base_url}", f"HTTP URL copied {base_url}"), tone="success")
             return
         if action == "latest_handoff":
             service = self._bundle_service()
             latest = service.get_latest_batch()
             if latest is None:
-                self.show_toast(ui_text("还没有最新批次", "No latest batch"), success=False)
+                self.show_toast(ui_text("还没有最新批次", "No latest batch"), tone="error")
                 return
             batch_id = str(latest["id"])
             try:
@@ -5984,11 +6159,11 @@ class HaypileFloatingBall(QWidget):
                         "素材已保存，Agent 接口待恢复",
                         "Assets are saved; Agent access is pending recovery",
                     ),
-                    success=False,
+                    tone="error",
                 )
                 return
             if not bundles:
-                self.show_toast(ui_text("最新批次还没有可用素材", "Latest batch has no ready assets"), success=False)
+                self.show_toast(ui_text("最新批次还没有可用素材", "Latest batch has no ready assets"), tone="error")
                 return
             QApplication.clipboard().setText(
                 json.dumps(
@@ -5999,7 +6174,7 @@ class HaypileFloatingBall(QWidget):
             )
             self.show_toast(
                 ui_text(f"已复制最新批次 {len(bundles)} 个素材", f"Copied {len(bundles)} latest assets"),
-                success=True,
+                tone="success",
             )
             return
         if action == "ready_handoff":
@@ -6011,20 +6186,20 @@ class HaypileFloatingBall(QWidget):
                         "素材已保存，Agent 接口待恢复",
                         "Assets are saved; Agent access is pending recovery",
                     ),
-                    success=False,
+                    tone="error",
                 )
                 return
             if not bundles:
-                self.show_toast(ui_text("没有可用素材", "No ready assets"), success=False)
+                self.show_toast(ui_text("没有可用素材", "No ready assets"), tone="error")
                 return
             QApplication.clipboard().setText(
                 json.dumps(self.material_panel._handoff_for_bundles(bundles), ensure_ascii=False, indent=2)
             )
-            self.show_toast(ui_text(f"已复制 {len(bundles)} 个可用素材", f"Copied {len(bundles)} ready assets"), success=True)
+            self.show_toast(ui_text(f"已复制 {len(bundles)} 个可用素材", f"Copied {len(bundles)} ready assets"), tone="success")
             return
         if action == "agent_recipe":
             QApplication.clipboard().setText(self.material_panel._agent_recipe_text())
-            self.show_toast(ui_text("已复制 Agent 配方", "Agent recipe copied"), success=True)
+            self.show_toast(ui_text("已复制 Agent 配方", "Agent recipe copied"), tone="success")
             return
         if action == "ai_setup":
             self._show_ai_setup_panel(self._ai_model_status_text())
@@ -6050,7 +6225,7 @@ class HaypileFloatingBall(QWidget):
         if action == "ai_copy_command":
             model = str(self.settings.VISION_CLASSIFIER_MODEL or "qwen2.5vl:3b")
             QApplication.clipboard().setText(f"ollama pull {model}")
-            self.show_toast(ui_text("已复制模型安装命令", "Model install command copied"), success=True)
+            self.show_toast(ui_text("已复制模型安装命令", "Model install command copied"), tone="success")
             return
         if action == "ai_recheck":
             self._recheck_ai_setup()
@@ -6064,7 +6239,10 @@ class HaypileFloatingBall(QWidget):
         if action == "logs":
             self.settings.LOG_DIR.mkdir(parents=True, exist_ok=True)
             opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.settings.LOG_DIR)))
-            self.show_toast(ui_text("已打开日志目录", "Logs folder opened"), success=bool(opened))
+            self.show_toast(
+                ui_text("已打开日志目录", "Logs folder opened"),
+                tone="success" if opened else "error",
+            )
             return
         if action == "exit":
             if self._ingest_busy():
@@ -6073,7 +6251,7 @@ class HaypileFloatingBall(QWidget):
                     return
                 self._busy_exit_armed = True
                 self.quick_menu.exit_button.setText(ui_text("再次点击以退出", "Click again to quit"))
-                self.show_toast(ui_text("仍在收纳，退出会中断任务", "Import is active; quitting will stop it"), success=False)
+                self.show_toast(ui_text("仍在收纳，退出会中断任务", "Import is active; quitting will stop it"), tone="error")
                 QTimer.singleShot(2200, self._clear_busy_exit_armed)
                 return
             self.close()
@@ -6138,7 +6316,10 @@ class HaypileFloatingBall(QWidget):
             success = True
         else:
             return
-        self.show_toast(message, success=success)
+        self.show_toast(
+            message,
+            tone="progress" if code == "start_slow" else "success" if success else "error",
+        )
 
     def _ai_status_text(self) -> str:
         if self.low_power_enabled:
@@ -6187,7 +6368,7 @@ class HaypileFloatingBall(QWidget):
         self.quick_menu.open_drawer("ai", self._ball_anchor_rect(), self._available_geometry())
         self.quick_menu.ai_status_label.setText(status_text)
         if self.ai_provider_mode == "local" and self._ai_model_state()[0] != "ready":
-            self.show_toast(ui_text("先安装本地视觉模型", "Install the local vision model first"), success=False)
+            self.show_toast(ui_text("先安装本地视觉模型", "Install the local vision model first"), tone="pending")
 
     def _recheck_ai_setup(self) -> None:
         if self.ai_provider_mode == "off":
@@ -6201,7 +6382,7 @@ class HaypileFloatingBall(QWidget):
             self._ai_preference = True
             self._save_ai_enabled()
             self._refresh_ai_menu_status()
-            self.show_toast(self._ai_status_text(), success=True)
+            self.show_toast(self._ai_status_text(), tone="success")
             return
         self._show_ai_setup_panel(status_text)
 

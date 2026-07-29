@@ -515,17 +515,17 @@ class GifGuiTests(unittest.TestCase):
             "loop_count": 0,
             "ai_suggestions": {},
         }
-        toasts: list[tuple[str, bool]] = []
+        toasts: list[tuple[str, str]] = []
 
-        def keyword_only_toast(message: str, *, success: bool) -> None:
-            toasts.append((message, success))
+        def keyword_only_toast(message: str, *, tone: str) -> None:
+            toasts.append((message, tone))
 
         panel.set_toast_handler(keyword_only_toast)
         panel._selected_bundle_id = bundle["id"]
         with patch.object(panel, "_get_bundle_safely", return_value=bundle):
             panel._copy_selected_handoff()
 
-        self.assertEqual(toasts[-1][1], True)
+        self.assertEqual(toasts[-1][1], "success")
 
     def test_transparent_gif_preserves_bytes_hash_rescan_and_preview(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
