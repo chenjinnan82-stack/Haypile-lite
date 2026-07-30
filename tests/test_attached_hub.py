@@ -93,7 +93,8 @@ class AttachedHubTests(unittest.TestCase):
         self.assertTrue(menu.drawer_shell.isVisible())
         self.assertEqual(refresh_calls, [])
         gap = menu._drawer_global_rect.left() - self.ball._ball_anchor_rect().right()
-        self.assertLessEqual(gap, 14)
+        self.assertGreater(gap, 0)
+        self.assertLessEqual(gap, menu.CONNECTOR_REACH)
 
         self.app.processEvents()
         self.assertEqual(refresh_calls, ["refresh"])
@@ -112,6 +113,12 @@ class AttachedHubTests(unittest.TestCase):
         self.assertGreaterEqual(drawer.width(), 408)
         track_global = self.ball.quick_menu.frameGeometry().topLeft() + self.ball.quick_menu._track_center.toPoint()
         self.assertLessEqual((track_global - self.ball._ball_anchor_rect().center()).manhattanLength(), 1)
+        menu_origin = self.ball.quick_menu.frameGeometry().topLeft()
+        for action, _icon, _label in self.ball.quick_menu.actions:
+            slot = self.ball.quick_menu._slot_rect(action).toAlignedRect().translated(menu_origin)
+            label = self.ball.quick_menu._label_rect(action).toAlignedRect().translated(menu_origin)
+            self.assertFalse(drawer.intersects(slot), action)
+            self.assertFalse(drawer.intersects(label), action)
 
     def test_language_and_low_power_persist_without_losing_ai_preference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

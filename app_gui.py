@@ -3147,6 +3147,7 @@ class _LegacyQuickMenuWindow(QWidget):
         painter.setPen(highlight_pen)
         painter.drawArc(arc_rect, (start_angle + span_angle // 2 - 34) * 16, min(68, span_angle) * 16)
 
+        self._paint_overlay(painter)
         for action, icon_name, _tooltip in self.actions:
             slot_rect = self._slot_rect(action)
             hovered = action == self._hovered_action
@@ -3173,7 +3174,6 @@ class _LegacyQuickMenuWindow(QWidget):
             painter.drawEllipse(slot_rect)
             fg = QColor("#2E3A26") if (hovered or ai_on) else QColor("#FFF9EA")
             self._draw_action_icon(painter, icon_name, slot_rect.center(), fg)
-        self._paint_overlay(painter)
         painter.end()
 
     def _paint_overlay(self, painter: QPainter) -> None:
@@ -3291,7 +3291,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
     DRAWER_WIDTH = 456
     DRAWER_MIN_WIDTH = 408
     DRAWER_HEIGHT = 392
-    CONNECTOR_REACH = 48
+    CONNECTOR_REACH = 112
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
