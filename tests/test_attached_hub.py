@@ -120,6 +120,48 @@ class AttachedHubTests(unittest.TestCase):
             self.assertFalse(drawer.intersects(slot), action)
             self.assertFalse(drawer.intersects(label), action)
 
+    def test_selected_page_rotates_to_drawer_connector(self) -> None:
+        self.ball.move(918, 280)
+        menu = self.ball.quick_menu
+        menu.show_attached(self.ball._ball_anchor_rect(), self.ball._available_geometry())
+
+        positions = {}
+        for page in ("agent", "settings", "assets"):
+            menu.open_drawer(page)
+            self.app.processEvents()
+            selected = menu._slot_rect(page).center()
+            positions[page] = selected
+            self.assertLess(selected.x(), menu._track_center.x())
+            self.assertLessEqual(abs(selected.y() - menu._track_center.y()), 1)
+
+        self.assertEqual(len({(point.x(), point.y()) for point in positions.values()}), 1)
+
+    def test_ring_rotation_animates_and_low_power_snaps(self) -> None:
+        self.ball.move(918, 280)
+        menu = self.ball.quick_menu
+        menu.show_attached(self.ball._ball_anchor_rect(), self.ball._available_geometry())
+        menu.open_drawer("agent")
+
+        with patch.object(menu, "_animations_enabled", return_value=True):
+            finished = QSignalSpy(menu._ring_rotation.finished)
+            menu.open_drawer("settings")
+            self.assertEqual(
+                menu._ring_rotation.state(),
+                app_gui.QVariantAnimation.State.Running,
+            )
+            self.assertTrue(finished.wait(1000))
+            selected = menu._slot_rect("settings").center()
+            self.assertLessEqual(abs(selected.y() - menu._track_center.y()), 1)
+
+            menu._low_power_enabled = True
+            menu.open_drawer("assets")
+            self.assertEqual(
+                menu._ring_rotation.state(),
+                app_gui.QVariantAnimation.State.Stopped,
+            )
+            selected = menu._slot_rect("assets").center()
+            self.assertLessEqual(abs(selected.y() - menu._track_center.y()), 1)
+
     def test_language_and_low_power_persist_without_losing_ai_preference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.ball._gui_state_path = Path(tmp) / "gui_state.json"

@@ -3294,6 +3294,9 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
     CONNECTOR_REACH = 112
 
     def __init__(self, settings: Settings | None = None) -> None:
+        self._ring_angles: dict[str, float] = {}
+        self._ring_angle_start: dict[str, float] = {}
+        self._ring_angle_end: dict[str, float] = {}
         self.settings = settings or get_settings()
         super().__init__()
         self._hide_timer.stop()
@@ -3328,6 +3331,11 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._language_mode = "auto"
         self._drawer_transition_id = 0
         self._hide_transition_id: int | None = None
+        self._ring_rotation = QVariantAnimation(self)
+        self._ring_rotation.setDuration(170)
+        self._ring_rotation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._ring_rotation.valueChanged.connect(self._set_ring_rotation_progress)
+        self._ring_rotation.finished.connect(self._finish_ring_rotation)
         self._build_drawer()
         self._hide_finalize_timer = QTimer(self)
         self._hide_finalize_timer.setSingleShot(True)
@@ -3639,6 +3647,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._close_callback = callback
 
     def show_menu(self, x: int, y: int) -> None:
+        self._reset_ring_rotation()
         self._anchor = QRect(x + 84, y + 84, 72, 72)
         self._available = QRect(x, y, self.RING_SIZE, self.RING_SIZE)
         self._drawer_page = ""
@@ -3649,6 +3658,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._show_ring_animation()
 
     def show_attached(self, anchor: QRect, available: QRect) -> None:
+        self._reset_ring_rotation()
         self._anchor = QRect(anchor)
         self._available = QRect(available)
         self._drawer_page = ""
@@ -3701,6 +3711,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._drawer_motion.start()
 
     def hide_menu(self) -> None:
+        self._reset_ring_rotation()
         self._drawer_transition_id += 1
         transition_id = self._drawer_transition_id
         self._hide_finalize_timer.stop()
@@ -3842,11 +3853,13 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         if available is not None:
             self._available = QRect(available)
         old_page = self._drawer_page
+        start_angles = self._ring_angle_map()
         self._drawer_page = page
         self._feedback_only = False
         self.drawer_title.show()
         self.drawer_stack.show()
         self._apply_attached_geometry(drawer_open=True, allow_flip=True)
+        self._rotate_ring_to_page(page, start_angles=start_angles)
         if page == "assets":
             self.material_panel.show()
         if page == "agent":
@@ -3909,6 +3922,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._drawer_transition_id += 1
         transition_id = self._drawer_transition_id
         self._drawer_page = ""
+        self._reset_ring_rotation()
         self._agent_timer.stop()
         if not self._animations_enabled():
             self.drawer_shell.hide()
@@ -3952,6 +3966,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             if not self._animations_enabled():
                 self._drawer_side = desired_side
                 self._apply_attached_geometry(drawer_open=True, allow_flip=False)
+                self._rotate_ring_to_page(self._drawer_page, animate=False)
                 return
             page = self._drawer_page
             self._drawer_transition_id += 1
@@ -3970,6 +3985,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
                 self.drawer_shell.hide()
                 self._drawer_side = desired_side
                 self._apply_attached_geometry(drawer_open=True, allow_flip=False)
+                self._rotate_ring_to_page(page, animate=False)
                 self._switch_page(page, animate=False)
                 final_pos = self.drawer_shell.pos()
                 self._start_drawer_motion(
@@ -3985,6 +4001,8 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         if allow_flip:
             self._drawer_side = desired_side
         self._apply_attached_geometry(drawer_open=self.is_drawer_open(), allow_flip=False)
+        if self.is_drawer_open():
+            self._rotate_ring_to_page(self._drawer_page, animate=False)
 
     def _choose_drawer_side(self) -> str:
         center_x = self._anchor.center().x()
@@ -4041,31 +4059,104 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             )
         self.update()
 
-    def _slot_angles(self) -> list[int]:
+    def _slot_angles(self) -> list[float]:
+        defaults = self._drawer_slot_angles()
+        return [
+            self._ring_angles.get(action, defaults[index])
+            for index, (action, _icon, _label) in enumerate(self.actions)
+        ]
+
+    def _drawer_slot_angles(self) -> list[float]:
         center = self._anchor.center()
-        left = center.x() - self._available.left() < 88
-        right = self._available.right() - center.x() < 88
         top = center.y() - self._available.top() < 88
         bottom = self._available.bottom() - center.y() < 88
-        if left and top:
-            return [18, 54, 90]
-        if right and top:
-            return [90, 126, 162]
-        if left and bottom:
-            return [-90, -54, -18]
-        if right and bottom:
-            return [-162, -126, -90]
-        if left:
-            return [-64, 0, 64]
-        if right:
-            return [116, 180, 244]
-        if top:
-            return [26, 90, 154]
-        if bottom:
-            return [-154, -90, -26]
         if self._drawer_side == "right":
-            return [112, 180, 248]
-        return [-68, 0, 68]
+            if top:
+                return [0.0, 32.0, 64.0]
+            if bottom:
+                return [0.0, -32.0, -64.0]
+            return [-64.0, 0.0, 64.0]
+        if top:
+            return [180.0, 148.0, 116.0]
+        if bottom:
+            return [180.0, 212.0, 244.0]
+        return [116.0, 180.0, 244.0]
+
+    def _ring_angle_map(self) -> dict[str, float]:
+        return {
+            action: angle
+            for (action, _icon, _label), angle in zip(self.actions, self._slot_angles())
+        }
+
+    def _ring_targets_for_page(self, page: str) -> dict[str, float]:
+        selected = "settings" if page == "ai" else page
+        action_names = [action for action, _icon, _label in self.actions]
+        if selected not in action_names:
+            return self._ring_angle_map()
+        slots = self._drawer_slot_angles()
+        connector_angle = 0.0 if self._drawer_side == "right" else 180.0
+        connector_index = min(
+            range(len(slots)),
+            key=lambda index: abs(slots[index] - connector_angle),
+        )
+        selected_index = action_names.index(selected)
+        offset = connector_index - selected_index
+        return {
+            action: slots[(index + offset) % len(slots)]
+            for index, action in enumerate(action_names)
+        }
+
+    def _rotate_ring_to_page(
+        self,
+        page: str,
+        *,
+        start_angles: dict[str, float] | None = None,
+        animate: bool | None = None,
+    ) -> None:
+        self._ring_rotation.stop()
+        self._ring_angle_start = dict(start_angles or self._ring_angle_map())
+        targets = self._ring_targets_for_page(page)
+        self._ring_angle_end = {
+            action: min(
+                (target - 360.0, target, target + 360.0),
+                key=lambda value: abs(value - self._ring_angle_start[action]),
+            )
+            for action, target in targets.items()
+        }
+        should_animate = (
+            self._animations_enabled() and not self._low_power_enabled
+            if animate is None
+            else bool(animate) and not self._low_power_enabled
+        )
+        if not should_animate or self._ring_angle_start == self._ring_angle_end:
+            self._ring_angles = dict(targets)
+            self.update()
+            return
+        self._ring_rotation.setStartValue(0.0)
+        self._ring_rotation.setEndValue(1.0)
+        self._ring_rotation.start()
+
+    def _set_ring_rotation_progress(self, value: object) -> None:
+        progress = float(value)
+        self._ring_angles = {
+            action: start + (self._ring_angle_end[action] - start) * progress
+            for action, start in self._ring_angle_start.items()
+        }
+        self.update()
+
+    def _finish_ring_rotation(self) -> None:
+        self._ring_angles = {
+            action: angle % 360.0
+            for action, angle in self._ring_angle_end.items()
+        }
+        self.update()
+
+    def _reset_ring_rotation(self) -> None:
+        if hasattr(self, "_ring_rotation"):
+            self._ring_rotation.stop()
+        self._ring_angles.clear()
+        self._ring_angle_start.clear()
+        self._ring_angle_end.clear()
 
     def _label_rect(self, action: str) -> QRectF:
         slot = self._slot_rect(action)
@@ -4245,6 +4336,8 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         )
         self.low_power_button.setChecked(low_power)
         self._low_power_enabled = bool(low_power)
+        if self._low_power_enabled and self._drawer_page:
+            self._rotate_ring_to_page(self._drawer_page, animate=False)
         self._language_mode = language
         self._ai_provider_mode = ai_provider
         self._update_ai_nav_state(
