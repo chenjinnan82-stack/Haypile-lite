@@ -406,18 +406,30 @@ class McpServerTests(unittest.TestCase):
 
     def test_mcp_server_starts_and_lists_tools_over_stdio(self) -> None:
         server_path = Path(mcp_server.__file__)
-        process = subprocess.run(
-            [sys.executable, str(server_path)],
-            input=(
-                json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}) + "\n"
-                + json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
-                + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n"
-            ),
-            text=True,
-            capture_output=True,
-            timeout=5,
-            check=True,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp) / "storage"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "STORAGE_DIR": str(storage),
+                    "INDEX_DIR": str(storage / "index"),
+                }
+            )
+            process = subprocess.run(
+                [sys.executable, str(server_path)],
+                input=(
+                    json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}) + "\n"
+                    + json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
+                    + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n"
+                ),
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=True,
+                env=environment,
+            )
+            if os.name != "nt":
+                self.assertEqual(storage.stat().st_mode & 0o777, 0o700)
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "haypile")

@@ -9,10 +9,12 @@ from unittest.mock import patch
 import app.core.config as config_module
 from app.core.config import (
     Settings,
+    configure_packaged_logging,
     default_env_file,
     default_log_dir,
     default_resource_dir,
     default_storage_dir,
+    get_settings,
     macos_app_bundle,
     runtime_mode_command,
     windows_app_dir,
@@ -35,6 +37,41 @@ class CorsConfigTests(unittest.TestCase):
 class PackagedRuntimeConfigTests(unittest.TestCase):
     MAC_EXECUTABLE = "/Applications/Haypile.app/Contents/MacOS/Haypile"
     WINDOWS_EXECUTABLE = "C:/Apps/Haypile/Haypile.exe"
+
+    def tearDown(self) -> None:
+        get_settings.cache_clear()
+
+    def test_settings_lookup_has_no_runtime_filesystem_side_effects(self) -> None:
+        get_settings.cache_clear()
+        with (
+            patch.dict("os.environ", {"IPC_AUTHKEY": ""}, clear=False),
+            patch.object(
+                config_module,
+                "_ensure_private_directory",
+                side_effect=AssertionError("settings must not create directories"),
+            ) as ensure,
+            patch.object(
+                config_module,
+                "_read_or_create_ipc_authkey",
+                side_effect=AssertionError("settings must not create the IPC key"),
+            ) as create_key,
+        ):
+            settings = get_settings()
+
+        self.assertEqual(settings.IPC_AUTHKEY, "")
+        ensure.assert_not_called()
+        create_key.assert_not_called()
+
+    def test_packaged_logging_failure_does_not_block_desktop_startup(self) -> None:
+        with (
+            patch.object(config_module, "is_packaged_app", return_value=True),
+            patch.object(
+                config_module,
+                "_ensure_private_directory",
+                side_effect=OSError("logs unavailable"),
+            ),
+        ):
+            configure_packaged_logging("gui", Path("/unavailable/logs"))
 
     def test_macos_app_uses_bundle_resources_and_user_storage(self) -> None:
         with patch("app.core.config.sys.platform", "darwin"):

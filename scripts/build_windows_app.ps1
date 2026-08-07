@@ -66,6 +66,11 @@ try {
     if (-not (Test-Path $IconSource -PathType Leaf)) {
         throw "Missing Windows icon source: $IconSource"
     }
+    $PythonVersion = (& $Python -c "import platform; print(platform.python_version())").Trim()
+    Assert-LastExitCode "Could not inspect the Windows build Python."
+    if ($PythonVersion -ne "3.12.13") {
+        throw "Haypile alpha.8 release builds require Python 3.12.13."
+    }
     if (-not (Test-Path $VenvPython -PathType Leaf)) {
         if ($SkipInstall) {
             throw "Missing build environment: $VenvPython"
@@ -73,10 +78,15 @@ try {
         & $Python -m venv $Venv
         Assert-LastExitCode "Failed to create the Windows build environment."
     }
+    $VenvPythonVersion = (& $VenvPython -c "import platform; print(platform.python_version())").Trim()
+    Assert-LastExitCode "Could not inspect the Windows build environment Python."
+    if ($VenvPythonVersion -ne "3.12.13") {
+        throw "Haypile alpha.8 build environment requires Python 3.12.13."
+    }
     if (-not $SkipInstall) {
-        & $VenvPython -m pip install --quiet --upgrade pip
+        & $VenvPython -m pip install --quiet --upgrade "pip==26.2"
         Assert-LastExitCode "Failed to upgrade pip."
-        & $VenvPython -m pip install --quiet -r requirements-desktop.txt "Nuitka==4.0"
+        & $VenvPython -m pip install --quiet --constraint constraints-release.txt -r requirements-desktop.txt "Nuitka==4.0"
         Assert-LastExitCode "Failed to install Windows build dependencies."
     }
 

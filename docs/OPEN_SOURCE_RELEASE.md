@@ -58,6 +58,9 @@ supported.
   and one cross-process writer lock.
 - Add explicit clipboard intake for local files, exact GIF payloads, safe direct
   URLs, and a static-PNG fallback when the source exposes pixels only.
+- Guide the empty Assets drawer toward drag and clipboard intake, and copy a
+  whitelisted desktop diagnostic without asset names, paths, URLs, hashes, or
+  keys.
 - Expose verified MIME, frame count, declared duration, and loop count through
   the manifest, HTTP, MCP, and handoff.
 - Reproduce image, audio, and GIF entry motion through an offscreen-testable
@@ -68,6 +71,18 @@ supported.
 - Read the Assets drawer, pending indicator, and service status from one
   explicit manifest fail-close catalog while keeping real-project experiments
   outside the embedded product path.
+- Make C-ring navigation, material rows, and selection controls
+  keyboard-operable, expose native checked and accessible states, and
+  distinguish processing, pending, duplicate, success, and error feedback.
+- Keep the action ring outside the drawer, and rotate the selected Assets,
+  Agent, or Settings action to the connector when the active page changes.
+- Keep settings lookup free of runtime writes, prepare product storage during
+  desktop hydration, and create the IPC secret on first use so an unavailable
+  asset directory still reaches the degraded UI. The pre-hydration
+  single-instance lock remains unchanged.
+- Use one handoff serializer for GUI, MCP, and the HTTP example.
+- Pin the alpha.8 Python and dependency resolution used by CI and both package
+  builds, and render a bilingual left/right attached-hub report for visual review.
 - Reject package builds from dirty Git worktrees so embedded build metadata maps
   to exact committed source.
 

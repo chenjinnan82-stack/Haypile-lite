@@ -18,7 +18,7 @@ from app.api.v1.health import router as health_router
 from app.api.v1.bundles import router as bundles_router
 from app.api.v1.batches import router as batches_router
 from app.api.v1.theme import router as theme_router
-from app.core.config import get_settings
+from app.core.config import _ensure_private_directory, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.services.ingest_service import IngestService
 from app.services.scanner import manifest_dirty_path
@@ -26,6 +26,7 @@ from app.services.scanner import manifest_dirty_path
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+_ensure_private_directory(settings.STORAGE_DIR)
 settings.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 settings.INDEX_DIR.mkdir(parents=True, exist_ok=True)
 

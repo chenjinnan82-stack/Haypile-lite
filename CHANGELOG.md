@@ -21,6 +21,8 @@ shared intake transaction and clipboard entry landed on the same source line.
   direct URLs, and an honest static-PNG fallback when only pixels are available.
 - Add a local privacy-safe clipboard-format diagnostic that reports format
   names, sizes, and selected intake route without exposing content or locations.
+- Guide an empty Assets drawer toward drag or clipboard intake, and let users
+  copy a privacy-safe desktop diagnostic with only whitelisted runtime state.
 - Render image, audio, and GIF intake through one reproducible, offscreen-testable
   entry renderer while preserving the existing leaf, nest, and three-frame motion.
 - Move backend ownership and deferred storage hydration out of the floating
@@ -29,6 +31,18 @@ shared intake transaction and clipboard entry landed on the same source line.
 - Make the Assets drawer, pending badge, and service status share explicit
   storage settings and the same manifest fail-close catalog; keep real-project
   rehearsal and Project Picker logic outside the embedded product path.
+- Give C-ring navigation, Assets, and Settings native keyboard focus, checked
+  states, accessible descriptions, semantic progress/result colors, and a
+  font-tolerant role grid.
+- Keep the attached drawer clear of its action ring and rotate the selected
+  Assets, Agent, or Settings action to the connector as pages change.
+- Keep settings lookup side-effect free, defer product storage preparation to
+  desktop hydration and the IPC secret to first use, and let file-logging
+  failures preserve the degraded UI.
+- Build and test alpha.8 against one exact Python and dependency constraint set,
+  and generate an offscreen attached-hub layout report alongside intake visuals.
+- Build GUI, MCP, and HTTP-example handoffs through one shared serializer so
+  additive contract fields cannot drift between entry points.
 - Refuse release package builds from a dirty Git worktree so `BUILD_INFO.json`
   always identifies the exact committed source bytes.
 

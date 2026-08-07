@@ -9,7 +9,7 @@ from multiprocessing.connection import AuthenticationError, Client, Connection, 
 from pathlib import Path
 from typing import Any
 
-from app.core.config import get_settings
+from app.core.config import _read_or_create_ipc_authkey, get_settings
 
 logger = logging.getLogger(__name__)
 _CHALLENGE = b"#CHALLENGE#"
@@ -44,7 +44,10 @@ def cleanup_unix_socket(address: str) -> None:
 
 
 def get_ipc_authkey() -> bytes:
-    return get_settings().IPC_AUTHKEY.encode("utf-8")
+    settings = get_settings()
+    if not settings.IPC_AUTHKEY:
+        settings.IPC_AUTHKEY = _read_or_create_ipc_authkey(settings.STORAGE_DIR)
+    return settings.IPC_AUTHKEY.encode("utf-8")
 
 
 def _recv_bytes_with_timeout(conn: Connection, timeout: float, max_length: int = 256) -> bytes:

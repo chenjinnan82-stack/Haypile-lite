@@ -889,6 +889,46 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
             )
             self.assertLess(guard, text.index(first_write), relative)
 
+    def test_release_gates_use_one_exact_python_and_dependency_constraint_set(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        constraints_path = root / "constraints-release.txt"
+        constraints = [
+            line.strip()
+            for line in constraints_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        self.assertTrue(constraints)
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z0-9_.-]+==[^=\s]+", line) for line in constraints))
+        normalized = {line.split("==", 1)[0].lower().replace("_", "-") for line in constraints}
+        self.assertTrue(
+            {
+                "fastapi",
+                "uvicorn",
+                "colorama",
+                "pydantic-settings",
+                "pillow",
+                "httpx",
+                "pyside6",
+                "nuitka",
+            }.issubset(normalized)
+        )
+        paths = (
+            root / ".github/workflows/ci.yml",
+            root / ".github/workflows/macos-build.yml",
+            root / ".github/workflows/windows-build.yml",
+            root / "scripts/build_macos_app.sh",
+            root / "scripts/build_windows_app.ps1",
+        )
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("constraints-release.txt", text, path.name)
+            self.assertIn("3.12.13", text, path.name)
+            self.assertIn("pip==26.2", text, path.name)
+        self.assertIn(
+            "constraints-release.txt",
+            (root / "RELEASE_MANIFEST.md").read_text(encoding="utf-8"),
+        )
+
     def test_alpha8_versions_are_consistent_across_release_entry_points(self) -> None:
         root = Path(__file__).resolve().parents[1]
         public_version = "0.3.0-alpha.8"

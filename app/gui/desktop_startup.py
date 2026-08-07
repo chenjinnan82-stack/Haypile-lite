@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import time
 
-from app.core.config import Settings
+from app.core.config import Settings, _ensure_private_directory
 from app.services.ai_provider import SystemCredentialStore, api_authority
 
 
@@ -30,6 +30,7 @@ def prepare_desktop_runtime(
     gui_state: dict[str, object],
 ) -> DesktopStartupResult:
     try:
+        _ensure_private_directory(settings.STORAGE_DIR)
         for path in (
             settings.ASSETS_DIR,
             settings.THEMES_DIR,

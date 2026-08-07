@@ -55,13 +55,18 @@ command -v iconutil >/dev/null
 command -v codesign >/dev/null
 command -v ditto >/dev/null
 test -f "$ICON_SOURCE"
+test "$("$PYTHON" -c 'import platform; print(platform.python_version())')" = "3.12.13"
 
 if [[ ! -x "$VENV/bin/python3" ]]; then
   "$PYTHON" -m venv "$VENV"
 fi
+test "$("$VENV/bin/python3" -c 'import platform; print(platform.python_version())')" = "3.12.13"
 
-"$VENV/bin/python3" -m pip install --quiet --upgrade pip
-"$VENV/bin/python3" -m pip install --quiet -r requirements-desktop.txt "Nuitka==4.0"
+"$VENV/bin/python3" -m pip install --quiet --upgrade "pip==26.2"
+"$VENV/bin/python3" -m pip install --quiet \
+  --constraint constraints-release.txt \
+  -r requirements-desktop.txt \
+  "Nuitka==4.0"
 
 SPEC_BACKUP="$(mktemp)"
 cp "$SPEC" "$SPEC_BACKUP"

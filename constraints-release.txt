@@ -1,0 +1,36 @@
+# Exact dependency set used by the alpha.8 Python 3.12 release gates.
+# Platform markers in the requirements still decide which packages are installed.
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.14.1
+certifi==2026.6.17
+click==8.4.2
+colorama==0.4.6
+defusedxml==0.7.1
+fastapi==0.139.0
+filetype==1.2.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+mutagen==1.48.1
+Nuitka==4.0
+packaging==26.2
+pillow==12.3.0
+pydantic==2.13.4
+pydantic-core==2.46.4
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+PySide6==6.11.1
+PySide6-Addons==6.11.1
+PySide6-Essentials==6.11.1
+PyYAML==6.0.3
+shiboken6==6.11.1
+starlette==1.3.1
+typing-extensions==4.16.0
+typing-inspection==0.4.2
+uvicorn==0.51.0
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==16.0

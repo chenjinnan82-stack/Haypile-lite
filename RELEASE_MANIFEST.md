@@ -18,6 +18,7 @@ requirements.txt
 requirements-core.txt
 requirements-desktop.txt
 requirements-dev.txt
+constraints-release.txt
 pyproject.toml
 pytest.ini
 assets/logo.png

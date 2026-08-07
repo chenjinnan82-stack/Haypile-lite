@@ -121,13 +121,17 @@ def configure_packaged_logging(role: str, log_dir: Path) -> None:
     marker = f"haypile-{role}"
     if any(getattr(handler, "name", "") == marker for handler in root.handlers):
         return
-    _ensure_private_directory(log_dir)
-    handler = RotatingFileHandler(
-        log_dir / f"{role}.log",
-        maxBytes=1024 * 1024,
-        backupCount=2,
-        encoding="utf-8",
-    )
+    try:
+        _ensure_private_directory(log_dir)
+        handler = RotatingFileHandler(
+            log_dir / f"{role}.log",
+            maxBytes=1024 * 1024,
+            backupCount=2,
+            encoding="utf-8",
+        )
+    except OSError:
+        # Logging must not prevent the storage-degraded desktop from appearing.
+        return
     handler.name = marker
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     root.addHandler(handler)
@@ -305,17 +309,12 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_ipc_authkey(cls, value: Any) -> str:
         text = str(value or "").strip()
-        if text and text != "haypile-ipc-v1":
-            return text
-        return _read_or_create_ipc_authkey()
+        return text if text != "haypile-ipc-v1" else ""
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    settings = Settings()
-    _ensure_private_directory(settings.STORAGE_DIR)
-    _ensure_private_directory(settings.LOG_DIR)
-    return settings
+    return Settings()
 
 
 def _ensure_private_directory(path: Path) -> None:
@@ -324,8 +323,10 @@ def _ensure_private_directory(path: Path) -> None:
         path.chmod(0o700)
 
 
-def _read_or_create_ipc_authkey() -> str:
-    storage_dir = Path(os.environ.get("STORAGE_DIR", str(default_storage_dir())))
+def _read_or_create_ipc_authkey(storage_dir: Path | None = None) -> str:
+    storage_dir = storage_dir or Path(
+        os.environ.get("STORAGE_DIR", str(default_storage_dir()))
+    )
     key_path = Path(
         os.environ.get(
             "HAYPILE_IPC_AUTHKEY_FILE",

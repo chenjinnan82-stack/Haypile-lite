@@ -55,14 +55,14 @@ jobs:
           "commit=$SourceCommit" >> $env:GITHUB_OUTPUT
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.13"
           architecture: x64
       - name: Prepare build environment
         shell: pwsh
         run: |
           python -m venv .build-venv
-          .\.build-venv\Scripts\python.exe -m pip install --upgrade pip
-          .\.build-venv\Scripts\python.exe -m pip install -r requirements-desktop.txt "Nuitka==4.0"
+          .\.build-venv\Scripts\python.exe -m pip install --upgrade "pip==26.2"
+          .\.build-venv\Scripts\python.exe -m pip install --constraint constraints-release.txt -r requirements-desktop.txt "Nuitka==4.0"
       - name: Run Windows tests
         shell: pwsh
         run: |

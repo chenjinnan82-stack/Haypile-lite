@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
-from datetime import datetime, timezone
 from html.parser import HTMLParser
 import json
 import locale
@@ -44,7 +43,14 @@ def _run_early_mode() -> None:
 _run_early_mode()
 
 import httpx
-from app.core.config import Settings, configure_packaged_logging, get_settings, runtime_mode_command
+from app.core.config import (
+    APP_VERSION,
+    Settings,
+    configure_packaged_logging,
+    get_settings,
+    is_packaged_app,
+    runtime_mode_command,
+)
 from app.core.exceptions import ResourceExhaustedError
 from app.core.file_lock import InterProcessFileLock
 from app.gui.backend_runtime import BackendRuntimeController
@@ -65,9 +71,9 @@ from app.services.asset_provenance import (
     provenance_path_for,
     public_origin_url,
     read_asset_provenance,
-    sanitize_provenance,
     write_asset_provenance,
 )
+from app.services.handoff import build_asset_handoff, build_handoff_asset
 from app.services.ai_provider import (
     AIProviderConfig,
     SystemCredentialStore,
@@ -75,6 +81,10 @@ from app.services.ai_provider import (
     normalize_api_base_url,
 )
 from app.services.bundle_service import BundleService
+from app.services.desktop_diagnostics import (
+    build_desktop_diagnostic_summary,
+    read_build_commit,
+)
 from app.services.ingest_service import (
     IngestCandidate,
     IngestResult,
@@ -133,6 +143,7 @@ from PySide6.QtCore import (
     QVariantAnimation,
     Signal,
     QUrl,
+    qVersion,
 )
 from PySide6.QtGui import (
     QColor,
@@ -855,288 +866,6 @@ class AIBatchWorker(QThread):
         )
 
 
-class ToastLabel(QLabel):
-    def __init__(self) -> None:
-        super().__init__(None)
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-            | Qt.WindowType.NoDropShadowWindowHint
-        )
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setWordWrap(True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setStyleSheet(
-            "QLabel { border: 1px solid rgba(0,0,0,60); border-radius: 16px; "
-            "padding: 6px 12px; color: white; background-color: rgba(218, 43, 43, 220); "
-            "font-size: 12px; }"
-        )
-        self._opacity_effect = QGraphicsOpacityEffect(self)
-        self._opacity_effect.setOpacity(1.0)
-        self.setGraphicsEffect(self._opacity_effect)
-        self._fade_animation = QPropertyAnimation(
-            self._opacity_effect, b"opacity", self
-        )
-        self._fade_animation.setDuration(420)
-        self._fade_animation.setStartValue(1.0)
-        self._fade_animation.setEndValue(0.0)
-        self._fade_animation.finished.connect(self.hide)
-        self._delay_timer = QTimer(self)
-        self._delay_timer.setSingleShot(True)
-        self._delay_timer.setInterval(2000)
-        self._delay_timer.timeout.connect(self._fade_animation.start)
-        self.hide()
-
-    def reposition(self, anchor: QRect, available: QRect) -> None:
-        if not self.isVisible():
-            return
-        self._move_to_anchor(anchor, available)
-
-    def _move_to_anchor(self, anchor: QRect, available: QRect) -> None:
-        margin = 10
-        x = anchor.center().x() - self.width() // 2
-        y = anchor.bottom() + 10
-        if y > available.bottom() - self.height() - margin:
-            side_y = anchor.center().y() - self.height() // 2
-            right_x = anchor.right() + 10
-            left_x = anchor.left() - self.width() - 10
-            if right_x <= available.right() - self.width() - margin:
-                x, y = right_x, side_y
-            elif left_x >= available.left() + margin:
-                x, y = left_x, side_y
-            else:
-                x = anchor.center().x() - self.width() // 2
-                y = anchor.top() - self.height() - 10
-        x = max(available.left() + margin, min(x, available.right() - self.width() - margin))
-        y = max(available.top() + margin, min(y, available.bottom() - self.height() - margin))
-        self.move(x, y)
-
-    def show_message(self, message: str, success: bool, anchor: QRect, available: QRect) -> None:
-        if self._fade_animation.state() == QPropertyAnimation.State.Running:
-            self._fade_animation.stop()
-        self._delay_timer.stop()
-
-        if success:
-            self.setStyleSheet(
-                "QLabel { border: 2px solid #6F7F5A; border-radius: 16px; "
-                "padding: 6px 12px; color: #4E5F3D; background-color: #FFFDF5; "
-                "font-size: 12px; font-weight: bold; }"
-            )
-        else:
-            self.setStyleSheet(
-                "QLabel { border: 2px solid #9B4C37; border-radius: 16px; "
-                "padding: 6px 12px; color: #9B4C37; background-color: #FFFDF5; "
-                "font-size: 12px; font-weight: bold; }"
-            )
-
-        self.setText(message)
-        self.setMaximumWidth(320)
-        self.adjustSize()
-        self._move_to_anchor(anchor, available)
-        self._opacity_effect.setOpacity(1.0)
-        self.show()
-        self.raise_()
-        self._delay_timer.start()
-
-
-class UploadProgressWindow(QWidget):
-    def __init__(self) -> None:
-        super().__init__(None)
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-            | Qt.WindowType.NoDropShadowWindowHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setFixedSize(248, 92)
-
-        self.container = QWidget(self)
-        self.container.setGeometry(0, 0, 248, 92)
-        self.container.setStyleSheet(
-            "QWidget { background-color: #FFFDF5; "
-            "border: 2px solid #6F7F5A; border-radius: 18px; }"
-        )
-
-        layout = QVBoxLayout(self.container)
-        layout.setContentsMargins(14, 10, 14, 12)
-        layout.setSpacing(6)
-
-        self.title = QLabel(ui_text("正在收纳...", "Storing..."), self.container)
-        self.title.setStyleSheet(
-            "QLabel { color: #4E5F3D; font-size: 13px; font-weight: bold; "
-            "letter-spacing: 0.2px; background: transparent; border: none; }"
-        )
-        layout.addWidget(self.title)
-
-        self.subtitle = QLabel(ui_text("准备中", "Preparing"), self.container)
-        self.subtitle.setStyleSheet(
-            "QLabel { color: #555555; font-size: 11px; "
-            "letter-spacing: 0.15px; background: transparent; border: none; }"
-        )
-        layout.addWidget(self.subtitle)
-
-        self.bar = QProgressBar(self.container)
-        self.bar.setRange(0, 100)
-        self.bar.setValue(0)
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(7)
-        self.bar.setStyleSheet(
-            "QProgressBar { background: #E9E4D4; border: none; border-radius: 3px; }"
-            "QProgressBar::chunk { background: #C8A24A; border-radius: 3px; }"
-        )
-        layout.addWidget(self.bar)
-
-        self._hide_timer = QTimer(self)
-        self._hide_timer.setSingleShot(True)
-        self._hide_timer.setInterval(1400)
-        self._hide_timer.timeout.connect(self.hide)
-        self.hide()
-
-    def begin(self) -> None:
-        self._hide_timer.stop()
-        self.title.setText(ui_text("正在收纳...", "Storing..."))
-        self.subtitle.setText(ui_text("准备中", "Preparing"))
-        self.bar.setStyleSheet(
-            "QProgressBar { background: #E9E4D4; border: none; border-radius: 3px; }"
-            "QProgressBar::chunk { background: #C8A24A; border-radius: 3px; }"
-        )
-        self.bar.setValue(2)
-        self.show()
-        self.raise_()
-
-    def begin_at(self, position: QPoint) -> None:
-        self.move(position)
-        self.begin()
-
-    def set_progress(self, percent: int, text: str) -> None:
-        value = max(0, min(100, percent))
-        self.bar.setValue(value)
-        self.subtitle.setText(text)
-
-    def complete(self, success: bool, message: str) -> None:
-        self.title.setText(ui_text("收纳完成", "Stored") if success else ui_text("收纳失败", "Store failed"))
-        self.subtitle.setText(message)
-        if success:
-            self.bar.setStyleSheet(
-                "QProgressBar { background: #E9E4D4; border: none; border-radius: 3px; }"
-                "QProgressBar::chunk { background: #6F7F5A; border-radius: 3px; }"
-            )
-        else:
-            self.bar.setStyleSheet(
-                "QProgressBar { background: #F1DED6; border: none; border-radius: 3px; }"
-                "QProgressBar::chunk { background: #9B4C37; border-radius: 3px; }"
-            )
-        self.bar.setValue(100 if success else max(18, self.bar.value()))
-        self._hide_timer.start()
-
-
-class AISetupWindow(QWidget):
-    def __init__(self) -> None:
-        super().__init__(None)
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.NoDropShadowWindowHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedSize(312, 196)
-        self._copy_callback = None
-        self._recheck_callback = None
-
-        self.container = QWidget(self)
-        self.container.setGeometry(0, 0, 312, 196)
-        self.container.setStyleSheet(
-            "QWidget { background-color: #FFFDF5; "
-            "border: 2px solid #6F7F5A; border-radius: 18px; }"
-        )
-        layout = QVBoxLayout(self.container)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(8)
-
-        self.title = QLabel(ui_text("开启本地 AI 分拣", "Enable local AI sorting"), self.container)
-        self.title.setStyleSheet("QLabel { color: #4E5F3D; font-size: 15px; font-weight: bold; background: transparent; border: none; }")
-        layout.addWidget(self.title)
-
-        self.body = QLabel("", self.container)
-        self.body.setWordWrap(True)
-        self.body.setStyleSheet("QLabel { color: #4A463A; font-size: 11px; background: transparent; border: none; }")
-        layout.addWidget(self.body)
-
-        self.command = QLabel("", self.container)
-        self.command.setWordWrap(True)
-        self.command.setStyleSheet(
-            "QLabel { color: #2F3A26; font-size: 11px; padding: 6px 8px; "
-            "background: #F6F1E4; border: 1px solid #DDD3BB; border-radius: 7px; }"
-        )
-        layout.addWidget(self.command)
-
-        row = QWidget(self.container)
-        row.setStyleSheet("QWidget { background: transparent; border: none; }")
-        buttons = QHBoxLayout(row)
-        buttons.setContentsMargins(0, 0, 0, 0)
-        buttons.setSpacing(6)
-        self.copy_button = QPushButton(ui_text("复制命令", "Copy command"), row)
-        self.recheck_button = QPushButton(ui_text("重新检测", "Recheck"), row)
-        self.close_button = QPushButton(ui_text("关闭", "Close"), row)
-        for button in (self.copy_button, self.recheck_button, self.close_button):
-            button.setFixedHeight(26)
-            button.setStyleSheet(
-                "QPushButton { color: #4E5F3D; background: #F6F1E4; "
-                "border: 1px solid #DDD3BB; border-radius: 7px; font-size: 11px; }"
-                "QPushButton:hover { background: #EFE3C7; }"
-            )
-            buttons.addWidget(button)
-        layout.addWidget(row)
-        self.copy_button.clicked.connect(self._copy)
-        self.recheck_button.clicked.connect(self._recheck)
-        self.close_button.clicked.connect(self.hide)
-        self.hide()
-
-    def show_setup(self, *, model: str, status_text: str, anchor: QRect, available: QRect) -> None:
-        command = f"ollama pull {model}"
-        self.command.setText(command)
-        self.body.setText(
-            ui_text(
-                f"{status_text}\n安装 Ollama 后运行下面命令，再重新检测。",
-                f"{status_text}\nInstall Ollama, run the command below, then recheck.",
-            )
-        )
-        self._move_to_anchor(anchor, available)
-        self.show()
-        self.raise_()
-
-    def set_handlers(self, copy_callback, recheck_callback) -> None:
-        self._copy_callback = copy_callback
-        self._recheck_callback = recheck_callback
-
-    def _move_to_anchor(self, anchor: QRect, available: QRect) -> None:
-        margin = 12
-        x = anchor.center().x() - self.width() // 2
-        y = anchor.top() - self.height() - 12
-        if y < available.top() + margin:
-            y = anchor.bottom() + 12
-        x = max(available.left() + margin, min(x, available.right() - self.width() - margin))
-        y = max(available.top() + margin, min(y, available.bottom() - self.height() - margin))
-        self.move(x, y)
-
-    def _copy(self) -> None:
-        QApplication.clipboard().setText(self.command.text())
-        if self._copy_callback is not None:
-            self._copy_callback()
-
-    def _recheck(self) -> None:
-        if self._recheck_callback is not None:
-            self._recheck_callback()
-
-
 class ConfirmationPreviewWindow(QWidget):
     def __init__(self) -> None:
         super().__init__(None)
@@ -1342,6 +1071,7 @@ class MaterialPanelWindow(QWidget):
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         if self._embedded:
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self.setMinimumSize(0, 0)
         else:
             self.setFixedSize(336, 608)
@@ -1539,6 +1269,18 @@ class MaterialPanelWindow(QWidget):
         page_layout.addWidget(self.next_page_button)
         self.page_row.hide()
         layout.addWidget(self.page_row)
+
+        self.empty_state_label = QLabel("", self.container)
+        self.empty_state_label.setWordWrap(True)
+        self.empty_state_label.setMinimumHeight(88)
+        self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_state_label.setStyleSheet(
+            "QLabel { color: #4E5F3D; font-size: 11px; "
+            "padding: 12px; background: #FFF9EA; "
+            "border: 1px solid #D5A73D; border-radius: 8px; }"
+        )
+        self.empty_state_label.hide()
+        layout.addWidget(self.empty_state_label)
 
         self.detail_label = QLabel("", self.container)
         self.detail_label.setWordWrap(True)
@@ -1762,6 +1504,7 @@ class MaterialPanelWindow(QWidget):
         self.preview_label.setFixedHeight(72)
         self.detail_label.setWordWrap(False)
         self.detail_label.setMinimumHeight(54)
+        detail_layout.addWidget(self.empty_state_label, 1)
         detail_layout.addWidget(self.preview_label)
         detail_layout.addWidget(self.detail_label, 1)
         detail_layout.addWidget(self.accept_ai_button)
@@ -1774,6 +1517,25 @@ class MaterialPanelWindow(QWidget):
         body_layout.addWidget(list_pane, 42)
         body_layout.addWidget(detail_pane, 58)
         layout.addWidget(body, 1)
+
+        focus_order = [
+            self.paste_ingest_button,
+            *self.scope_buttons.values(),
+            self.retry_batch_button,
+            self.search_input,
+            *self.filter_buttons.values(),
+            *self.item_labels,
+            self.previous_page_button,
+            self.next_page_button,
+            self.accept_ai_button,
+            *self.role_buttons.values(),
+            *self.gif_role_buttons.values(),
+            *self.audio_usage_buttons.values(),
+            self.retry_ai_button,
+            self.copy_selected_button,
+        ]
+        for current, following in zip(focus_order, focus_order[1:]):
+            QWidget.setTabOrder(current, following)
 
     def set_toast_handler(self, callback) -> None:
         self._toast_callback = callback
@@ -1942,6 +1704,7 @@ class MaterialPanelWindow(QWidget):
             )
         )
         selected_id = self._selected_bundle_id
+        self.empty_state_label.hide()
         self.detail_label.hide()
         self.role_row.hide()
         self.gif_role_row.hide()
@@ -1953,18 +1716,39 @@ class MaterialPanelWindow(QWidget):
         self.copy_selected_button.setEnabled(False)
         self.copy_ready_button.setVisible(bool(scoped_items) and not self._embedded)
         if not scoped_items:
-            self.detail_label.setText(
+            empty_text = (
                 ui_text(
-                    "素材已保存，Agent 接口待恢复",
-                    "Assets are saved; Agent access is pending recovery",
+                    "素材目录暂不可用\n素材已保存 · Agent 接口待恢复\n等待恢复后再试",
+                    "The asset catalog is unavailable\nAssets saved · Agent access pending recovery\nTry again after recovery",
                 )
                 if catalog_unavailable
-                else ui_text("拖入图片或音频开始收纳", "Drop images or audio to start storing")
+                else ui_text(
+                    "草窝还空着\n把图片、GIF 或音频拖到桌面草堆\n也可以用上方按钮收纳剪贴板内容",
+                    "The nest is empty\nDrop an image, GIF, or audio file onto the desktop pile\nor use the clipboard button above",
+                )
+                if self._embedded
+                else ui_text(
+                    "草窝还空着\n拖入图片、GIF 或音频开始收纳",
+                    "The nest is empty\nDrop an image, GIF, or audio file to start storing",
+                )
             )
-            self.detail_label.show()
+            self.empty_state_label.setText(empty_text)
+            self.empty_state_label.setAccessibleName(
+                ui_text("素材目录状态", "Asset catalog status")
+            )
+            self.empty_state_label.setAccessibleDescription(empty_text.replace("\n", " "))
+            self.empty_state_label.show()
         elif not self._recent_items:
-            self.detail_label.setText(ui_text("没有匹配资源", "No matching assets"))
-            self.detail_label.show()
+            empty_text = ui_text(
+                "没有匹配素材\n清除搜索或切换筛选条件",
+                "No matching assets\nClear the search or change the filter",
+            )
+            self.empty_state_label.setText(empty_text)
+            self.empty_state_label.setAccessibleName(
+                ui_text("没有匹配素材", "No matching assets")
+            )
+            self.empty_state_label.setAccessibleDescription(empty_text.replace("\n", " "))
+            self.empty_state_label.show()
         project_summary = None
         if not self._embedded:
             from app.services.experimental_project_summary import (
@@ -2774,66 +2558,16 @@ class MaterialPanelWindow(QWidget):
             manifest_generation = str(readiness["manifest_generation"])
         except ManifestReadinessError:
             manifest_generation = ""
-        payload = {
-            "handoff_version": "haypile.asset-handoff.v1",
-            "handoff_id": str(uuid4()),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "source": "haypile",
-            "base_url": base_url,
-            "manifest_generation": manifest_generation,
-            "asset_count": len(bundles),
-            "total_matching": len(bundles),
-            "complete": True,
-            "next_cursor": None,
-            "assets": [self._handoff_asset(item, base_url) for item in bundles],
-        }
-        if batch_id:
-            payload["batch_id"] = batch_id
-        return payload
+        return build_asset_handoff(
+            bundles,
+            base_url=base_url,
+            batch_id=batch_id or None,
+            manifest_generation=manifest_generation,
+        )
 
     @staticmethod
     def _handoff_asset(item: dict[str, object], base_url: str) -> dict[str, object]:
-        resolved_url = base_url + str(item["url"])
-        public_metadata = sanitize_provenance(
-            {
-                "origin_url": item.get("origin_url", ""),
-                "content_type": item.get("content_type", ""),
-                "downloaded_at": item.get("downloaded_at", ""),
-                "ai_suggestions": item.get("ai_suggestions", {}),
-            }
-        )
-        return {
-            "id": item["id"],
-            "theme_id": item["theme_id"],
-            "type": item["type"],
-            "role": item["role"],
-            "status": item["status"],
-            "sha256": item["sha256"],
-            "source_key": item["source_key"],
-            "url": item["url"],
-            "access": item["access"],
-            "resolved_url": resolved_url,
-            "content_type": public_metadata.get("content_type", ""),
-            "ai_suggestions": public_metadata.get("ai_suggestions", {}),
-            "duration_seconds": item.get("duration_seconds"),
-            "frame_count": item.get("frame_count"),
-            "loop_count": item.get("loop_count"),
-            "audio_metadata": item.get("audio_metadata", {}),
-            "audio_tags": item.get("audio_tags", {}),
-            "audio_usage": item.get("audio_usage", "unknown"),
-            "provenance": {
-                "source": "haypile",
-                "id": item["id"],
-                "sha256": item["sha256"],
-                "source_key": item["source_key"],
-                "url": item["url"],
-                "resolved_url": resolved_url,
-                "access": item["access"],
-                "origin_url": public_metadata.get("origin_url", ""),
-                "content_type": public_metadata.get("content_type", ""),
-                "downloaded_at": public_metadata.get("downloaded_at", ""),
-            },
-        }
+        return build_handoff_asset(item, base_url=base_url)
 
     def _base_url(self) -> str:
         host = self.settings.HOST if self.settings.HOST != "0.0.0.0" else "127.0.0.1"
@@ -3348,7 +3082,64 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._agent_timer = QTimer(self)
         self._agent_timer.setInterval(5000)
         self._agent_timer.timeout.connect(self.refresh_agent_status)
+        self._ring_action_buttons: dict[str, QPushButton] = {}
+        for action, _icon, label in self.actions:
+            button = QPushButton("", self)
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            button.setAutoDefault(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.setStyleSheet(
+                "QPushButton { background: transparent; border: 1px solid transparent; "
+                "border-radius: 8px; }"
+                "QPushButton:hover { background: rgba(255, 249, 234, 32); "
+                "border-color: rgba(255, 249, 234, 120); }"
+                "QPushButton:focus { background: rgba(255, 249, 234, 46); "
+                "border: 2px solid #D5A73D; }"
+            )
+            button.clicked.connect(
+                lambda _checked=False, selected=action: self._emit_action(selected)
+            )
+            self._ring_action_buttons[action] = button
+        self._sync_ring_action_buttons()
+        self._retranslate_ring_action_buttons()
         self.hide()
+
+    def set_track_center(self, center: QPointF) -> None:
+        super().set_track_center(center)
+        if hasattr(self, "_ring_action_buttons"):
+            self._sync_ring_action_buttons()
+
+    def _set_content_shift(self, shift: QPointF) -> None:
+        super()._set_content_shift(shift)
+        if hasattr(self, "_ring_action_buttons"):
+            self._sync_ring_action_buttons()
+
+    def _sync_ring_action_buttons(self) -> None:
+        for action, button in self._ring_action_buttons.items():
+            target = self._slot_rect(action).united(self._label_rect(action))
+            target.translate(self._content_shift)
+            button.setGeometry(target.toAlignedRect())
+            button.setVisible(not self._feedback_only)
+
+    def _retranslate_ring_action_buttons(self) -> None:
+        descriptions = {
+            "assets": ui_text("打开素材面板", "Open Assets panel"),
+            "agent": ui_text("打开 Agent 面板", "Open Agent panel"),
+            "settings": ui_text("打开设置面板", "Open Settings panel"),
+        }
+        for action, _icon, label in self.actions:
+            button = self._ring_action_buttons[action]
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.setAccessibleDescription(descriptions[action])
+
+    def focus_first_ring_action(self) -> None:
+        if not self.isVisible() or self._feedback_only:
+            return
+        self.activateWindow()
+        self._ring_action_buttons["assets"].setFocus(Qt.FocusReason.TabFocusReason)
 
     def _build_drawer(self) -> None:
         self.drawer_shell = QWidget(self)
@@ -3499,7 +3290,10 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             language_layout.addWidget(button)
         layout.addWidget(language_row)
 
-        self.service_section = self._section_label(ui_text("服务与日志", "Service & logs"), page)
+        self.service_section = self._section_label(
+            ui_text("服务与诊断", "Service & diagnostics"),
+            page,
+        )
         layout.addWidget(self.service_section)
         self.service_status_label = QLabel("", page)
         self.service_status_label.setWordWrap(True)
@@ -3507,6 +3301,18 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             "QLabel { color: #625B4C; font-size: 11px; padding: 7px 8px; background: #F6F1E4; border-radius: 7px; }"
         )
         layout.addWidget(self.service_status_label)
+        self.diagnostics_button = self._action_button(
+            ui_text("复制诊断摘要", "Copy diagnostic summary"),
+            "diagnostics",
+            page,
+        )
+        self.diagnostics_button.setAccessibleDescription(
+            ui_text(
+                "复制不含文件名、路径、网址或密钥的运行状态",
+                "Copy runtime status without filenames, paths, URLs, or keys",
+            )
+        )
+        layout.addWidget(self.diagnostics_button)
         layout.addWidget(self._action_button(ui_text("打开日志目录", "Open logs folder"), "logs", page))
         layout.addStretch(1)
         self.exit_button = self._action_button(ui_text("退出 Haypile", "Quit Haypile"), "exit", page, danger=True)
@@ -3598,6 +3404,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             ("settings", "status", ui_text("设置", "Settings")),
         ]
         self.action_tooltips = {action: label for action, _icon, label in self.actions}
+        self._retranslate_ring_action_buttons()
         button_labels = {
             "mcp": ui_text("复制 MCP 配置", "Copy MCP config"),
             "http": ui_text("复制 HTTP 地址", "Copy HTTP URL"),
@@ -3605,6 +3412,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             "ready_handoff": ui_text("复制全部可用素材", "Copy all ready assets"),
             "agent_recipe": ui_text("复制 Agent 配方", "Copy Agent recipe"),
             "ai_setup": ui_text("AI 分拣", "AI sorting"),
+            "diagnostics": ui_text("复制诊断摘要", "Copy diagnostic summary"),
             "logs": ui_text("打开日志目录", "Open logs folder"),
             "exit": ui_text("退出 Haypile", "Quit Haypile"),
             "ai_copy_command": ui_text("复制模型安装命令", "Copy model install command"),
@@ -3625,7 +3433,13 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self.connection_section.setText(ui_text("连接", "Connection"))
         self.delivery_section.setText(ui_text("交付", "Delivery"))
         self.language_section.setText(ui_text("语言", "Language"))
-        self.service_section.setText(ui_text("服务与日志", "Service & logs"))
+        self.service_section.setText(ui_text("服务与诊断", "Service & diagnostics"))
+        self.diagnostics_button.setAccessibleDescription(
+            ui_text(
+                "复制不含文件名、路径、网址或密钥的运行状态",
+                "Copy runtime status without filenames, paths, URLs, or keys",
+            )
+        )
         self.low_power_button.setText(
             ui_text("低功耗：开", "Low power: on")
             if self._low_power_enabled
@@ -4130,6 +3944,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         )
         if not should_animate or self._ring_angle_start == self._ring_angle_end:
             self._ring_angles = dict(targets)
+            self._sync_ring_action_buttons()
             self.update()
             return
         self._ring_rotation.setStartValue(0.0)
@@ -4142,6 +3957,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             action: start + (self._ring_angle_end[action] - start) * progress
             for action, start in self._ring_angle_start.items()
         }
+        self._sync_ring_action_buttons()
         self.update()
 
     def _finish_ring_rotation(self) -> None:
@@ -4149,6 +3965,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             action: angle % 360.0
             for action, angle in self._ring_angle_end.items()
         }
+        self._sync_ring_action_buttons()
         self.update()
 
     def _reset_ring_rotation(self) -> None:
@@ -4157,6 +3974,8 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._ring_angles.clear()
         self._ring_angle_start.clear()
         self._ring_angle_end.clear()
+        if hasattr(self, "_ring_action_buttons"):
+            self._sync_ring_action_buttons()
 
     def _label_rect(self, action: str) -> QRectF:
         slot = self._slot_rect(action)
@@ -4235,6 +4054,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._available = QRect(available)
         self._feedback_only = True
         self._apply_feedback_geometry()
+        self._sync_ring_action_buttons()
         self.drawer_title.hide()
         self.drawer_stack.hide()
         self.progress_bar.setVisible(self._progress_active)
@@ -4435,6 +4255,7 @@ class HaypileFloatingBall(QWidget):
         self._desktop_runtime_applied = not deferred_runtime
         self._storage_ready = not deferred_runtime
         self._storage_error_code = ""
+        self._backend_phase = "idle"
         self._service_status_override = (
             ui_text("正在准备素材库", "Preparing asset library")
             if deferred_runtime
@@ -6208,6 +6029,7 @@ class HaypileFloatingBall(QWidget):
         if self._has_pending_assets and not self.quick_menu._attention_action:
             self.quick_menu.set_attention_action("assets")
         self.quick_menu.show_attached(self._ball_anchor_rect(), self._available_geometry())
+        QTimer.singleShot(0, self.quick_menu.focus_first_ring_action)
 
     def _reposition_quick_menu(self) -> None:
         if self.quick_menu.isVisible():
@@ -6329,6 +6151,20 @@ class HaypileFloatingBall(QWidget):
         if action.startswith("language:"):
             self._set_language_mode(action.partition(":")[2])
             return
+        if action == "diagnostics":
+            QApplication.clipboard().setText(
+                json.dumps(
+                    self._desktop_diagnostic_payload(),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            self.show_toast(
+                ui_text("诊断摘要已复制", "Diagnostic summary copied"),
+                tone="success",
+            )
+            return
         if action == "logs":
             self.settings.LOG_DIR.mkdir(parents=True, exist_ok=True)
             opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.settings.LOG_DIR)))
@@ -6376,6 +6212,7 @@ class HaypileFloatingBall(QWidget):
         )
 
     def _on_backend_phase_changed(self, phase: str) -> None:
+        self._backend_phase = str(phase or "idle").strip().lower()
         if phase == "ready":
             self._refresh_pending_badge()
             self._refresh_ai_menu_status()
@@ -6499,6 +6336,41 @@ class HaypileFloatingBall(QWidget):
         return ui_text(
             f"运行中 · 可用 {summary.recognized_count} · 待确认 {summary.pending_count}",
             f"Running · ready {summary.recognized_count} · pending {summary.pending_count}",
+        )
+
+    def _desktop_diagnostic_payload(self) -> dict[str, object]:
+        bundles: list[dict[str, object]] = []
+        manifest_state = "unavailable"
+        if self._storage_ready:
+            try:
+                bundles = self._bundle_service().list_bundles()
+                manifest_state = "ready"
+            except ManifestReadinessError as exc:
+                manifest_state = {
+                    "catalog_projection_dirty": "dirty",
+                    "catalog_projection_missing": "missing",
+                    "catalog_projection_unreadable": "unreadable",
+                }.get(exc.code, "unavailable")
+            except (OSError, ValueError):
+                manifest_state = "unavailable"
+        return build_desktop_diagnostic_summary(
+            app_version=APP_VERSION,
+            build_commit=read_build_commit(self.project_root),
+            runtime="packaged" if is_packaged_app() else "source",
+            platform_name=sys.platform,
+            python_version=(
+                f"{sys.version_info.major}.{sys.version_info.minor}."
+                f"{sys.version_info.micro}"
+            ),
+            qt_version=qVersion(),
+            language=self.language_mode,
+            low_power_enabled=self.low_power_enabled,
+            storage_ready=self._storage_ready,
+            backend_phase=self._backend_phase,
+            manifest_state=manifest_state,
+            bundles=bundles,
+            ai_provider=self.ai_provider_mode,
+            ai_enabled=self.ai_enabled,
         )
 
     def _bundle_service(self) -> BundleService:
@@ -7251,7 +7123,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     settings = get_settings()
-    configure_packaged_logging("gui", settings.LOG_DIR)
     instance_lock = InterProcessFileLock(settings.INDEX_DIR / "gui.instance.lock")
     instance_lock_acquired = False
     startup_error = ""
@@ -7305,6 +7176,7 @@ def main(argv: list[str] | None = None) -> int:
     def hydrate_desktop() -> None:
         if shutdown_state["requested"]:
             return
+        configure_packaged_logging("gui", settings.LOG_DIR)
         result = (
             DesktopStartupResult(
                 storage_ready=False,

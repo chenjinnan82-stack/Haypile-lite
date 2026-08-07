@@ -398,7 +398,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
         with (
             patch.object(app_gui_module, "get_settings", return_value=settings),
-            patch.object(app_gui_module, "configure_packaged_logging"),
+            patch.object(
+                app_gui_module,
+                "configure_packaged_logging",
+                side_effect=lambda *_args: events.append("logging_configured"),
+            ),
             patch.object(app_gui_module, "InterProcessFileLock", return_value=FakeLock()),
             patch.object(app_gui_module, "read_desktop_gui_state", return_value={"language": "zh"}),
             patch.object(
@@ -432,6 +436,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 )
                 self.assertLess(
                     events.index("window_shown"),
+                    events.index("logging_configured"),
+                )
+                self.assertLess(
+                    events.index("logging_configured"),
                     events.index("runtime_applied"),
                 )
                 self.assertLess(
@@ -1278,8 +1286,40 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         try:
             panel.refresh()
 
-            self.assertEqual(panel.detail_label.text(), "拖入图片或音频开始收纳")
+            self.assertEqual(
+                panel.empty_state_label.text(),
+                "草窝还空着\n拖入图片、GIF 或音频开始收纳",
+            )
+            self.assertFalse(panel.empty_state_label.isHidden())
+            self.assertTrue(panel.detail_label.isHidden())
             self.assertFalse(panel.copy_ready_button.isVisible())
+        finally:
+            app_gui_module.build_material_panel_summary = previous_builder
+            panel.close()
+
+    def test_embedded_empty_state_points_to_drag_and_clipboard_intake(self) -> None:
+        summary = MaterialPanelSummary(
+            total_count=0,
+            recognized_count=0,
+            pending_count=0,
+            service_status="Haypile：等待入库",
+            recognition_status="分类：可用",
+        )
+        previous_builder = app_gui_module.build_material_panel_summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        panel = MaterialPanelWindow(embedded=True)
+        panel._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [],
+            get_latest_batch=lambda: None,
+            theme_recoveries=[],
+        )
+        try:
+            panel.refresh()
+
+            self.assertIn("图片、GIF 或音频", panel.empty_state_label.text())
+            self.assertIn("剪贴板", panel.empty_state_label.text())
+            self.assertFalse(panel.empty_state_label.isHidden())
+            self.assertFalse(panel.paste_ingest_button.isHidden())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             panel.close()
@@ -1308,7 +1348,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel.filter_buttons["pending"].text(), "Pending")
             self.assertEqual(panel.filter_buttons["image"].text(), "Images")
             self.assertEqual(panel.search_input.placeholderText(), "Search file, role, status")
-            self.assertEqual(panel.detail_label.text(), "Drop images or audio to start storing")
+            self.assertEqual(
+                panel.empty_state_label.text(),
+                "The nest is empty\nDrop an image, GIF, or audio file to start storing",
+            )
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             panel.close()
@@ -1517,7 +1560,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             panel.search_input.setText("不存在")
             self._wait_for_search_refresh(panel)
-            self.assertEqual(panel.detail_label.text(), "没有匹配资源")
+            self.assertIn("没有匹配素材", panel.empty_state_label.text())
+            self.assertFalse(panel.empty_state_label.isHidden())
+            self.assertTrue(panel.detail_label.isHidden())
             self.assertTrue(panel.item_labels[0].isHidden())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
@@ -2128,32 +2173,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-
-    def test_floating_ball_toast_defaults_below_grass_pile(self) -> None:
-        toast = app_gui_module.ToastLabel()
-        try:
-            anchor = app_gui_module.QRect(100, 100, 72, 72)
-            available = app_gui_module.QRect(0, 0, 500, 500)
-
-            toast.show_message("ok", success=True, anchor=anchor, available=available)
-
-            self.assertGreaterEqual(toast.y(), anchor.bottom())
-        finally:
-            toast.close()
-
-    def test_floating_ball_toast_uses_side_position_near_bottom_edge(self) -> None:
-        toast = app_gui_module.ToastLabel()
-        try:
-            anchor = app_gui_module.QRect(120, 430, 72, 72)
-            available = app_gui_module.QRect(0, 0, 500, 520)
-
-            toast.show_message("ok", success=True, anchor=anchor, available=available)
-
-            self.assertLess(toast.y(), anchor.bottom())
-            self.assertGreaterEqual(toast.y() + toast.height(), anchor.top())
-            self.assertGreaterEqual(toast.x(), anchor.right())
-        finally:
-            toast.close()
 
     def test_floating_ball_toast_anchor_uses_visual_circle_when_expanded(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
@@ -4061,7 +4080,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball._refresh_pending_badge()
 
             self.assertEqual(panel._all_recent_items, [])
-            self.assertIn("Agent 接口待恢复", panel.detail_label.text())
+            self.assertIn("Agent 接口待恢复", panel.empty_state_label.text())
+            self.assertFalse(panel.empty_state_label.isHidden())
             self.assertFalse(ball._has_pending_assets)
             self.assertIn("Agent 接口待恢复", ball._status_text())
         finally:

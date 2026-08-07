@@ -188,6 +188,7 @@ class AttachedHubTests(unittest.TestCase):
     def test_settings_and_selection_controls_expose_native_state(self) -> None:
         app_gui.set_ui_language("en")
         menu = self.ball.quick_menu
+        menu.retranslate()
         menu.update_settings_state(
             ai_enabled=False,
             ai_status="API authorization needed",
@@ -218,6 +219,159 @@ class AttachedHubTests(unittest.TestCase):
         )
         self.assertIn("QPushButton:focus", menu.low_power_button.styleSheet())
         self.assertIn("QPushButton:focus", menu.language_buttons["en"].styleSheet())
+        self.assertEqual(
+            menu.diagnostics_button.focusPolicy(),
+            Qt.FocusPolicy.StrongFocus,
+        )
+        self.assertIn(
+            "without filenames, paths, URLs, or keys",
+            menu.diagnostics_button.accessibleDescription(),
+        )
+
+    def test_ring_actions_are_native_accessible_buttons_and_follow_rotation(self) -> None:
+        menu = self.ball.quick_menu
+        self.ball._toggle_quick_menu()
+        self.app.processEvents()
+
+        self.assertEqual(set(menu._ring_action_buttons), {"assets", "agent", "settings"})
+        self.assertTrue(menu._ring_action_buttons["assets"].hasFocus())
+        for action, button in menu._ring_action_buttons.items():
+            self.assertEqual(button.focusPolicy(), Qt.FocusPolicy.StrongFocus)
+            self.assertTrue(button.accessibleName())
+            self.assertTrue(button.accessibleDescription())
+            expected = (
+                menu._slot_rect(action)
+                .united(menu._label_rect(action))
+                .translated(menu._content_shift)
+                .toAlignedRect()
+            )
+            self.assertEqual(button.geometry(), expected)
+
+        triggered: list[str] = []
+        menu.set_action_handler(triggered.append)
+        menu._ring_action_buttons["settings"].setFocus()
+        QTest.keyClick(menu._ring_action_buttons["settings"], Qt.Key.Key_Return)
+        self.assertEqual(triggered, ["settings"])
+
+        menu.open_drawer("settings")
+        QTest.qWait(190)
+        self.app.processEvents()
+        expected = (
+            menu._slot_rect("settings")
+            .united(menu._label_rect("settings"))
+            .translated(menu._content_shift)
+            .toAlignedRect()
+        )
+        self.assertEqual(menu._ring_action_buttons["settings"].geometry(), expected)
+
+        menu.close_drawer()
+        QTest.qWait(170)
+        menu.show_feedback(
+            "Working",
+            "progress",
+            self.ball._ball_anchor_rect(),
+            self.ball._available_geometry(),
+        )
+        self.assertTrue(
+            all(button.isHidden() for button in menu._ring_action_buttons.values())
+        )
+
+    def test_embedded_assets_tab_order_matches_visual_order(self) -> None:
+        panel = self.ball.material_panel
+
+        self.assertEqual(panel.focusPolicy(), Qt.FocusPolicy.NoFocus)
+        self.assertIs(
+            panel.paste_ingest_button.nextInFocusChain(),
+            panel.scope_buttons["latest"],
+        )
+        self.assertIs(
+            panel.scope_buttons["latest"].nextInFocusChain(),
+            panel.scope_buttons["all"],
+        )
+        self.assertIs(
+            panel.scope_buttons["all"].nextInFocusChain(),
+            panel.retry_batch_button,
+        )
+        self.assertIs(
+            panel.retry_batch_button.nextInFocusChain(),
+            panel.search_input,
+        )
+        self.assertIs(
+            panel.search_input.nextInFocusChain(),
+            panel.filter_buttons["all"],
+        )
+
+    def test_diagnostic_summary_copies_only_whitelisted_runtime_state(self) -> None:
+        bundles = [
+            {
+                "status": "ready",
+                "filename": "private-portrait.gif",
+                "local_path": "/Users/person/private-portrait.gif",
+                "origin_url": "https://secret.example/file.gif?token=value",
+                "sha256": "a" * 64,
+            },
+            {"status": "pending", "source_key": "private/audio.m4a"},
+        ]
+
+        class FakeBundleService:
+            def list_bundles(self):
+                return bundles
+
+        self.ball._storage_ready = True
+        self.ball._backend_phase = "ready"
+        self.ball.ai_provider_mode = "api"
+        self.ball.ai_enabled = False
+        self.ball._bundle_service = lambda: FakeBundleService()
+        messages: list[tuple[str, str]] = []
+        self.ball.show_toast = lambda message, tone="success": messages.append((message, tone))
+        QApplication.clipboard().clear()
+
+        with (
+            patch.object(app_gui, "is_packaged_app", return_value=True),
+            patch.object(app_gui, "read_build_commit", return_value="b" * 40),
+        ):
+            self.ball._handle_quick_menu_action("diagnostics")
+
+        copied = QApplication.clipboard().text()
+        payload = json.loads(copied)
+        self.assertEqual(payload["diagnostic_version"], "haypile.desktop-diagnostics.v1")
+        self.assertEqual(payload["runtime"], "packaged")
+        self.assertEqual(payload["build_commit"], "b" * 40)
+        self.assertEqual(payload["backend_phase"], "ready")
+        self.assertEqual(
+            payload["asset_counts"],
+            {"total": 2, "ready": 1, "pending": 1, "missing": 0},
+        )
+        for private_value in (
+            "private-portrait",
+            "/Users/person",
+            "secret.example",
+            "token=value",
+            "a" * 64,
+            "private/audio",
+        ):
+            self.assertNotIn(private_value, copied)
+        self.assertTrue(messages)
+        self.assertEqual(messages[-1][1], "success")
+
+    def test_diagnostic_summary_fails_closed_when_manifest_is_dirty(self) -> None:
+        class DirtyBundleService:
+            def list_bundles(self):
+                raise app_gui.ManifestReadinessError(
+                    "catalog_projection_dirty",
+                    "dirty",
+                )
+
+        self.ball._storage_ready = True
+        self.ball._bundle_service = lambda: DirtyBundleService()
+
+        payload = self.ball._desktop_diagnostic_payload()
+
+        self.assertEqual(payload["manifest_state"], "dirty")
+        self.assertEqual(
+            payload["asset_counts"],
+            {"total": 0, "ready": 0, "pending": 0, "missing": 0},
+        )
 
     def test_feedback_tones_are_semantic_and_distinct(self) -> None:
         menu = self.ball.quick_menu

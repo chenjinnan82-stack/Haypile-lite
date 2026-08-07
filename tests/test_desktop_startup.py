@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import stat
 import tempfile
 import time
 import unittest
@@ -81,6 +82,11 @@ class DesktopStartupTests(unittest.TestCase):
         self.assertTrue(self.settings.ASSETS_DIR.is_dir())
         self.assertTrue(self.settings.THEMES_DIR.is_dir())
         self.assertTrue(self.settings.INDEX_DIR.is_dir())
+        if os.name == "posix":
+            self.assertEqual(
+                stat.S_IMODE(self.settings.STORAGE_DIR.stat().st_mode),
+                0o700,
+            )
 
     def test_loads_only_matching_saved_api_credential(self) -> None:
         state = {

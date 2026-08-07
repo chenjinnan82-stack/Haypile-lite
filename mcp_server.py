@@ -11,10 +11,9 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
-from app.core.config import get_settings
-from app.services.asset_provenance import sanitize_provenance
+from app.core.config import _ensure_private_directory, get_settings
+from app.services.handoff import build_asset_handoff, build_handoff_asset
 
 
 def _validate_base_url(value: str) -> str:
@@ -203,66 +202,19 @@ def build_handoff(
     complete: bool = True,
     next_cursor: str | None = None,
 ) -> dict[str, Any]:
-    handoff = {
-        "handoff_version": "haypile.asset-handoff.v1",
-        "handoff_id": str(uuid4()),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "source": "haypile",
-        "base_url": BASE_URL,
-        "manifest_generation": manifest_generation,
-        "asset_count": len(bundles),
-        "total_matching": len(bundles) if total_matching is None else int(total_matching),
-        "complete": bool(complete),
-        "next_cursor": next_cursor,
-        "assets": [_handoff_asset(bundle) for bundle in bundles],
-    }
-    if batch_id:
-        handoff["batch_id"] = batch_id
-    return handoff
+    return build_asset_handoff(
+        bundles,
+        base_url=BASE_URL,
+        batch_id=batch_id,
+        manifest_generation=manifest_generation,
+        total_matching=total_matching,
+        complete=complete,
+        next_cursor=next_cursor,
+    )
 
 
 def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
-    resolved_url = BASE_URL + bundle["url"]
-    public_metadata = sanitize_provenance(
-        {
-            "origin_url": bundle.get("origin_url", ""),
-            "content_type": bundle.get("content_type", ""),
-            "downloaded_at": bundle.get("downloaded_at", ""),
-            "ai_suggestions": bundle.get("ai_suggestions", {}),
-        }
-    )
-    return {
-        "id": bundle["id"],
-        "theme_id": bundle["theme_id"],
-        "type": bundle["type"],
-        "role": bundle["role"],
-        "status": bundle["status"],
-        "sha256": bundle["sha256"],
-        "source_key": bundle["source_key"],
-        "url": bundle["url"],
-        "access": bundle["access"],
-        "resolved_url": resolved_url,
-        "content_type": public_metadata.get("content_type", ""),
-        "ai_suggestions": public_metadata.get("ai_suggestions", {}),
-        "duration_seconds": bundle.get("duration_seconds"),
-        "frame_count": bundle.get("frame_count"),
-        "loop_count": bundle.get("loop_count"),
-        "audio_metadata": bundle.get("audio_metadata", {}),
-        "audio_tags": bundle.get("audio_tags", {}),
-        "audio_usage": bundle.get("audio_usage", "unknown"),
-        "provenance": {
-            "source": "haypile",
-            "id": bundle["id"],
-            "sha256": bundle["sha256"],
-            "source_key": bundle["source_key"],
-            "url": bundle["url"],
-            "resolved_url": resolved_url,
-            "access": bundle["access"],
-            "origin_url": public_metadata.get("origin_url", ""),
-            "content_type": public_metadata.get("content_type", ""),
-            "downloaded_at": public_metadata.get("downloaded_at", ""),
-        },
-    }
+    return build_handoff_asset(bundle, base_url=BASE_URL)
 
 
 def _ready_manifest_generation() -> str:
@@ -609,7 +561,9 @@ def main() -> None:
             else:
                 response = handle(message, session)
             if session.initialized and heartbeat is None:
-                heartbeat = McpSessionHeartbeat(get_settings().INDEX_DIR).start()
+                settings = get_settings()
+                _ensure_private_directory(settings.STORAGE_DIR)
+                heartbeat = McpSessionHeartbeat(settings.INDEX_DIR).start()
             if heartbeat is not None:
                 heartbeat.touch()
             if response is not None:
