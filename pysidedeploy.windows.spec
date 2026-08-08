@@ -17,8 +17,8 @@ android_packages = buildozer==1.5.0,cython==0.29.33
 
 qml_files =
 excluded_qml_plugins =
-modules = Core,Gui,Svg,Widgets
-plugins = iconengines,imageformats,platforms,styles
+modules = Core,Gui,Multimedia,Svg,Widgets
+plugins = iconengines,imageformats,multimedia,platforms,styles
 
 [android]
 

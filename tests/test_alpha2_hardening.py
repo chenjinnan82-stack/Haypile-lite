@@ -980,8 +980,35 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
         self.assertIn('DEPLOY_LOG="$BUILD_DIR/pyside6-deploy.log"', text)
         self.assertIn('MACOS_BUILD_VERSION="3008"', text)
         self.assertIn("libqgif.dylib", text)
+        for filename in (
+            "haypile-nav.wav",
+            "haypile-intake.wav",
+            "haypile-duplicate.wav",
+            "haypile-error.wav",
+        ):
+            self.assertIn(filename, text)
+        self.assertIn("QtMultimedia.so", text)
+        self.assertIn("Contents/MacOS/QtMultimedia", text)
+        self.assertIn("PySide6/qt-plugins/multimedia", text)
+        self.assertIn("lib*mediaplugin.dylib", text)
         windows_text = (root / "scripts/build_windows_app.ps1").read_text(encoding="utf-8")
         self.assertIn("qgif.dll", windows_text)
+        for filename in (
+            "haypile-nav.wav",
+            "haypile-intake.wav",
+            "haypile-duplicate.wav",
+            "haypile-error.wav",
+        ):
+            self.assertIn(filename, windows_text)
+        self.assertIn("QtMultimedia.pyd", windows_text)
+        self.assertIn("Qt6Multimedia.dll", windows_text)
+        self.assertIn("PySide6/qt-plugins/multimedia", windows_text)
+        self.assertIn("*mediaplugin.dll", windows_text)
+        for spec_name in ("pysidedeploy.spec", "pysidedeploy.windows.spec"):
+            spec_text = (root / spec_name).read_text(encoding="utf-8")
+            self.assertIn("Multimedia", spec_text)
+            self.assertIn(",multimedia,", spec_text)
+            self.assertIn("--include-data-dir=ui_assets=ui_assets", spec_text)
         self.assertIn("Add :CFBundleVersion string", text)
 
 

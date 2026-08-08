@@ -316,6 +316,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 events.append("runtime_applied")
                 return bool(result.storage_ready)
 
+            def prepare_sound_feedback(self) -> int:
+                events.append("sound_prepared")
+                return 4
+
             def _on_backend_notice(self, _code, _details) -> None:
                 pass
 
@@ -436,6 +440,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 )
                 self.assertLess(
                     events.index("window_shown"),
+                    events.index("sound_prepared"),
+                )
+                self.assertLess(
+                    events.index("sound_prepared"),
                     events.index("logging_configured"),
                 )
                 self.assertLess(
@@ -494,6 +502,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 def apply_desktop_runtime(self, result) -> bool:
                     events.append(f"runtime_ready:{result.storage_ready}")
                     return bool(result.storage_ready)
+
+                def prepare_sound_feedback(self) -> int:
+                    events.append("sound_prepared")
+                    return 4
 
                 def _on_backend_notice(self, _code, _details) -> None:
                     pass
@@ -829,7 +841,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         mime_data = QMimeData()
         mime_data.setData("image/gif", b"GIF89a")
         try:
-            ball.worker = SimpleNamespace(isRunning=lambda: True)
+            ball.worker = SimpleNamespace(isRunning=lambda: False)
             ball._ingest_clipboard_data(mime_data)
             self.assertIn("正在入库", messages[-1][0])
             self.assertFalse((storage_dir / "incoming/browser").exists())
@@ -2319,7 +2331,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         try:
             source = self.tmpdir / "queued.svg"
             source.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"/>', encoding="utf-8")
-            ball._start_worker([source])
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._start_worker([source])
+                play.assert_called_once_with("intake")
 
             self.assertEqual(anchors, [ball._toast_anchor()])
         finally:
@@ -2699,6 +2713,28 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(ball._gif_suction_progress, 0.0)
             self.assertTrue(ball._collapse_timer.isActive())
             self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_low_power_gif_ingest_starts_one_action_sound(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        source = self.tmpdir / "low-power.gif"
+        source.write_bytes(b"GIF89a")
+        try:
+            ball.low_power_enabled = True
+            ball._drop_visual_kind = "gif"
+            ball._set_drop_open_progress(1.0)
+            with (
+                patch.object(ball._sound_feedback, "play") as play,
+                patch.object(app_gui_module.IngestWorker, "start", lambda _worker: None),
+            ):
+                ball._animate_gif_suction()
+                ball._start_worker([source])
+
+            play.assert_called_once_with("intake")
+            self.assertEqual(ball._gif_suction_progress, 1.0)
+            self.assertIsNone(ball._gif_suction_animation)
         finally:
             ball.close()
             self.app.processEvents()
@@ -3731,7 +3767,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 deleteLater=lambda: None,
                 isRunning=lambda: False,
             )
-            ball._on_ingest_finished("收纳完成：新增 0，去重 1", True)
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._on_ingest_finished("收纳完成：新增 0，去重 1", True)
+                play.assert_called_once_with("duplicate")
 
             self.assertTrue(ball._nudge_feedback_active())
             self.assertFalse(ball._bounce_feedback_active())
@@ -3755,7 +3793,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
     def test_floating_ball_failed_ingest_uses_reject_feedback(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
         try:
-            ball._on_ingest_finished("文件被拦截", False)
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._on_ingest_finished("文件被拦截", False)
+                play.assert_called_once_with("error")
 
             self.assertTrue(ball._reject_feedback_active())
             self.assertFalse(ball._bounce_feedback_active())
@@ -3774,6 +3814,79 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 self.assertFalse(ball._reject_feedback_active())
             finally:
                 app_gui_module.time.monotonic = previous_monotonic
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_early_intake_rejection_plays_error_sound_and_toast(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        shown: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
+        try:
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._show_intake_error("unsupported")
+
+            play.assert_called_once_with("error")
+            self.assertEqual(shown, [("unsupported", "error")])
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_mixed_duplicate_and_rejection_uses_error_without_fake_gif_success(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        shown: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
+        try:
+            ball._active_ingest_visual_kind = "gif"
+            ball._ingest_feedback_not_before = app_gui_module.time.monotonic() + 10
+            ball._ingest_feedback_timer.start(10_000)
+            ball.worker = SimpleNamespace(
+                result=app_gui_module.IngestResult(
+                    status="completed",
+                    accepted_count=0,
+                    duplicate_count=1,
+                    rejected_count=1,
+                ),
+                deleteLater=lambda: None,
+                isRunning=lambda: False,
+            )
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._on_ingest_finished("0 new, 1 duplicate, 1 blocked", True)
+
+            play.assert_called_once_with("error")
+            self.assertEqual(shown[-1], ("0 new, 1 duplicate, 1 blocked", "error"))
+            self.assertTrue(ball._reject_feedback_active())
+            self.assertFalse(ball._bounce_feedback_active())
+            self.assertFalse(ball._nudge_feedback_active())
+            self.assertEqual(ball.quick_menu._attention_action, "")
+            self.assertIsNone(ball._pending_ingest_finish)
+            self.assertFalse(ball._ingest_feedback_timer.isActive())
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_partial_success_keeps_pending_result_but_plays_rejection_sound(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        shown: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
+        try:
+            ball.worker = SimpleNamespace(
+                result=app_gui_module.IngestResult(
+                    status="completed",
+                    accepted_count=1,
+                    rejected_count=1,
+                ),
+                deleteLater=lambda: None,
+                isRunning=lambda: False,
+            )
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._on_ingest_finished("1 new, 1 blocked", True)
+
+            play.assert_called_once_with("error")
+            self.assertEqual(shown[-1], ("1 new, 1 blocked", "pending"))
+            self.assertTrue(ball._bounce_feedback_active())
+            self.assertFalse(ball._reject_feedback_active())
+            self.assertEqual(ball.quick_menu._attention_action, "assets")
         finally:
             ball.close()
             self.app.processEvents()
@@ -4236,6 +4349,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(ready, [True])
             self.assertTrue(ball._shutdown_ready_emitted)
             self.assertFalse(ball._cleanup_done)
+            self.assertFalse(ball._sound_feedback.enabled)
+            self.assertFalse(ball._sound_feedback.play("nav"))
+            ball._set_sound_enabled(True)
+            self.assertFalse(ball._sound_feedback.enabled)
 
             ball.complete_shutdown()
             self.assertTrue(ball._cleanup_done)

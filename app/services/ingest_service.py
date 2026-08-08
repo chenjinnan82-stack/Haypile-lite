@@ -51,7 +51,20 @@ class IngestResult:
 
     @property
     def duplicate_only(self) -> bool:
-        return self.success and self.accepted_count == 0 and self.duplicate_count > 0
+        return (
+            self.success
+            and self.accepted_count == 0
+            and self.duplicate_count > 0
+            and self.rejected_count == 0
+        )
+
+    @property
+    def blocked_without_new(self) -> bool:
+        return (
+            self.success
+            and self.accepted_count == 0
+            and self.rejected_count > 0
+        )
 
 
 class IngestService:

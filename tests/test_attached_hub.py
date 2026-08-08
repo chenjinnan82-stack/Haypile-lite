@@ -80,6 +80,50 @@ class AttachedHubTests(unittest.TestCase):
 
         self.assertTrue(self.ball.quick_menu.isVisible())
 
+    def test_action_sounds_follow_ring_navigation_and_persist_the_toggle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.ball._gui_state_path = Path(tmp) / "gui_state.json"
+            with (
+                patch.object(self.ball._sound_feedback, "play") as play,
+                patch.object(self.ball._sound_feedback, "prepare", return_value=4),
+            ):
+                self.ball._toggle_quick_menu()
+                self.ball._handle_quick_menu_action("assets")
+                self.ball._handle_quick_menu_action("assets")
+                self.ball._handle_quick_menu_action("settings")
+
+                self.assertEqual(
+                    [call.args for call in play.call_args_list],
+                    [("nav",), ("nav",), ("nav",)],
+                )
+
+                self.ball._set_sound_enabled(False)
+                self.assertFalse(self.ball.sound_enabled)
+                self.assertFalse(self.ball.quick_menu.sound_button.isChecked())
+                self.assertFalse(self.ball._sound_feedback.enabled)
+                payload = json.loads(
+                    self.ball._gui_state_path.read_text(encoding="utf-8")
+                )
+                self.assertFalse(payload["sound_enabled"])
+
+                self.ball._set_sound_enabled(True)
+                self.assertTrue(self.ball.quick_menu.sound_button.isChecked())
+                self.assertTrue(self.ball._sound_feedback.enabled)
+                self.assertEqual(play.call_args_list[-1].args, ("nav",))
+
+    def test_action_sound_preference_is_applied_before_first_frame(self) -> None:
+        for stored_value in (False, "false"):
+            restored = app_gui.HaypileFloatingBall(
+                initial_state={"sound_enabled": stored_value},
+            )
+            try:
+                self.assertFalse(restored.sound_enabled)
+                self.assertFalse(restored._sound_feedback.enabled)
+                self.assertFalse(restored.quick_menu.sound_button.isChecked())
+            finally:
+                restored.close()
+                self.app.processEvents()
+
     def test_ring_and_assets_drawer_respond_before_deferred_refresh(self) -> None:
         menu = self.ball.quick_menu
         refresh_calls = []
@@ -184,6 +228,7 @@ class AttachedHubTests(unittest.TestCase):
             self.assertEqual(payload["language"], "en")
             self.assertFalse(payload["low_power_enabled"])
             self.assertTrue(payload["ai_enabled"])
+            self.assertTrue(self.ball.sound_enabled)
 
     def test_settings_and_selection_controls_expose_native_state(self) -> None:
         app_gui.set_ui_language("en")
@@ -193,6 +238,7 @@ class AttachedHubTests(unittest.TestCase):
             ai_enabled=False,
             ai_status="API authorization needed",
             low_power=True,
+            sound_enabled=False,
             language="en",
             service_status="Ready",
             ai_provider="api",
@@ -204,6 +250,9 @@ class AttachedHubTests(unittest.TestCase):
         self.assertTrue(menu.low_power_button.isCheckable())
         self.assertTrue(menu.low_power_button.isChecked())
         self.assertIn("Low power: on", menu.low_power_button.text())
+        self.assertTrue(menu.sound_button.isCheckable())
+        self.assertFalse(menu.sound_button.isChecked())
+        self.assertIn("Action sounds: off", menu.sound_button.text())
         self.assertFalse(menu.ai_settings_button.isCheckable())
         self.assertEqual(menu.ai_state_badge.text(), "Off")
         self.assertIn("currently Off", menu.ai_settings_button.accessibleDescription())

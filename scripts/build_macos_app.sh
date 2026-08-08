@@ -97,7 +97,13 @@ test -x "$BIN"
 test -f "$APP/Contents/Resources/Haypile.icns"
 test -f "$APP/Contents/MacOS/ui_assets/haypile-icon.png"
 test -f "$APP/Contents/MacOS/ui_assets/drop-leaf-frame.svg"
+for sound_file in haypile-nav.wav haypile-intake.wav haypile-duplicate.wav haypile-error.wav; do
+  test -f "$APP/Contents/MacOS/ui_assets/sounds/$sound_file"
+done
 test -f "$APP/Contents/MacOS/assets/haypile-app-icon.png"
+test -f "$APP/Contents/MacOS/PySide6/QtMultimedia.so"
+test -f "$APP/Contents/MacOS/QtMultimedia"
+test -n "$(find "$APP/Contents/MacOS/PySide6/qt-plugins/multimedia" -type f -name 'lib*mediaplugin.dylib' -print -quit)"
 test -n "$(find "$APP" -type f -name 'libqgif.dylib' -print -quit)"
 BUILD_COMMIT="$(git rev-parse HEAD)"
 GITHUB_RUN_ID="${GITHUB_RUN_ID:-local}"

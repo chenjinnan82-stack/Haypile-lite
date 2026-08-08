@@ -119,6 +119,10 @@ try {
         $Exe,
         (Join-Path $PortableDir "ui_assets/haypile-icon.png"),
         (Join-Path $PortableDir "ui_assets/drop-leaf-frame.svg"),
+        (Join-Path $PortableDir "ui_assets/sounds/haypile-nav.wav"),
+        (Join-Path $PortableDir "ui_assets/sounds/haypile-intake.wav"),
+        (Join-Path $PortableDir "ui_assets/sounds/haypile-duplicate.wav"),
+        (Join-Path $PortableDir "ui_assets/sounds/haypile-error.wav"),
         (Join-Path $PortableDir "assets/haypile-app-icon.png")
     )) {
         if (-not (Test-Path $RequiredPath -PathType Leaf)) {
@@ -130,6 +134,19 @@ try {
     }
     if (-not (Get-ChildItem $PortableDir -Filter "qgif.dll" -File -Recurse | Select-Object -First 1)) {
         throw "Missing Qt GIF image plugin qgif.dll."
+    }
+    if (-not (Get-ChildItem $PortableDir -Filter "QtMultimedia.pyd" -File -Recurse | Select-Object -First 1)) {
+        throw "Missing PySide6 QtMultimedia binding."
+    }
+    if (-not (Get-ChildItem $PortableDir -Filter "Qt6Multimedia.dll" -File -Recurse | Select-Object -First 1)) {
+        throw "Missing Qt Multimedia runtime."
+    }
+    $MultimediaPluginDir = Join-Path $PortableDir "PySide6/qt-plugins/multimedia"
+    if (
+        -not (Test-Path $MultimediaPluginDir -PathType Container) -or
+        -not (Get-ChildItem $MultimediaPluginDir -Filter "*mediaplugin.dll" -File | Select-Object -First 1)
+    ) {
+        throw "Missing Qt Multimedia plugin."
     }
     $BuildInfo = [ordered]@{
         version = $ReleaseVersion

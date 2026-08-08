@@ -20,6 +20,7 @@ from app.services.asset_provenance import (
 from app.services.bundle_service import BundleService
 from app.services.ingest_service import (
     IngestCandidate,
+    IngestResult,
     IngestService,
 )
 from app.services.scanner import AssetScanner, manifest_dirty_path
@@ -57,6 +58,21 @@ class IngestServiceTests(unittest.TestCase):
         self.assertNotIn("safe_remote", text)
         self.assertNotIn("classifier", text)
         self.assertNotIn("get_settings", text)
+
+    def test_duplicate_only_excludes_mixed_rejections(self) -> None:
+        self.assertTrue(
+            IngestResult(
+                status="completed",
+                duplicate_count=1,
+            ).duplicate_only
+        )
+        mixed = IngestResult(
+            status="completed",
+            duplicate_count=1,
+            rejected_count=1,
+        )
+        self.assertFalse(mixed.duplicate_only)
+        self.assertTrue(mixed.blocked_without_new)
 
     def test_add_duplicate_reject_progress_and_provenance(self) -> None:
         first = self.root / "first.svg"

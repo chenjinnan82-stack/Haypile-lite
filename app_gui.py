@@ -67,6 +67,7 @@ from app.gui.intake_visual import (
     IntakeEntryRenderer,
     IntakeVisualState,
 )
+from app.gui.sound_feedback import SoundFeedbackController
 from app.services.asset_provenance import (
     provenance_path_for,
     public_origin_url,
@@ -3061,6 +3062,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._page_shift_direction = 1
         self._detail_buttons: dict[str, QPushButton] = {}
         self._low_power_enabled = False
+        self._sound_enabled = True
         self._ai_provider_mode = "off"
         self._language_mode = "auto"
         self._drawer_transition_id = 0
@@ -3274,6 +3276,21 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         )
         layout.addWidget(self.low_power_button)
 
+        self.sound_button = self._action_button(
+            ui_text("操作音效：开", "Action sounds: on"),
+            "sound",
+            page,
+        )
+        self.sound_button.setCheckable(True)
+        self.sound_button.setChecked(True)
+        self.sound_button.setAccessibleDescription(
+            ui_text(
+                "播放导航、收纳、重复和拒绝反馈音效",
+                "Play sound feedback for navigation, intake, duplicates, and rejection",
+            )
+        )
+        layout.addWidget(self.sound_button)
+
         self.language_section = self._section_label(ui_text("语言", "Language"), page)
         layout.addWidget(self.language_section)
         language_row = QWidget(page)
@@ -3446,6 +3463,18 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             else ui_text("低功耗：关", "Low power: off")
         )
         self.low_power_button.setChecked(self._low_power_enabled)
+        self.sound_button.setText(
+            ui_text("操作音效：开", "Action sounds: on")
+            if self._sound_enabled
+            else ui_text("操作音效：关", "Action sounds: off")
+        )
+        self.sound_button.setChecked(self._sound_enabled)
+        self.sound_button.setAccessibleDescription(
+            ui_text(
+                "播放导航、收纳、重复和拒绝反馈音效",
+                "Play sound feedback for navigation, intake, duplicates, and rejection",
+            )
+        )
         self._update_ai_nav_state(
             ai_enabled=self._ai_enabled,
             low_power=self._low_power_enabled,
@@ -4144,6 +4173,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         ai_enabled: bool,
         ai_status: str,
         low_power: bool,
+        sound_enabled: bool,
         language: str,
         service_status: str,
         ai_provider: str,
@@ -4156,6 +4186,13 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         )
         self.low_power_button.setChecked(low_power)
         self._low_power_enabled = bool(low_power)
+        self.sound_button.setText(
+            ui_text("操作音效：开", "Action sounds: on")
+            if sound_enabled
+            else ui_text("操作音效：关", "Action sounds: off")
+        )
+        self.sound_button.setChecked(sound_enabled)
+        self._sound_enabled = bool(sound_enabled)
         if self._low_power_enabled and self._drawer_page:
             self._rotate_ring_to_page(self._drawer_page, animate=False)
         self._language_mode = language
@@ -4276,6 +4313,17 @@ class HaypileFloatingBall(QWidget):
         set_ui_language(self.language_mode)
         self.low_power_enabled = bool(
             stored_state.get("low_power_enabled", self.settings.HAYPILE_LOW_POWER_MODE)
+        )
+        stored_sound_enabled = stored_state.get("sound_enabled", True)
+        self.sound_enabled = (
+            stored_sound_enabled
+            if isinstance(stored_sound_enabled, bool)
+            else False
+        )
+        self._sound_feedback = SoundFeedbackController(
+            self.project_root / "ui_assets" / "sounds",
+            enabled=self.sound_enabled,
+            parent=self,
         )
         stored_ai = stored_state.get("ai_enabled")
         self._ai_preference = (
@@ -4820,7 +4868,12 @@ class HaypileFloatingBall(QWidget):
         self._sync_visual_timer()
 
         if route.name == ROUTE_UNSUPPORTED:
-            self.show_toast(ui_text("没有找到可收纳的图片或音频", "No images or audio to store"), tone="error")
+            self._show_intake_error(
+                ui_text(
+                    "没有找到可收纳的图片或音频",
+                    "No images or audio to store",
+                )
+            )
             return
         if self._ingest_busy():
             self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), tone="progress")
@@ -5062,15 +5115,19 @@ class HaypileFloatingBall(QWidget):
         if route.name == ROUTE_RAW_GIF:
             gif_payload = route.raw_gif or b""
             if len(gif_payload) > MAX_GIF_BYTES:
-                self.show_toast(ui_text("GIF 素材超过 50MB", "GIF asset is over 50MB"), tone="error")
+                self._show_intake_error(
+                    ui_text("GIF 素材超过 50MB", "GIF asset is over 50MB")
+                )
                 return
             try:
                 path = self._write_clipboard_bytes(gif_payload, ".gif")
             except Exception:
                 logger.exception("Failed to materialize clipboard GIF")
-                self.show_toast(
-                    ui_text("无法保存剪贴板 GIF", "Clipboard GIF could not be saved"),
-                    tone="error",
+                self._show_intake_error(
+                    ui_text(
+                        "无法保存剪贴板 GIF",
+                        "Clipboard GIF could not be saved",
+                    )
                 )
                 return
             self._remote_ingest_paths.add(path)
@@ -5078,7 +5135,9 @@ class HaypileFloatingBall(QWidget):
             return
 
         if route.name == ROUTE_EMPTY_GIF:
-            self.show_toast(ui_text("剪贴板中的 GIF 为空", "Clipboard GIF is empty"), tone="error")
+            self._show_intake_error(
+                ui_text("剪贴板中的 GIF 为空", "Clipboard GIF is empty")
+            )
             return
 
         if route.name in {ROUTE_REMOTE_URL, ROUTE_REMOTE_URL_WITH_STATIC_PNG_FALLBACK}:
@@ -5105,16 +5164,20 @@ class HaypileFloatingBall(QWidget):
             try:
                 path = self._write_clipboard_mime_image(mime_data)
             except ValueError:
-                self.show_toast(
-                    ui_text("剪贴板图片尺寸无效或过大", "Clipboard image dimensions are invalid or too large"),
-                    tone="error",
+                self._show_intake_error(
+                    ui_text(
+                        "剪贴板图片尺寸无效或过大",
+                        "Clipboard image dimensions are invalid or too large",
+                    )
                 )
                 return
             except Exception:
                 logger.exception("Failed to materialize clipboard image")
-                self.show_toast(
-                    ui_text("无法保存剪贴板图片", "Clipboard image could not be saved"),
-                    tone="error",
+                self._show_intake_error(
+                    ui_text(
+                        "无法保存剪贴板图片",
+                        "Clipboard image could not be saved",
+                    )
                 )
                 return
             self._remote_ingest_paths.add(path)
@@ -5128,12 +5191,11 @@ class HaypileFloatingBall(QWidget):
             )
             return
 
-        self.show_toast(
+        self._show_intake_error(
             ui_text(
                 "剪贴板里没有可收纳的文件、图片或直链",
                 "No supported file, image, or direct URL found on the clipboard",
-            ),
-            tone="error",
+            )
         )
 
     @classmethod
@@ -5205,8 +5267,8 @@ class HaypileFloatingBall(QWidget):
 
     def _ingest_busy(self) -> bool:
         return bool(
-            (self.worker is not None and self.worker.isRunning())
-            or (self.remote_worker is not None and self.remote_worker.isRunning())
+            self.worker is not None
+            or self.remote_worker is not None
             or self._pending_ingest_finish is not None
         )
 
@@ -5221,7 +5283,7 @@ class HaypileFloatingBall(QWidget):
             if self._storage_error_code == "storage_unavailable"
             else ui_text("正在准备素材库", "Preparing asset library")
         )
-        self.show_toast(message, tone="error")
+        self._show_intake_error(message)
         return False
 
     def _start_remote_download_worker(
@@ -5290,7 +5352,7 @@ class HaypileFloatingBall(QWidget):
                 if not success
                 else ui_text("没有找到可收纳的图片或音频", "No images or audio to store")
             )
-            self.show_toast(failure_message, tone="error")
+            self._show_intake_error(failure_message)
             self.quick_menu.complete_progress("error", failure_message)
             return
         self._remote_ingest_paths.update(downloaded_files)
@@ -5313,11 +5375,14 @@ class HaypileFloatingBall(QWidget):
                 seen.add(key)
         if not merged_files:
             self._cleanup_remote_ingest_paths()
-            self.show_toast(ui_text("没有可收纳的文件", "No files to store"), tone="error")
+            self._show_intake_error(
+                ui_text("没有可收纳的文件", "No files to store")
+            )
             return
 
         self._active_ingest_visual_kind = self._visual_kind_for_files(merged_files)
         self._ingest_feedback_not_before = 0.0
+        self._sound_feedback.play("intake")
         if self._active_ingest_visual_kind == "gif":
             visual_already_started = bool(
                 self._gif_open_timer.isActive()
@@ -5356,10 +5421,16 @@ class HaypileFloatingBall(QWidget):
         if self._closing:
             return
         ingest_result = getattr(self.worker, "result", None)
+        blocked_without_new = bool(
+            isinstance(ingest_result, IngestResult)
+            and ingest_result.blocked_without_new
+        )
         if self.worker is not None:
             self.worker.deleteLater()
             self.worker = None
-        if self._active_ingest_visual_kind == "gif" and not success:
+        if self._active_ingest_visual_kind == "gif" and (
+            not success or blocked_without_new
+        ):
             self._ingest_feedback_timer.stop()
             self._pending_ingest_finish = None
             self._reset_drop_visual_state()
@@ -5395,12 +5466,33 @@ class HaypileFloatingBall(QWidget):
         duplicate_only = bool(
             isinstance(ingest_result, IngestResult) and ingest_result.duplicate_only
         )
-        if success and not duplicate_only and self._active_ingest_visual_kind == "gif":
+        blocked_without_new = bool(
+            isinstance(ingest_result, IngestResult)
+            and ingest_result.blocked_without_new
+        )
+        has_rejections = bool(
+            isinstance(ingest_result, IngestResult)
+            and ingest_result.rejected_count > 0
+        )
+        clean_gif_success = bool(
+            success
+            and not duplicate_only
+            and not blocked_without_new
+            and self._active_ingest_visual_kind == "gif"
+            and (
+                ingest_result is None
+                or (
+                    ingest_result.accepted_count > 0
+                    and ingest_result.rejected_count == 0
+                )
+            )
+        )
+        if clean_gif_success:
             message = ui_text(
                 "GIF 已收纳 · 请选择用途",
                 "GIF stored · choose a role",
             )
-        if success:
+        if success and not blocked_without_new:
             now = time.monotonic()
             if duplicate_only:
                 self._drop_feedback_until = 0.0
@@ -5429,9 +5521,13 @@ class HaypileFloatingBall(QWidget):
             "duplicate"
             if success and duplicate_only
             else "pending"
-            if success
+            if success and not blocked_without_new
             else "error"
         )
+        if duplicate_only:
+            self._sound_feedback.play("duplicate")
+        elif not success or has_rejections:
+            self._sound_feedback.play("error")
         self.show_toast(message, tone=tone)
         self.quick_menu.complete_progress(tone, message)
         if self.quick_menu.current_page() == "assets":
@@ -5546,6 +5642,10 @@ class HaypileFloatingBall(QWidget):
             self._available_geometry(),
         )
 
+    def _show_intake_error(self, message: str) -> None:
+        self._sound_feedback.play("error")
+        self.show_toast(message, tone="error")
+
     def _reposition_toast(self) -> None:
         self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=False)
 
@@ -5643,6 +5743,11 @@ class HaypileFloatingBall(QWidget):
     def _clamped_window_point(self, point: QPoint) -> QPoint:
         x, y = self._clamp_window_position(point.x(), point.y(), self.width(), self.height())
         return QPoint(x, y)
+
+    def prepare_sound_feedback(self) -> int:
+        if self._closing:
+            return 0
+        return self._sound_feedback.prepare()
 
     def apply_desktop_runtime(self, result: DesktopStartupResult) -> bool:
         if self._desktop_runtime_applied:
@@ -5765,6 +5870,26 @@ class HaypileFloatingBall(QWidget):
             ui_text("低功耗模式已开启", "Low power enabled")
             if self.low_power_enabled
             else ui_text("低功耗模式已关闭", "Low power disabled"),
+            tone="success",
+        )
+
+    def _set_sound_enabled(self, enabled: bool) -> None:
+        if self._closing:
+            return
+        self.sound_enabled = bool(enabled)
+        self._sound_feedback.set_enabled(self.sound_enabled)
+        if self.sound_enabled:
+            self._sound_feedback.prepare()
+            self._sound_feedback.play("nav")
+        try:
+            self._save_gui_state({"sound_enabled": self.sound_enabled})
+        except OSError:
+            logger.debug("Failed to save Haypile sound setting")
+        self._refresh_ai_menu_status()
+        self.show_toast(
+            ui_text("操作音效已开启", "Action sounds enabled")
+            if self.sound_enabled
+            else ui_text("操作音效已关闭", "Action sounds disabled"),
             tone="success",
         )
 
@@ -5941,6 +6066,7 @@ class HaypileFloatingBall(QWidget):
         self._exit_timer.stop()
         self._visual_timer.stop()
         self._drag_awareness_timer.stop()
+        self._sound_feedback.set_enabled(False)
         if self._drop_open_animation is not None:
             self._drop_open_animation.stop()
         if self._audio_suction_animation is not None:
@@ -6029,6 +6155,7 @@ class HaypileFloatingBall(QWidget):
         if self._has_pending_assets and not self.quick_menu._attention_action:
             self.quick_menu.set_attention_action("assets")
         self.quick_menu.show_attached(self._ball_anchor_rect(), self._available_geometry())
+        self._sound_feedback.play("nav")
         QTimer.singleShot(0, self.quick_menu.focus_first_ring_action)
 
     def _reposition_quick_menu(self) -> None:
@@ -6040,9 +6167,13 @@ class HaypileFloatingBall(QWidget):
 
     def _handle_quick_menu_action(self, action: str) -> None:
         if action == "assets":
+            if self.quick_menu.current_page() != action:
+                self._sound_feedback.play("nav")
             self._toggle_material_panel()
             return
         if action in {"agent", "settings"}:
+            if self.quick_menu.current_page() != action:
+                self._sound_feedback.play("nav")
             self.quick_menu.open_drawer(action, self._ball_anchor_rect(), self._available_geometry())
             if action == "settings":
                 QTimer.singleShot(0, self._refresh_ai_menu_status)
@@ -6117,6 +6248,8 @@ class HaypileFloatingBall(QWidget):
             self.show_toast(ui_text("已复制 Agent 配方", "Agent recipe copied"), tone="success")
             return
         if action == "ai_setup":
+            if self.quick_menu.current_page() != "ai":
+                self._sound_feedback.play("nav")
             self._show_ai_setup_panel(self._ai_model_status_text())
             return
         if action.startswith("ai_provider:"):
@@ -6147,6 +6280,9 @@ class HaypileFloatingBall(QWidget):
             return
         if action == "low_power":
             self._set_low_power_enabled(not self.low_power_enabled)
+            return
+        if action == "sound":
+            self._set_sound_enabled(not self.sound_enabled)
             return
         if action.startswith("language:"):
             self._set_language_mode(action.partition(":")[2])
@@ -6203,6 +6339,7 @@ class HaypileFloatingBall(QWidget):
             ai_enabled=self.ai_enabled,
             ai_status=ai_status,
             low_power=self.low_power_enabled,
+            sound_enabled=self.sound_enabled,
             language=self.language_mode,
             service_status=resolved_service_status,
             ai_provider=self.ai_provider_mode,
@@ -7176,6 +7313,7 @@ def main(argv: list[str] | None = None) -> int:
     def hydrate_desktop() -> None:
         if shutdown_state["requested"]:
             return
+        widget.prepare_sound_feedback()
         configure_packaged_logging("gui", settings.LOG_DIR)
         result = (
             DesktopStartupResult(
