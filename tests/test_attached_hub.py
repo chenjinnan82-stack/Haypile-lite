@@ -283,6 +283,10 @@ class AttachedHubTests(unittest.TestCase):
         self.app.processEvents()
 
         self.assertEqual(set(menu._ring_action_buttons), {"assets", "agent", "settings"})
+        self.assertFalse(
+            any(button.hasFocus() for button in menu._ring_action_buttons.values())
+        )
+        QTest.keyClick(menu, Qt.Key.Key_Tab)
         self.assertTrue(menu._ring_action_buttons["assets"].hasFocus())
         for action, button in menu._ring_action_buttons.items():
             self.assertEqual(button.focusPolicy(), Qt.FocusPolicy.StrongFocus)

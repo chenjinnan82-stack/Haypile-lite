@@ -3042,6 +3042,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             | Qt.WindowType.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
         self.resize(self.RING_SIZE, self.RING_SIZE)
@@ -3137,11 +3138,8 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             button.setAccessibleName(label)
             button.setAccessibleDescription(descriptions[action])
 
-    def focus_first_ring_action(self) -> None:
-        if not self.isVisible() or self._feedback_only:
-            return
-        self.activateWindow()
-        self._ring_action_buttons["assets"].setFocus(Qt.FocusReason.TabFocusReason)
+    def _focus_neutral_surface(self) -> None:
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
 
     def _build_drawer(self) -> None:
         self.drawer_shell = QWidget(self)
@@ -6156,7 +6154,7 @@ class HaypileFloatingBall(QWidget):
             self.quick_menu.set_attention_action("assets")
         self.quick_menu.show_attached(self._ball_anchor_rect(), self._available_geometry())
         self._sound_feedback.play("nav")
-        QTimer.singleShot(0, self.quick_menu.focus_first_ring_action)
+        QTimer.singleShot(0, self.quick_menu._focus_neutral_surface)
 
     def _reposition_quick_menu(self) -> None:
         if self.quick_menu.isVisible():
