@@ -2343,10 +2343,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
 
-    def test_floating_ball_pending_badge_highlights_status_on_quick_menu_open(self) -> None:
+    def test_floating_ball_pending_badge_highlights_assets_and_clears_when_resolved(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
+        pending = [{"id": "pending"}]
         ball._bundle_service = lambda: SimpleNamespace(
-            list_bundles=lambda **_filters: [{"id": "pending"}]
+            list_bundles=lambda **_filters: list(pending)
         )
         try:
             ball._refresh_pending_badge()
@@ -2354,6 +2355,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             self.assertTrue(ball.quick_menu.isVisible())
             self.assertEqual(ball.quick_menu._attention_action, "assets")
+
+            pending.clear()
+            ball._refresh_pending_badge()
+
+            self.assertFalse(ball._has_pending_assets)
+            self.assertEqual(ball.quick_menu._attention_action, "")
         finally:
             ball.close()
             self.app.processEvents()

@@ -2888,8 +2888,8 @@ class _LegacyQuickMenuWindow(QWidget):
             hovered = action == self._hovered_action
             attention = action == self._attention_action
             selected = action == getattr(self, "_drawer_page", "")
-            active = attention or selected or (action == "ai" and self._ai_enabled)
             ai_on = action == "ai" and self._ai_enabled
+            active = selected or ai_on
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(0, 0, 0, 30))
             painter.drawEllipse(slot_rect.translated(1.0, 1.5))
@@ -2909,6 +2909,11 @@ class _LegacyQuickMenuWindow(QWidget):
             painter.drawEllipse(slot_rect)
             fg = QColor("#2E3A26") if (hovered or ai_on) else QColor("#FFF9EA")
             self._draw_action_icon(painter, icon_name, slot_rect.center(), fg)
+            if attention and not selected:
+                badge_center = slot_rect.topRight() + QPointF(-2.0, 2.0)
+                painter.setPen(QPen(QColor("#FFF9EA"), 1.2))
+                painter.setBrush(QColor("#D5A73D"))
+                painter.drawEllipse(badge_center, 3.8, 3.8)
         painter.end()
 
     def _paint_overlay(self, painter: QPainter) -> None:
@@ -3139,6 +3144,9 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             button.setAccessibleDescription(descriptions[action])
 
     def _focus_neutral_surface(self) -> None:
+        if not self.isVisible() or self._feedback_only:
+            return
+        self.activateWindow()
         self.setFocus(Qt.FocusReason.MouseFocusReason)
 
     def _build_drawer(self) -> None:
@@ -7111,7 +7119,7 @@ class HaypileFloatingBall(QWidget):
         except (ManifestReadinessError, OSError, ValueError):
             logger.debug("Failed to refresh Haypile pending badge")
             self._has_pending_assets = False
-        if not self._has_pending_assets and self.quick_menu._attention_action == "status":
+        if not self._has_pending_assets and self.quick_menu._attention_action == "assets":
             self.quick_menu.set_attention_action("")
         self.update()
 

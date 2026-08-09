@@ -329,6 +329,24 @@ class AttachedHubTests(unittest.TestCase):
             all(button.isHidden() for button in menu._ring_action_buttons.values())
         )
 
+    def test_ring_reopen_keeps_neutral_mouse_state(self) -> None:
+        menu = self.ball.quick_menu
+        self.ball._toggle_quick_menu()
+        self.app.processEvents()
+        QTest.keyClick(menu, Qt.Key.Key_Tab)
+        self.assertTrue(menu._ring_action_buttons["assets"].hasFocus())
+
+        QTest.keyClick(menu, Qt.Key.Key_Escape)
+        QTest.qWait(190)
+        self.app.processEvents()
+        self.assertFalse(menu.isVisible())
+
+        self.ball._toggle_quick_menu()
+        self.app.processEvents()
+        self.assertFalse(
+            any(button.hasFocus() for button in menu._ring_action_buttons.values())
+        )
+
     def test_embedded_assets_tab_order_matches_visual_order(self) -> None:
         panel = self.ball.material_panel
 
