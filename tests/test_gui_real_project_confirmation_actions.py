@@ -1959,13 +1959,22 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         actions: list[str] = []
         menu.set_action_handler(actions.append)
         try:
+            description = menu._ring_action_buttons["assets"].accessibleDescription()
             menu.set_attention_action("assets")
             self.assertEqual(menu._attention_action, "assets")
+            self.assertIn(
+                "待确认",
+                menu._ring_action_buttons["assets"].accessibleDescription(),
+            )
 
             menu._emit_action("assets")
 
             self.assertEqual(actions, ["assets"])
             self.assertEqual(menu._attention_action, "")
+            self.assertEqual(
+                menu._ring_action_buttons["assets"].accessibleDescription(),
+                description,
+            )
         finally:
             menu.close()
 

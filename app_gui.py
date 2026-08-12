@@ -3133,7 +3133,14 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
 
     def _retranslate_ring_action_buttons(self) -> None:
         descriptions = {
-            "assets": ui_text("打开素材面板", "Open Assets panel"),
+            "assets": ui_text(
+                "打开素材面板；有素材待确认"
+                if self._attention_action == "assets"
+                else "打开素材面板",
+                "Open Assets panel; assets need review"
+                if self._attention_action == "assets"
+                else "Open Assets panel",
+            ),
             "agent": ui_text("打开 Agent 面板", "Open Agent panel"),
             "settings": ui_text("打开设置面板", "Open Settings panel"),
         }
@@ -3142,6 +3149,11 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             button.setToolTip(label)
             button.setAccessibleName(label)
             button.setAccessibleDescription(descriptions[action])
+
+    def set_attention_action(self, action: str) -> None:
+        super().set_attention_action(action)
+        if hasattr(self, "_ring_action_buttons"):
+            self._retranslate_ring_action_buttons()
 
     def _focus_neutral_surface(self) -> None:
         if not self.isVisible() or self._feedback_only:
@@ -3682,7 +3694,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
 
     def _emit_action(self, action: str) -> None:
         if action == self._attention_action:
-            self._attention_action = ""
+            self.set_attention_action("")
         if self._action_callback is not None:
             self._action_callback(action)
 
