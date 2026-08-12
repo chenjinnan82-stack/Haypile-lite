@@ -22,6 +22,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libegl1 \
+            libpulse0 \
             libxkbcommon-x11-0 \
             libxcb-cursor0 \
             libxcb-icccm4 \
