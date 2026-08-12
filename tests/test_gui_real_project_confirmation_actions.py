@@ -3645,6 +3645,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_floating_ball_success_ingest_triggers_single_bounce_feedback(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
+        ball._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [{"id": "pending"}]
+        )
         try:
             rect = app_gui_module.QRectF(ball._get_collapsed_circle_rect())
             ball._on_ingest_finished("收纳完成", True)
@@ -3883,6 +3886,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_partial_success_keeps_pending_result_but_plays_rejection_sound(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
+        ball._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [{"id": "pending"}]
+        )
         shown: list[tuple[str, str]] = []
         ball.show_toast = lambda message, *, tone: shown.append((message, tone))
         try:
