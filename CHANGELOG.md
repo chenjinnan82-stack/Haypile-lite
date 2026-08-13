@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0-alpha.8 (upcoming)
+## v0.3.0-alpha.8
 
 Alpha.7 was not published. Alpha.8 supersedes its planned GIF slice after the
 shared intake transaction and clipboard entry landed on the same source line.
@@ -34,6 +34,9 @@ shared intake transaction and clipboard entry landed on the same source line.
 - Give C-ring navigation, Assets, and Settings native keyboard focus, checked
   states, accessible descriptions, semantic progress/result colors, and a
   font-tolerant role grid.
+- Add low-volume original action sounds for navigation, intake, duplicates,
+  and rejection, with an independent setting and no hover, progress, or
+  background playback.
 - Keep the attached drawer clear of its action ring and rotate the selected
   Assets, Agent, or Settings action to the connector as pages change.
 - Keep settings lookup side-effect free, defer product storage preparation to

@@ -1,10 +1,9 @@
-# v0.3 Open Source Release Copy
+# v0.3 Open Source Release Notes
 
-Draft copy for `v0.3.0-alpha.8`. Alpha.7 was not published; alpha.8 supersedes
+Release copy for `v0.3.0-alpha.8`. Alpha.7 was not published; alpha.8 supersedes
 that candidate after the GIF slice, shared intake transaction, clipboard
-entry, and desktop runtime hardening landed together. Do not publish until the
-security regression and macOS/Windows package checks have passed. After
-publication, limit it to a 3–5 user pilot.
+entry, and desktop runtime hardening landed together. Publish only after both
+tag workflows and package checks pass. Limit the release to a 3–5 user pilot.
 
 ## GitHub About
 
@@ -74,6 +73,9 @@ supported.
 - Make C-ring navigation, material rows, and selection controls
   keyboard-operable, expose native checked and accessible states, and
   distinguish processing, pending, duplicate, success, and error feedback.
+- Add low-volume original action sounds for navigation, intake, duplicates,
+  and rejection, with a separate on/off setting and no hover, progress, or
+  background playback.
 - Keep the action ring outside the drawer, and rotate the selected Assets,
   Agent, or Settings action to the connector when the active page changes.
 - Keep settings lookup free of runtime writes, prepare product storage during
@@ -168,6 +170,7 @@ Haypile alpha.8 为桌面草堆加入了安全的原字节 GIF 与明确的剪�
 - 单轮预览，低功耗或隐藏面板立即停止
 - 反应、贴纸、界面动画三种手动用途
 - GIF 不进入 AI 队列
+- 导航、收纳、重复和拒绝使用低音量原创操作音效，可独立关闭
 
 Repo: https://github.com/chenjinnan82-stack/Haypile-lite
 
