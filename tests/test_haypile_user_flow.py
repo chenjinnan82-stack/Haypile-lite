@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 import wave
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -15,6 +16,7 @@ from app.services.asset_provenance import read_asset_provenance, write_asset_pro
 from app.services.scanner import AssetScanner, manifest_dirty_path
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.style_classifier import StyleClassificationResult
+from app.services.theme_registry import ThemeRegistry
 from app_gui import AIBatchWorker, IngestWorker, _persist_ai_failure
 from examples.use_haypile_http import build_handoff
 
@@ -73,7 +75,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         invalid.write_text("not an image", encoding="utf-8")
         self._write_wav(audio)
 
-        worker = IngestWorker([image, audio, duplicate, invalid], self.assets_dir, ai_enabled=True)
+        worker = IngestWorker([image, audio, duplicate, invalid], self.assets_dir)
         finished: list[tuple[str, bool]] = []
         completed_batches: list[str] = []
         worker.finished_signal.connect(lambda message, ok: finished.append((message, ok)))
@@ -190,10 +192,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             dst_path=existing,
             strategy="copy",
         )
-        worker = IngestWorker([], self.assets_dir, ai_enabled=False)
-
-        with patch.object(worker, "_compute_sha256", side_effect=AssertionError("verified assets should not be rehashed")):
-            index = worker._build_hash_index()
+        index = StorageRuntimeDB(self.runtime_db_path).asset_hash_index(self.assets_dir)
 
         self.assertEqual(index, {"known-sha": existing.resolve()})
 
@@ -206,10 +205,10 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         write_asset_provenance(first, {"origin_url": "https://one.example/path.svg"})
         write_asset_provenance(second, {"origin_url": "https://two.example/path.svg"})
 
-        IngestWorker([first, second], self.assets_dir, ai_enabled=False).run()
+        IngestWorker([first, second], self.assets_dir).run()
 
         runtime = StorageRuntimeDB(self.runtime_db_path)
-        with runtime.get_connection() as conn:
+        with closing(runtime.get_connection()) as conn:
             origins = [
                 row[0]
                 for row in conn.execute(
@@ -219,13 +218,23 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         self.assertEqual(origins, ["https://one.example", "https://two.example"])
 
     def test_same_role_assets_keep_distinct_theme_keys(self) -> None:
-        worker = IngestWorker([], self.assets_dir, ai_enabled=False)
         first = self.assets_dir / "generic/images/first.png"
         second = self.assets_dir / "generic/images/second.png"
         first.parent.mkdir(parents=True)
 
-        worker._upsert_theme_contract_for_image(first, "generic", "hero_image")
-        worker._upsert_theme_contract_for_image(second, "generic", "hero_image")
+        registry = ThemeRegistry(self.themes_dir)
+        registry.upsert_image_asset(
+            theme_id="generic",
+            asset_key=first.stem,
+            asset_url="/static/generic/images/first.png",
+            role="hero_image",
+        )
+        registry.upsert_image_asset(
+            theme_id="generic",
+            asset_key=second.stem,
+            asset_url="/static/generic/images/second.png",
+            role="hero_image",
+        )
 
         contract = json.loads((self.themes_dir / "generic.json").read_text(encoding="utf-8"))
         self.assertEqual(set(contract["physical_assets"]), {"first", "second"})
@@ -259,7 +268,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>',
             encoding="utf-8",
         )
-        worker = IngestWorker([image], self.assets_dir, ai_enabled=False)
+        worker = IngestWorker([image], self.assets_dir)
         worker.MAX_DROP_FILES = 0
         finished: list[tuple[str, bool]] = []
         worker.finished_signal.connect(lambda message, ok: finished.append((message, ok)))
@@ -275,7 +284,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         image = self.tmpdir / "plain.svg"
         image.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>', encoding="utf-8")
 
-        worker = IngestWorker([image], self.assets_dir, ai_enabled=False)
+        worker = IngestWorker([image], self.assets_dir)
         worker.style_classifier = _ExplodingClassifier()
         finished: list[tuple[str, bool]] = []
         worker.finished_signal.connect(lambda message, ok: finished.append((message, ok)))
@@ -304,7 +313,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             observed_batch_ids.append(str(latest["id"]))
             return {}
 
-        worker = IngestWorker([image], self.assets_dir, ai_enabled=False)
+        worker = IngestWorker([image], self.assets_dir)
         with patch.object(AssetScanner, "scan_assets_directory", new=observe_completed_batch):
             worker.run()
 
@@ -317,7 +326,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             encoding="utf-8",
         )
         batches: list[str] = []
-        worker = IngestWorker([image], self.assets_dir, ai_enabled=True)
+        worker = IngestWorker([image], self.assets_dir)
         worker.batch_signal.connect(lambda batch_id, _summary: batches.append(batch_id))
         worker.run()
 

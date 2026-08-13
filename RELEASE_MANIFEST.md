@@ -18,6 +18,7 @@ requirements.txt
 requirements-core.txt
 requirements-desktop.txt
 requirements-dev.txt
+constraints-release.txt
 pyproject.toml
 pytest.ini
 assets/logo.png
@@ -35,6 +36,7 @@ pysidedeploy.windows.spec
 docs/AGENT_HTTP_CONTRACT.md
 docs/AGENT_RECIPES.md
 docs/AI_EVALUATION.md
+docs/CLIPBOARD_FORMAT_MATRIX.md
 docs/LOCAL_AI.md
 docs/MACOS_INTERNAL_BUILD.md
 docs/OPEN_SOURCE_RELEASE.md

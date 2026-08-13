@@ -29,6 +29,11 @@
 
 [版本说明](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.6)
 
+> **main / 即将发布的 alpha.8：** 可从桌面、浏览器直接图片 URL，或能提供真实
+> 文件附件的聊天软件拖入 GIF。应用也提供明确的剪贴板收纳动作：完整 GIF 或文件
+> 载荷保留原始字节，仅有静态像素时则如实保存为 PNG；应用私有的动态表情格式尚
+> 不支持。上方 alpha.6 下载版尚不包含这些能力。
+
 macOS 包采用临时签名且尚未公证，首次启动请右键应用并选择“打开”。Windows
 包尚未签名，请先解压再运行 `Haypile.exe`。Haypile 会保存受控的本地副本，但
 Alpha 版本不应成为不可替代素材的唯一备份。
@@ -37,7 +42,8 @@ Alpha 版本不应成为不可替代素材的唯一备份。
 
 [![观看 Haypile 产品概览](docs/haypile-overview-poster.webp)](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-product-overview-zh.mp4)
 
-这是一支产品概览片。下方 GIF 展示当前 Qt 桌面程序的真实交互。
+这是一支产品概览片。下方 GIF 是最初的工作流示意；当前收纳入口与附着式面板
+还会由仓库内的离屏视觉 smoke 命令生成验收图。
 
 ## 看它怎么工作
 
@@ -45,7 +51,7 @@ Alpha 版本不应成为不可替代素材的唯一备份。
 
 草堆始终固定在桌面。左键展开附着式“素材、Agent、设置”抽屉；把文件拖到草堆
 上方即可入库。
-演示使用当前 Qt 界面与仓库自有示例素材渲染，没有读取用户素材。
+示意图只使用仓库自有示例素材，没有读取用户素材。
 
 ## 三步使用
 
@@ -73,8 +79,33 @@ Haypile 的本地优先不是一句口号：
 
 安全边界问题请按 [SECURITY.md](SECURITY.md) 或通过 [GitHub 私密漏洞报告](https://github.com/chenjinnan82-stack/Haypile-lite/security/advisories/new) 提交。
 
-## v0.3 增加了什么
+## main / 即将发布的 alpha.8 增加了什么
 
+- 支持从本地文件、真实 `image/gif` 直链和文件附件安全收纳 GIF；逐帧校验并
+  保留原始字节。
+- GIF 只播放一轮预览，可手动选择“反应、贴纸、界面动画”，且不进入 AI
+  分拣；新 GIF 在人工确认用途前保持 pending。
+- 增加明确的剪贴板收纳：支持文件、完整 GIF 载荷和安全直链；只有解码像素时
+  则如实保存为静态 PNG。
+- 经验证的 GIF MIME、帧数、声明时长和循环次数会贯穿 manifest、HTTP、MCP
+  与 `asset-handoff.v1`。
+- GUI 摄入与启动恢复共用无 Qt 的摄入事务和跨进程写锁，不会互相恢复或改写
+  仍在进行的批次。
+- 图片、音频与 GIF 入口动作共用可离屏复现的渲染器，无需启动存储或后端即可
+  稳定验收视觉状态。
+- 浮球先显示，再准备存储与后端；素材目录不可用时会禁用摄入，但设置与退出仍
+  可使用。关闭时只停止本 GUI 拥有的后端。
+- 素材面板、待确认金点与服务状态共用同一份显式存储配置和 manifest
+  fail-close 目录；真实项目实验功能不进入常规素材面板启动链路。
+- C 环导航、素材条目、选择控件与设置项具备原生键盘焦点、选中状态和无障碍
+  描述；反馈颜色明确区分处理中、待确认、重复、成功与错误。
+- 当前素材、Agent 或设置入口会旋转到面板连接处，附着式面板在屏幕左右两侧都
+  不再遮挡 C 环操作项。
+- Settings 读取不再准备产品存储或创建 IPC 密钥；CI 与双平台发布构建使用同一
+  组精确 Python 和依赖约束。
+- 隐私安全的剪贴板诊断只报告格式名、大小与所选路径；应用私有动态表情仍不支持。
+- 空素材页会直接提示拖拽与剪贴板入口；设置页可复制仅含白名单运行状态的诊断摘要，
+  不包含素材名、路径、网址、哈希或密钥。
 - 入库先完成、AI 后整理；模型离线、超时或限流不会阻止素材保存。
 - 每次 Drop 都有稳定批次 ID，重复素材仍会加入本批次。
 - 图片用途包括背景、主视觉、Logo、图标、内容图和纹理。
@@ -150,7 +181,8 @@ python3 -m unittest discover -s tests
 ```
 
 macOS 构建说明见 [MACOS_INTERNAL_BUILD.md](docs/MACOS_INTERNAL_BUILD.md)，平台脚本位于
-`scripts/`。私有评估与发布门槛见 [AI_EVALUATION.md](docs/AI_EVALUATION.md)。
+`scripts/`。[alpha.8 发布草稿](docs/OPEN_SOURCE_RELEASE.md)记录了准确的功能与
+支持边界；私有评估与发布门槛见 [AI_EVALUATION.md](docs/AI_EVALUATION.md)。
 
 ## 项目边界
 

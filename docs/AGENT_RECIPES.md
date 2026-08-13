@@ -51,7 +51,8 @@ Flow:
 1. Call `haypile_health`.
 2. Call `haypile_list_bundles` with
    `{"status":"ready","type":"image","batch_id":"latest"}`.
-3. Prefer `hero_image`, then `main_background`, then `texture`.
+3. Prefer `hero_image`, then `main_background`, then `texture`. Use
+   `reaction`, `sticker`, or `ui_animation` only for `content_type: image/gif`.
 4. Use `HAYPILE_BASE_URL + bundle.url` as the image source.
 5. Record `bundle.id`, `bundle.role`, `bundle.status`, `bundle.sha256`, and `source_key` in the handoff.
 
@@ -98,7 +99,11 @@ Handoff shape:
       "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
       "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
       "access": "manifest_static",
-      "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png"
+      "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png",
+      "content_type": "image/png",
+      "duration_seconds": null,
+      "frame_count": null,
+      "loop_count": null
     }
   ]
 }

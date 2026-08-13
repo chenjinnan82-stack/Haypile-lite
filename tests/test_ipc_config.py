@@ -14,20 +14,46 @@ from app.core import ipc
 def _read_ipc_key_in_process(key_file: str) -> str:
     os.environ["HAYPILE_IPC_AUTHKEY_FILE"] = key_file
     os.environ["IPC_AUTHKEY"] = ""
-    return Settings(_env_file=None).IPC_AUTHKEY
+    ipc.get_settings.cache_clear()
+    return ipc.get_ipc_authkey().decode("utf-8")
 
 
 class IpcConfigTests(unittest.TestCase):
-    def test_ipc_authkey_defaults_to_local_secret_file(self) -> None:
+    def test_ipc_authkey_is_created_lazily_on_first_ipc_use(self) -> None:
         with TemporaryDirectory() as tmp:
             key_file = Path(tmp) / "ipc_authkey"
-            with patch.dict("os.environ", {"HAYPILE_IPC_AUTHKEY_FILE": str(key_file), "IPC_AUTHKEY": ""}, clear=False):
-                first = Settings(_env_file=None).IPC_AUTHKEY
-                second = Settings(_env_file=None, IPC_AUTHKEY="  ").IPC_AUTHKEY
+            with patch.dict(
+                "os.environ",
+                {"HAYPILE_IPC_AUTHKEY_FILE": str(key_file), "IPC_AUTHKEY": ""},
+                clear=False,
+            ):
+                settings = Settings(_env_file=None)
+                self.assertEqual(settings.IPC_AUTHKEY, "")
+                self.assertFalse(key_file.exists())
+                with patch("app.core.ipc.get_settings", return_value=settings):
+                    first = ipc.get_ipc_authkey().decode("utf-8")
+                    second = ipc.get_ipc_authkey().decode("utf-8")
 
         self.assertNotEqual(first, "haypile-ipc-v1")
         self.assertEqual(first, second)
         self.assertEqual(len(first), 64)
+
+    def test_lazy_ipc_authkey_uses_explicit_settings_storage(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
+            storage = Path(tmp) / "custom-storage"
+            settings = Settings(
+                _env_file=None,
+                STORAGE_DIR=storage,
+                IPC_AUTHKEY="",
+            )
+            with patch("app.core.ipc.get_settings", return_value=settings):
+                generated = ipc.get_ipc_authkey().decode("utf-8")
+
+            self.assertEqual(len(generated), 64)
+            self.assertEqual(
+                (storage / "ipc_authkey").read_text(encoding="utf-8"),
+                generated,
+            )
 
     def test_ipc_channel_defaults_to_haypile_name(self) -> None:
         self.assertTrue(Settings(_env_file=None).IPC_CHANNEL.startswith("haypile_service_"))
@@ -63,7 +89,9 @@ class IpcConfigTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                ipc_key = Settings(_env_file=None).IPC_AUTHKEY
+                settings = Settings(_env_file=None)
+                with patch("app.core.ipc.get_settings", return_value=settings):
+                    ipc_key = ipc.get_ipc_authkey().decode("utf-8")
 
         self.assertNotEqual(ipc_key, "admin-secret")
         self.assertEqual(len(ipc_key), 64)
@@ -93,7 +121,9 @@ class IpcConfigTests(unittest.TestCase):
                 {"HAYPILE_IPC_AUTHKEY_FILE": str(key_file), "IPC_AUTHKEY": ""},
                 clear=False,
             ):
-                key = Settings(_env_file=None).IPC_AUTHKEY
+                settings = Settings(_env_file=None)
+                with patch("app.core.ipc.get_settings", return_value=settings):
+                    key = ipc.get_ipc_authkey().decode("utf-8")
 
             self.assertEqual(len(key), 64)
             self.assertEqual(key_file.read_text(encoding="utf-8"), key)

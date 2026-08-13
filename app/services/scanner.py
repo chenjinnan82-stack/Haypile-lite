@@ -77,7 +77,7 @@ def read_manifest_readiness(manifest_path: Path) -> dict[str, str | int]:
 
 
 class AssetScanner:
-    IMAGE_EXTENSIONS: set[str] = {".png", ".webp", ".svg", ".jpg", ".jpeg"}
+    IMAGE_EXTENSIONS: set[str] = {".png", ".webp", ".svg", ".jpg", ".jpeg", ".gif"}
     AUDIO_EXTENSIONS: set[str] = set(SUPPORTED_AUDIO_EXTENSIONS)
 
     def __init__(
@@ -160,12 +160,26 @@ class AssetScanner:
             return None
 
         ratio: float = width / height
-        return {
+        item: dict[str, Any] = {
             "type": "image",
+            "content_type": validated.mime_type,
             "resolution": f"{width}x{height}",
             "aspect_ratio": self._format_ratio(ratio),
             "url_path": self._to_url_path(path),
         }
+        if validated.mime_type == "image/gif":
+            item.update(
+                {
+                    "frame_count": int(validated.frame_count or 1),
+                    "duration_seconds": (
+                        round(float(validated.duration_seconds), 3)
+                        if validated.duration_seconds is not None
+                        else None
+                    ),
+                    "loop_count": validated.loop_count,
+                }
+            )
+        return item
 
     def _scan_audio(self, path: Path) -> dict[str, Any] | None:
         try:

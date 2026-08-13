@@ -123,7 +123,10 @@ Bundle payload:
   "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
   "access": "manifest_static",
   "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
+  "content_type": "image/png",
   "duration_seconds": null,
+  "frame_count": null,
+  "loop_count": null,
   "audio_metadata": {},
   "audio_tags": {},
   "audio_usage": "unknown"
@@ -138,13 +141,18 @@ Fields:
 - `theme_id`: theme bucket.
 - `type`: currently `image` or `audio`.
 - `role`: `main_background`, `hero_image`, `logo`, `icon`, `content_image`,
-  `texture`, `audio`, or `unknown`.
+  `texture`, `reaction`, `sticker`, `ui_animation`, `audio`, or `unknown`.
 - `status`: `ready`, `pending`, or `missing`.
 - `sha256`: content hash when available.
 - `url`: static URL path. Resolve it against the same backend base URL.
 - `access`: currently `manifest_static`.
 - `source_key`: manifest-relative key, not an absolute local path.
-- `duration_seconds`: audio length when the bundle is audio; otherwise `null`.
+- `content_type`: verified image MIME, or remote provenance MIME when no manifest
+  MIME is available.
+- `duration_seconds`: audio length, or the sum of GIF-declared frame delays;
+  `null` when a GIF declares no positive delay.
+- `frame_count`: GIF frame count; otherwise `null`.
+- `loop_count`: GIF-declared loop value (`0` means infinite); otherwise `null`.
 - `audio_metadata`: available audio facts such as `sample_rate_hz`, `channels`, and `bitrate_bps`.
 - `audio_tags`: available file tags: `title`, `artist`, and `album`.
 - `audio_usage`: `music`, `voice`, `ambience`, `sound_effect`, `loop`, or `unknown`.
@@ -152,7 +160,8 @@ Fields:
 Status meanings:
 
 - `ready`: registered and classified for use.
-- `pending`: registered but still `unknown`; audio also stays pending until its `audio_usage` is confirmed.
+- `pending`: registered but still `unknown`; GIF roles are manual, and audio also
+  stays pending until its `audio_usage` is confirmed.
 - `missing`: registered in the current manifest projection, but the controlled
   physical copy is unavailable. Theme-only references are not Agent bundles.
 
@@ -247,7 +256,11 @@ Set `HAYPILE_BASE_URL` when the backend is not using
       "source_key": "generic/images/generic_img_hero_image_abcd1234.png",
       "url": "/static/generic/images/generic_img_hero_image_abcd1234.png",
       "access": "manifest_static",
-      "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png"
+      "resolved_url": "http://127.0.0.1:8010/static/generic/images/generic_img_hero_image_abcd1234.png",
+      "content_type": "image/png",
+      "duration_seconds": null,
+      "frame_count": null,
+      "loop_count": null
     }
   ]
 }

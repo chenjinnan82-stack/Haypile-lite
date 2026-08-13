@@ -15,6 +15,7 @@ from uuid import uuid4
 from app.core.config import get_settings
 from app.services.json_io import atomic_write_json
 from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
+from app.services.media_validator import MediaValidationError, validate_media
 
 
 STORAGE_FORMAT_VERSION = 2
@@ -490,7 +491,7 @@ class StorageRuntimeDB:
                     int(dst_mtime_ns) if dst_mtime_ns is not None else None,
                 )
         registered = 0
-        supported = {".png", ".jpg", ".jpeg", ".webp", ".svg", *SUPPORTED_AUDIO_EXTENSIONS}
+        supported = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", *SUPPORTED_AUDIO_EXTENSIONS}
         for candidate in sorted(assets_dir.rglob("*")):
             if candidate.is_symlink() or not candidate.is_file():
                 continue
@@ -501,6 +502,16 @@ class StorageRuntimeDB:
                 resolved.relative_to(root)
             except ValueError:
                 continue
+            if candidate.suffix.lower() == ".gif":
+                try:
+                    validate_media(resolved)
+                except MediaValidationError:
+                    existing = known.pop(resolved, None)
+                    if existing is not None:
+                        with closing(self.get_connection()) as conn:
+                            conn.execute("DELETE FROM vfs_asset_links WHERE id = ?", (existing[0],))
+                            conn.commit()
+                    continue
             try:
                 digest = self._sha256_file(resolved)
                 stat = resolved.stat()

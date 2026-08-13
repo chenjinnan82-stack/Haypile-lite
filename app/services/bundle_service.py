@@ -19,8 +19,12 @@ ALLOWED_IMAGE_ROLES = {
     "icon",
     "content_image",
     "texture",
+    "reaction",
+    "sticker",
+    "ui_animation",
     "unknown",
 }
+GIF_ONLY_ROLES = {"reaction", "sticker", "ui_animation"}
 ALLOWED_BUNDLE_ROLES = {*ALLOWED_IMAGE_ROLES, "audio"}
 ALLOWED_AUDIO_USAGES = {"music", "voice", "ambience", "sound_effect", "loop", "unknown"}
 MAX_BUNDLE_PAGE_SIZE = 100
@@ -62,7 +66,7 @@ class BundleService:
         theme_assets = self._theme_assets_by_url()
         sha_by_path = self._sha_by_dst_path()
         recorded_sha_by_path = self._recorded_sha_by_dst_path()
-        bundles: list[dict[str, str]] = []
+        bundles: list[dict[str, Any]] = []
 
         for source_key, item in sorted(manifest.items()):
             if not isinstance(item, dict):
@@ -107,10 +111,14 @@ class BundleService:
                     "access": "manifest_static",
                     "source_key": source_key,
                     "origin_url": public_origin_url(str(provenance.get("origin_url") or "")),
-                    "content_type": str(provenance.get("content_type") or ""),
+                    "content_type": str(
+                        item.get("content_type") or provenance.get("content_type") or ""
+                    ),
                     "downloaded_at": str(provenance.get("downloaded_at") or ""),
                     "ai_suggestions": ai_suggestions if isinstance(ai_suggestions, dict) else {},
                     "duration_seconds": self._duration_from(item),
+                    "frame_count": self._positive_int_from(item, "frame_count"),
+                    "loop_count": self._non_negative_int_from(item, "loop_count"),
                     "audio_metadata": self._audio_metadata_from(item),
                     "audio_tags": self._audio_tags_from(item),
                     "audio_usage": bundle_audio_usage,
@@ -171,7 +179,7 @@ class BundleService:
     def get_latest_batch(self) -> dict[str, object] | None:
         return StorageRuntimeDB(self.runtime_db_path).latest_batch()
 
-    def get_bundle(self, bundle_id: str) -> dict[str, str] | None:
+    def get_bundle(self, bundle_id: str) -> dict[str, Any] | None:
         wanted = str(bundle_id or "").strip()
         if not wanted:
             return None
@@ -184,7 +192,7 @@ class BundleService:
         ]
         return legacy_matches[0] if len(legacy_matches) == 1 else None
 
-    def set_bundle_role(self, bundle_id: str, role: str) -> dict[str, str] | None:
+    def set_bundle_role(self, bundle_id: str, role: str) -> dict[str, Any] | None:
         normalized_role = str(role or "").strip().lower()
         if normalized_role not in ALLOWED_BUNDLE_ROLES:
             raise ValueError("unsupported bundle role")
@@ -195,6 +203,14 @@ class BundleService:
             raise ValueError("role incompatible with asset type")
         if bundle["type"] == "image" and normalized_role not in ALLOWED_IMAGE_ROLES:
             raise ValueError("role incompatible with asset type")
+        if (
+            normalized_role in GIF_ONLY_ROLES
+            and (
+                str(bundle.get("content_type") or "").lower() != "image/gif"
+                or bundle.get("frame_count") is None
+            )
+        ):
+            raise ValueError("role requires a validated GIF")
 
         theme_id = bundle["theme_id"] or self._theme_from_key(bundle["source_key"]) or "generic"
         existing_contract = self._theme_assets_by_url().get(bundle["url"], {})
@@ -266,6 +282,22 @@ class BundleService:
         except (TypeError, ValueError):
             return None
         return duration if duration >= 0 else None
+
+    @staticmethod
+    def _positive_int_from(item: dict[str, Any], key: str) -> int | None:
+        try:
+            value = int(item.get(key))
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    @staticmethod
+    def _non_negative_int_from(item: dict[str, Any], key: str) -> int | None:
+        try:
+            value = int(item.get(key))
+        except (TypeError, ValueError):
+            return None
+        return value if value >= 0 else None
 
     @staticmethod
     def _audio_metadata_from(item: dict[str, Any]) -> dict[str, int]:
@@ -359,6 +391,9 @@ class BundleService:
             "logo": "max-w-full h-auto object-contain",
             "icon": "w-6 h-6 object-contain",
             "texture": "bg-repeat opacity-80",
+            "reaction": "max-w-full h-auto object-contain",
+            "sticker": "max-w-full h-auto object-contain",
+            "ui_animation": "max-w-full h-auto object-contain",
             "audio": "audio",
         }.get(role, "object-contain")
 
@@ -371,6 +406,9 @@ class BundleService:
             "logo": "Use as a brand mark without cropping.",
             "icon": "Use as a functional icon or status marker.",
             "texture": "Use as a repeated or layered page texture.",
+            "reaction": "Use as a brief animated reaction near the content it responds to.",
+            "sticker": "Use as a compact animated overlay or decorative accent.",
+            "ui_animation": "Use as a small interface-state or feedback animation.",
             "audio": "Use as an audio asset.",
         }.get(role, "Use as a general visual asset.")
 

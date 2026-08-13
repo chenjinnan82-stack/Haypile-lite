@@ -3,7 +3,7 @@ name: Windows portable build
 on:
   push:
     tags:
-      - "v0.3.0-alpha.6"
+      - "v0.3.0-alpha.8"
   workflow_dispatch:
     inputs:
       source_ref:
@@ -40,9 +40,13 @@ jobs:
         shell: pwsh
         env:
           RELEASE_TAG: ${{ inputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+          EXPECTED_RELEASE_TAG: v0.3.0-alpha.8
         run: |
           $SourceCommit = (git rev-parse HEAD).Trim()
           if ($env:RELEASE_TAG) {
+            if ($env:RELEASE_TAG -ne $env:EXPECTED_RELEASE_TAG) {
+              throw "Release tag does not match this package version."
+            }
             $TagCommit = (git rev-list -n 1 $env:RELEASE_TAG).Trim()
             if (-not $TagCommit -or $SourceCommit -ne $TagCommit) {
               throw "Release tag does not point at the checked-out source."
@@ -51,14 +55,14 @@ jobs:
           "commit=$SourceCommit" >> $env:GITHUB_OUTPUT
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.13"
           architecture: x64
       - name: Prepare build environment
         shell: pwsh
         run: |
           python -m venv .build-venv
-          .\.build-venv\Scripts\python.exe -m pip install --upgrade pip
-          .\.build-venv\Scripts\python.exe -m pip install -r requirements-desktop.txt "Nuitka==4.0"
+          .\.build-venv\Scripts\python.exe -m pip install --upgrade "pip==26.2"
+          .\.build-venv\Scripts\python.exe -m pip install --constraint constraints-release.txt -r requirements-desktop.txt "Nuitka==4.0"
       - name: Run Windows tests
         shell: pwsh
         run: |
@@ -69,15 +73,15 @@ jobs:
         run: .\scripts\build_windows_app.ps1 -SkipInstall
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: Haypile-v0.3.0-alpha.6-windows-x64
+          name: Haypile-v0.3.0-alpha.8-windows-x64
           path: |
-            dist/Haypile-v0.3.0-alpha.6-windows-x64.zip
-            dist/Haypile-v0.3.0-alpha.6-windows-x64.zip.sha256
+            dist/Haypile-v0.3.0-alpha.8-windows-x64.zip
+            dist/Haypile-v0.3.0-alpha.8-windows-x64.zip.sha256
           if-no-files-found: error
       - name: Attest Windows archive
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
-          subject-path: dist/Haypile-v0.3.0-alpha.6-windows-x64.zip
+          subject-path: dist/Haypile-v0.3.0-alpha.8-windows-x64.zip
 
   release:
     if: github.ref_type == 'tag' || inputs.release_tag != ''
@@ -88,7 +92,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: Haypile-v0.3.0-alpha.6-windows-x64
+          name: Haypile-v0.3.0-alpha.8-windows-x64
           path: dist
       - name: Upload prerelease assets without replacement
         env:
@@ -99,5 +103,5 @@ jobs:
           tag_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)"
           test "$SOURCE_COMMIT" = "$tag_commit"
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            dist/Haypile-v0.3.0-alpha.6-windows-x64.zip \
-            dist/Haypile-v0.3.0-alpha.6-windows-x64.zip.sha256
+            dist/Haypile-v0.3.0-alpha.8-windows-x64.zip \
+            dist/Haypile-v0.3.0-alpha.8-windows-x64.zip.sha256

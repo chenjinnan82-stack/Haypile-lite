@@ -18,14 +18,15 @@ from app.api.v1.health import router as health_router
 from app.api.v1.bundles import router as bundles_router
 from app.api.v1.batches import router as batches_router
 from app.api.v1.theme import router as theme_router
-from app.core.config import get_settings
+from app.core.config import _ensure_private_directory, get_settings
 from app.core.exceptions import register_exception_handlers
-from app.services.scanner import AssetScanner, manifest_dirty_path, mark_manifest_dirty
-from app.services.storage_runtime import StorageRuntimeDB
+from app.services.ingest_service import IngestService
+from app.services.scanner import manifest_dirty_path
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+_ensure_private_directory(settings.STORAGE_DIR)
 settings.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 settings.INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -97,26 +98,31 @@ class ManifestStaticFiles(StaticFiles):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    scanner = AssetScanner()
+    service = IngestService(
+        storage_dir=settings.STORAGE_DIR,
+        assets_dir=settings.ASSETS_DIR,
+        index_dir=settings.INDEX_DIR,
+        themes_dir=settings.THEMES_DIR,
+        manifest_path=settings.MANIFEST_PATH,
+        fallback_theme=settings.VISION_FALLBACK_THEME,
+    )
     try:
-        mark_manifest_dirty(settings.MANIFEST_PATH)
-        runtime = StorageRuntimeDB()
-        await asyncio.to_thread(
-            runtime.recover_incomplete_ingest,
-            assets_dir=settings.ASSETS_DIR,
-            staging_dir=settings.STORAGE_DIR / "staging" / "ingest",
-            quarantine_dir=settings.STORAGE_DIR / "quarantine" / "ingest",
+        result = await asyncio.to_thread(
+            service.recover_and_project,
+            lock_timeout=8.0,
         )
-        await asyncio.to_thread(runtime.register_legacy_assets, settings.ASSETS_DIR)
     except Exception as exc:
-        logger.critical("Storage initialization failed: error_type=%s", type(exc).__name__)
+        logger.critical(
+            "Storage initialization failed: error_type=%s", type(exc).__name__
+        )
         raise RuntimeError("Haypile storage initialization failed") from exc
-
-    try:
-        await scanner.scan_assets_directory()
+    if result.success:
         logger.info("Assets manifest has been generated.")
-    except Exception as exc:
-        logger.error("Initial asset scan failed: error_type=%s", type(exc).__name__)
+    elif result.error_code == "manifest_projection_failed":
+        logger.error("Initial asset scan failed: error_code=%s", result.error_code)
+    else:
+        logger.critical("Storage initialization failed: error_code=%s", result.error_code)
+        raise RuntimeError("Haypile storage initialization failed")
     yield
 
 

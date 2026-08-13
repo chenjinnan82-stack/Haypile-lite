@@ -4,11 +4,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+GIT_STATUS="$(git status --porcelain=v1 --untracked-files=all)"
+if [[ -n "$GIT_STATUS" ]]; then
+  echo "Release builds require a clean Git worktree; commit all intended changes first." >&2
+  exit 1
+fi
+
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   echo "Haypile v0.3 internal build requires Apple Silicon macOS." >&2
   exit 1
 fi
 
+RELEASE_VERSION="0.3.0-alpha.8"
 PYTHON="${PYTHON:-python3.12}"
 VENV="$ROOT/.build-venv"
 BUILD_DIR="$ROOT/build"
@@ -18,8 +25,8 @@ DEPLOY_LOG="$BUILD_DIR/pyside6-deploy.log"
 ICONSET="$BUILD_DIR/Haypile.iconset"
 APP="$DIST_DIR/Haypile.app"
 BIN="$APP/Contents/MacOS/Haypile"
-ZIP="$DIST_DIR/Haypile-v0.3.0-alpha.6-macos-arm64.app.zip"
-MACOS_BUILD_VERSION="3006"
+ZIP="$DIST_DIR/Haypile-v$RELEASE_VERSION-macos-arm64.app.zip"
+MACOS_BUILD_VERSION="3008"
 SPEC="$ROOT/pysidedeploy.spec"
 ICON_SOURCE="$ROOT/assets/haypile-app-icon.png"
 SPEC_BACKUP=""
@@ -48,13 +55,18 @@ command -v iconutil >/dev/null
 command -v codesign >/dev/null
 command -v ditto >/dev/null
 test -f "$ICON_SOURCE"
+test "$("$PYTHON" -c 'import platform; print(platform.python_version())')" = "3.12.13"
 
 if [[ ! -x "$VENV/bin/python3" ]]; then
   "$PYTHON" -m venv "$VENV"
 fi
+test "$("$VENV/bin/python3" -c 'import platform; print(platform.python_version())')" = "3.12.13"
 
-"$VENV/bin/python3" -m pip install --quiet --upgrade pip
-"$VENV/bin/python3" -m pip install --quiet -r requirements-desktop.txt "Nuitka==4.0"
+"$VENV/bin/python3" -m pip install --quiet --upgrade "pip==26.2"
+"$VENV/bin/python3" -m pip install --quiet \
+  --constraint constraints-release.txt \
+  -r requirements-desktop.txt \
+  "Nuitka==4.0"
 
 SPEC_BACKUP="$(mktemp)"
 cp "$SPEC" "$SPEC_BACKUP"
@@ -85,11 +97,18 @@ test -x "$BIN"
 test -f "$APP/Contents/Resources/Haypile.icns"
 test -f "$APP/Contents/MacOS/ui_assets/haypile-icon.png"
 test -f "$APP/Contents/MacOS/ui_assets/drop-leaf-frame.svg"
+for sound_file in haypile-nav.wav haypile-intake.wav haypile-duplicate.wav haypile-error.wav; do
+  test -f "$APP/Contents/MacOS/ui_assets/sounds/$sound_file"
+done
 test -f "$APP/Contents/MacOS/assets/haypile-app-icon.png"
+test -f "$APP/Contents/MacOS/PySide6/QtMultimedia.so"
+test -f "$APP/Contents/MacOS/QtMultimedia"
+test -n "$(find "$APP/Contents/MacOS/PySide6/qt-plugins/multimedia" -type f -name 'lib*mediaplugin.dylib' -print -quit)"
+test -n "$(find "$APP" -type f -name 'libqgif.dylib' -print -quit)"
 BUILD_COMMIT="$(git rev-parse HEAD)"
 GITHUB_RUN_ID="${GITHUB_RUN_ID:-local}"
-/usr/bin/python3 -c 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps({"version":"0.3.0-alpha.6","commit":sys.argv[2],"platform":"macos-arm64","workflow_run":sys.argv[3]}, indent=2, sort_keys=True)+"\n")' \
-  "$APP/Contents/Resources/BUILD_INFO.json" "$BUILD_COMMIT" "$GITHUB_RUN_ID"
+/usr/bin/python3 -c 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.dumps({"version":sys.argv[2],"commit":sys.argv[3],"platform":"macos-arm64","workflow_run":sys.argv[4]}, indent=2, sort_keys=True)+"\n")' \
+  "$APP/Contents/Resources/BUILD_INFO.json" "$RELEASE_VERSION" "$BUILD_COMMIT" "$GITHUB_RUN_ID"
 test -f "$APP/Contents/Resources/BUILD_INFO.json"
 forbidden_runtime_path="$({
   find "$APP" -type d -name storage -print -quit
@@ -128,7 +147,7 @@ MCP_SMOKE_OUTPUT="$(printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   | "$BIN" --mcp)"
-grep -q '"version": "0.3.0-alpha.6"' <<<"$MCP_SMOKE_OUTPUT"
+grep -Fq "\"version\": \"$RELEASE_VERSION\"" <<<"$MCP_SMOKE_OUTPUT"
 
 SMOKE_ROOT="$(mktemp -d)"
 SMOKE_PORT="${HAYPILE_SMOKE_PORT:-18010}"

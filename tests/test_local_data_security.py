@@ -18,7 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from app.core.config import Settings, _ensure_private_directory
 from app.core.exceptions import register_exception_handlers
-from app.core.ipc import cleanup_unix_socket, start_ipc_listener
+from app.core.ipc import cleanup_unix_socket, get_ipc_authkey, start_ipc_listener
 from app.main import ManifestStaticFiles, app
 from app.services.asset_provenance import public_origin_url, sanitize_provenance
 from app.services.bundle_service import BundleService
@@ -125,8 +125,10 @@ class LocalDataSecurityTests(unittest.TestCase):
                 clear=False,
             ):
                 settings = Settings(_env_file=None, IPC_AUTHKEY="")
+                with patch("app.core.ipc.get_settings", return_value=settings):
+                    generated = get_ipc_authkey()
 
-            self.assertEqual(len(settings.IPC_AUTHKEY), 64)
+            self.assertEqual(len(generated), 64)
             self.assertEqual(stat.S_IMODE(secret.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(secret.stat().st_mode), 0o600)
 

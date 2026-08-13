@@ -6,7 +6,15 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$ReleaseVersion = "0.3.0-alpha.6"
+$ReleaseVersion = "0.3.0-alpha.8"
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$GitStatus = @(git -C $Root status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not inspect the Git worktree."
+}
+if ($GitStatus.Count -ne 0) {
+    throw "Release builds require a clean Git worktree; commit all intended changes first."
+}
 
 if ($env:OS -ne "Windows_NT") {
     throw "Haypile Windows builds must run on Windows."
@@ -15,7 +23,6 @@ if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString
     throw "Haypile v0.3 Windows builds require x64 Windows."
 }
 
-$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Venv = Join-Path $Root ".build-venv"
 $VenvPython = Join-Path $Venv "Scripts/python.exe"
 $DeployTool = Join-Path $Venv "Scripts/pyside6-deploy.exe"
@@ -59,6 +66,11 @@ try {
     if (-not (Test-Path $IconSource -PathType Leaf)) {
         throw "Missing Windows icon source: $IconSource"
     }
+    $PythonVersion = (& $Python -c "import platform; print(platform.python_version())").Trim()
+    Assert-LastExitCode "Could not inspect the Windows build Python."
+    if ($PythonVersion -ne "3.12.13") {
+        throw "Haypile alpha.8 release builds require Python 3.12.13."
+    }
     if (-not (Test-Path $VenvPython -PathType Leaf)) {
         if ($SkipInstall) {
             throw "Missing build environment: $VenvPython"
@@ -66,10 +78,15 @@ try {
         & $Python -m venv $Venv
         Assert-LastExitCode "Failed to create the Windows build environment."
     }
+    $VenvPythonVersion = (& $VenvPython -c "import platform; print(platform.python_version())").Trim()
+    Assert-LastExitCode "Could not inspect the Windows build environment Python."
+    if ($VenvPythonVersion -ne "3.12.13") {
+        throw "Haypile alpha.8 build environment requires Python 3.12.13."
+    }
     if (-not $SkipInstall) {
-        & $VenvPython -m pip install --quiet --upgrade pip
+        & $VenvPython -m pip install --quiet --upgrade "pip==26.2"
         Assert-LastExitCode "Failed to upgrade pip."
-        & $VenvPython -m pip install --quiet -r requirements-desktop.txt "Nuitka==4.0"
+        & $VenvPython -m pip install --quiet --constraint constraints-release.txt -r requirements-desktop.txt "Nuitka==4.0"
         Assert-LastExitCode "Failed to install Windows build dependencies."
     }
 
@@ -102,6 +119,10 @@ try {
         $Exe,
         (Join-Path $PortableDir "ui_assets/haypile-icon.png"),
         (Join-Path $PortableDir "ui_assets/drop-leaf-frame.svg"),
+        (Join-Path $PortableDir "ui_assets/sounds/haypile-nav.wav"),
+        (Join-Path $PortableDir "ui_assets/sounds/haypile-intake.wav"),
+        (Join-Path $PortableDir "ui_assets/sounds/haypile-duplicate.wav"),
+        (Join-Path $PortableDir "ui_assets/sounds/haypile-error.wav"),
         (Join-Path $PortableDir "assets/haypile-app-icon.png")
     )) {
         if (-not (Test-Path $RequiredPath -PathType Leaf)) {
@@ -110,6 +131,22 @@ try {
     }
     if (-not (Get-ChildItem $PortableDir -Filter "qwindows.dll" -File -Recurse | Select-Object -First 1)) {
         throw "Missing Qt Windows platform plugin qwindows.dll."
+    }
+    if (-not (Get-ChildItem $PortableDir -Filter "qgif.dll" -File -Recurse | Select-Object -First 1)) {
+        throw "Missing Qt GIF image plugin qgif.dll."
+    }
+    if (-not (Get-ChildItem $PortableDir -Filter "QtMultimedia.pyd" -File -Recurse | Select-Object -First 1)) {
+        throw "Missing PySide6 QtMultimedia binding."
+    }
+    if (-not (Get-ChildItem $PortableDir -Filter "Qt6Multimedia.dll" -File -Recurse | Select-Object -First 1)) {
+        throw "Missing Qt Multimedia runtime."
+    }
+    $MultimediaPluginDir = Join-Path $PortableDir "PySide6/qt-plugins/multimedia"
+    if (
+        -not (Test-Path $MultimediaPluginDir -PathType Container) -or
+        -not (Get-ChildItem $MultimediaPluginDir -Filter "*mediaplugin.dll" -File | Select-Object -First 1)
+    ) {
+        throw "Missing Qt Multimedia plugin."
     }
     $BuildInfo = [ordered]@{
         version = $ReleaseVersion

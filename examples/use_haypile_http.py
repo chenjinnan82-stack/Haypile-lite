@@ -5,12 +5,10 @@ import os
 import sys
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from typing import Any
-from uuid import uuid4
 
-from app.services.asset_provenance import sanitize_provenance
+from app.services.handoff import build_asset_handoff, build_handoff_asset
 
 BASE_URL = os.environ.get("HAYPILE_BASE_URL", "http://127.0.0.1:8010").rstrip("/")
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -44,63 +42,16 @@ def build_handoff(
     batch_id: str | None = None,
     manifest_generation: str = "",
 ) -> dict[str, Any]:
-    handoff = {
-        "handoff_version": "haypile.asset-handoff.v1",
-        "handoff_id": str(uuid4()),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "source": "haypile",
-        "base_url": BASE_URL,
-        "manifest_generation": manifest_generation,
-        "asset_count": len(bundles),
-        "total_matching": len(bundles),
-        "complete": True,
-        "next_cursor": None,
-        "assets": [_handoff_asset(bundle) for bundle in bundles],
-    }
-    if batch_id:
-        handoff["batch_id"] = batch_id
-    return handoff
+    return build_asset_handoff(
+        bundles,
+        base_url=BASE_URL,
+        batch_id=batch_id,
+        manifest_generation=manifest_generation,
+    )
 
 
 def _handoff_asset(bundle: dict[str, Any]) -> dict[str, Any]:
-    resolved_url = BASE_URL + bundle["url"]
-    public_metadata = sanitize_provenance(
-        {
-            "origin_url": bundle.get("origin_url", ""),
-            "content_type": bundle.get("content_type", ""),
-            "downloaded_at": bundle.get("downloaded_at", ""),
-            "ai_suggestions": bundle.get("ai_suggestions", {}),
-        }
-    )
-    return {
-        "id": bundle["id"],
-        "theme_id": bundle["theme_id"],
-        "type": bundle["type"],
-        "role": bundle["role"],
-        "status": bundle["status"],
-        "sha256": bundle["sha256"],
-        "source_key": bundle["source_key"],
-        "url": bundle["url"],
-        "access": bundle["access"],
-        "resolved_url": resolved_url,
-        "ai_suggestions": public_metadata.get("ai_suggestions", {}),
-        "duration_seconds": bundle.get("duration_seconds"),
-        "audio_metadata": bundle.get("audio_metadata", {}),
-        "audio_tags": bundle.get("audio_tags", {}),
-        "audio_usage": bundle.get("audio_usage", "unknown"),
-        "provenance": {
-            "source": "haypile",
-            "id": bundle["id"],
-            "sha256": bundle["sha256"],
-            "source_key": bundle["source_key"],
-            "url": bundle["url"],
-            "resolved_url": resolved_url,
-            "access": bundle["access"],
-            "origin_url": public_metadata.get("origin_url", ""),
-            "content_type": public_metadata.get("content_type", ""),
-            "downloaded_at": public_metadata.get("downloaded_at", ""),
-        },
-    }
+    return build_handoff_asset(bundle, base_url=BASE_URL)
 
 
 def main() -> int:

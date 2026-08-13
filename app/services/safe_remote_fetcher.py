@@ -16,6 +16,7 @@ from urllib.parse import SplitResult, unquote, urlparse, urlsplit
 
 from app.services.asset_provenance import public_origin_url, write_asset_provenance
 from app.services.media_types import AUDIO_CONTENT_TYPE_EXTENSIONS
+from app.services.media_validator import MAX_GIF_BYTES
 
 
 MAX_REMOTE_URLS = 20
@@ -23,6 +24,7 @@ REMOTE_CONTENT_TYPE_EXTENSIONS: dict[str, tuple[str, str]] = {
     "image/png": ("image", ".png"),
     "image/jpeg": ("image", ".jpg"),
     "image/webp": ("image", ".webp"),
+    "image/gif": ("image", ".gif"),
     "image/svg+xml": ("image", ".svg"),
     **{content_type: ("audio", extension) for content_type, extension in AUDIO_CONTENT_TYPE_EXTENSIONS.items()},
 }
@@ -64,11 +66,15 @@ def download_remote_media(
     with (opener or open_safe_remote)(url, timeout=timeout) as response:
         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if content_type not in REMOTE_CONTENT_TYPE_EXTENSIONS:
-            return None, "unsupported"
+            return None, "video_not_supported" if content_type.startswith("video/") else "unsupported"
         content_length = _content_length(response.headers.get("content-length"))
         byte_limit = max(0, int(max_bytes))
+        size_reason = "too_large"
+        if content_type == "image/gif":
+            byte_limit = min(byte_limit, MAX_GIF_BYTES)
+            size_reason = "gif_too_large"
         if content_length > byte_limit:
-            return None, "too_large"
+            return None, size_reason
 
         _kind, default_extension = REMOTE_CONTENT_TYPE_EXTENSIONS[content_type]
         destination = _destination_for(incoming_dir, url, content_type, default_extension, index)
@@ -90,7 +96,7 @@ def download_remote_media(
                     total += len(chunk)
                     if total > byte_limit:
                         destination.unlink(missing_ok=True)
-                        return None, "too_large"
+                        return None, size_reason
                     target.write(chunk)
                 target.flush()
                 os.fsync(target.fileno())
@@ -336,7 +342,7 @@ def open_safe_remote(
             target.request_target,
             headers={
                 "Host": target.host_header,
-                "Accept": "image/png,image/jpeg,image/webp,image/svg+xml,audio/*;q=0.9",
+                "Accept": "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,audio/*;q=0.9",
                 "Connection": "close",
                 "User-Agent": "Haypile/0.3",
             },

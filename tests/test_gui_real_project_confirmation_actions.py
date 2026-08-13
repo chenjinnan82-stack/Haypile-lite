@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -9,19 +10,30 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from PIL import Image
 
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("IPC_AUTHKEY", "test-ipc-authkey")
     from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
-    from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QMouseEvent, QPixmap
+    from PySide6.QtGui import (
+        QDragEnterEvent,
+        QDragLeaveEvent,
+        QDragMoveEvent,
+        QDropEvent,
+        QMouseEvent,
+        QPainter,
+        QPixmap,
+    )
     from PySide6.QtTest import QSignalSpy, QTest
     from PySide6.QtWidgets import QApplication
 
     import app_gui as app_gui_module
+    from app.services import experimental_project_summary as experimental_summary_module
     from app.services.asset_provenance import read_asset_provenance, write_asset_provenance
-    from app.services.material_summary import MaterialPanelSummary, MaterialSummaryItem
+    from app.services.experimental_project_summary import MaterialPanelSummary, MaterialSummaryItem
     from app.services.style_classifier import StyleClassificationResult
     from app_gui import MaterialPanelWindow, QuickMenuWindow
 except ImportError as exc:  # pragma: no cover - depends on optional GUI runtime
@@ -145,26 +157,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             panel.close()
 
-    def test_browser_temp_cleanup_removes_sidecar_and_only_stale_files(self) -> None:
-        storage = self.tmpdir / "storage"
-        incoming = storage / "incoming/browser"
-        incoming.mkdir(parents=True)
-        stale = incoming / "stale.png"
-        recent = incoming / "recent.png"
-        stale.write_bytes(b"stale")
-        recent.write_bytes(b"recent")
-        write_asset_provenance(stale, {"origin_url": "https://stale.example/a.png"})
-        old = time.time() - 25 * 60 * 60
-        os.utime(stale, (old, old))
-        os.utime(stale.with_name(stale.name + ".provenance.json"), (old, old))
-        dummy = SimpleNamespace(settings=SimpleNamespace(STORAGE_DIR=storage))
-
-        app_gui_module.HaypileFloatingBall._cleanup_stale_browser_downloads(dummy)
-
-        self.assertFalse(stale.exists())
-        self.assertFalse(stale.with_name(stale.name + ".provenance.json").exists())
-        self.assertTrue(recent.exists())
-
     def test_remote_ingest_cleanup_removes_owned_file_and_sidecar(self) -> None:
         downloaded = self.tmpdir / "incoming/browser/audio.mp3"
         downloaded.parent.mkdir(parents=True)
@@ -178,6 +170,718 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         self.assertFalse(downloaded.exists())
         self.assertFalse(downloaded.with_name(downloaded.name + ".provenance.json").exists())
         self.assertEqual(dummy._remote_ingest_paths, set())
+
+    def test_clipboard_diagnostics_reports_metadata_without_values_or_paths(self) -> None:
+        local = self.tmpdir / "private-name.gif"
+        local.write_bytes(b"local")
+        mime_data = QMimeData()
+        mime_data.setUrls(
+            [
+                QUrl.fromLocalFile(str(local)),
+                QUrl("https://private.example/asset.gif?token=secret"),
+            ]
+        )
+        mime_data.setText("https://private.example/asset.gif?token=secret")
+        mime_data.setData("application/x-haypile-test", b"secret-payload")
+
+        report = app_gui_module.clipboard_mime_diagnostics(mime_data)
+
+        self.assertEqual(
+            set(report),
+            {
+                "diagnostic_version",
+                "platform",
+                "format_count",
+                "formats",
+                "has_urls",
+                "has_html",
+                "has_text",
+                "has_image",
+                "local_file_count",
+                "remote_url_count",
+                "raw_gif_byte_count",
+                "ingest_route",
+            },
+        )
+        self.assertEqual(report["local_file_count"], 1)
+        self.assertEqual(report["remote_url_count"], 1)
+        self.assertEqual(report["ingest_route"], "local_files_and_remote_urls")
+        formats = {
+            item["name"]: item["byte_length"]
+            for item in report["formats"]
+        }
+        self.assertEqual(
+            formats["application/x-haypile-test"],
+            len(b"secret-payload"),
+        )
+        serialized = json.dumps(report, ensure_ascii=False)
+        self.assertNotIn(local.as_posix(), serialized)
+        self.assertNotIn("private.example", serialized)
+        self.assertNotIn("secret-payload", serialized)
+        self.assertNotIn("token=secret", serialized)
+
+    def test_clipboard_diagnostics_matches_ingest_priority(self) -> None:
+        raw_gif = QMimeData()
+        raw_gif.setData("image/gif", b"GIF89a")
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(raw_gif)["ingest_route"],
+            "raw_gif",
+        )
+
+        remote_image = QMimeData()
+        remote_image.setText("https://cdn.example/asset.gif")
+        image = QPixmap(2, 2)
+        image.fill(Qt.GlobalColor.transparent)
+        remote_image.setImageData(image.toImage())
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(remote_image)["ingest_route"],
+            "remote_url_with_static_png_fallback",
+        )
+
+        static_image = QMimeData()
+        static_image.setImageData(image.toImage())
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(static_image)["ingest_route"],
+            "static_png",
+        )
+
+        empty_gif = QMimeData()
+        empty_gif.setData("image/gif", b"")
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(empty_gif)["ingest_route"],
+            "empty_gif",
+        )
+        self.assertEqual(
+            app_gui_module.clipboard_mime_diagnostics(QMimeData())["ingest_route"],
+            "unsupported",
+        )
+
+    def test_clipboard_diagnostics_cli_does_not_initialize_storage(self) -> None:
+        expected = {
+            "diagnostic_version": "haypile.clipboard-diagnostics.v1",
+            "ingest_route": "unsupported",
+        }
+        with (
+            patch.object(
+                app_gui_module,
+                "clipboard_mime_diagnostics",
+                return_value=expected,
+            ) as diagnose,
+            patch.object(
+                app_gui_module,
+                "get_settings",
+                side_effect=AssertionError("storage must not initialize"),
+            ),
+            patch("builtins.print") as print_mock,
+        ):
+            result = app_gui_module.main(["--clipboard-diagnostics"])
+
+        self.assertEqual(result, 0)
+        diagnose.assert_called_once()
+        self.assertEqual(json.loads(print_mock.call_args.args[0]), expected)
+
+    def test_desktop_main_shows_window_before_backend_and_waits_for_both_shutdown_sides(self) -> None:
+        events: list[str] = []
+        scheduled: list[object] = []
+        instances: dict[str, object] = {}
+
+        class FakeSignal:
+            def __init__(self) -> None:
+                self.callbacks = []
+
+            def connect(self, callback) -> None:
+                self.callbacks.append(callback)
+
+            def emit(self, *args) -> None:
+                for callback in list(self.callbacks):
+                    callback(*args)
+
+        class FakeWidget:
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
+                self.shutdown_requested = FakeSignal()
+                self.shutdown_ready = FakeSignal()
+                instances["widget"] = self
+
+            def show(self) -> None:
+                events.append("window_shown")
+
+            def shutdown(self) -> None:
+                events.append("window_shutdown")
+
+            def complete_shutdown(self) -> None:
+                events.append("window_completed")
+
+            def apply_desktop_runtime(self, result) -> bool:
+                events.append("runtime_applied")
+                return bool(result.storage_ready)
+
+            def prepare_sound_feedback(self) -> int:
+                events.append("sound_prepared")
+                return 4
+
+            def _on_backend_notice(self, _code, _details) -> None:
+                pass
+
+            def _on_backend_phase_changed(self, _phase) -> None:
+                pass
+
+        class FakeBackend:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.stopped = FakeSignal()
+                self.notice = FakeSignal()
+                self.phase_changed = FakeSignal()
+                self._stopped = True
+                instances["backend"] = self
+
+            @property
+            def is_stopped(self) -> bool:
+                return self._stopped
+
+            def start(self) -> None:
+                self._stopped = False
+                events.append("backend_started")
+
+            def stop(self) -> None:
+                events.append("backend_stop_requested")
+
+        class FakeApplication:
+            backend_first = False
+
+            def __init__(self, _args) -> None:
+                self.aboutToQuit = FakeSignal()
+                instances["app"] = self
+
+            def setQuitOnLastWindowClosed(self, enabled: bool) -> None:
+                events.append(f"quit_on_last:{enabled}")
+
+            def exec(self) -> int:
+                self.assert_before_start()
+                scheduled.pop(0)()
+                widget = instances["widget"]
+                backend = instances["backend"]
+                widget.shutdown_requested.emit()
+                if self.backend_first:
+                    backend._stopped = True
+                    backend.stopped.emit()
+                    self.assert_waiting_for_other_side()
+                    widget.shutdown_ready.emit()
+                else:
+                    widget.shutdown_ready.emit()
+                    self.assert_waiting_for_other_side()
+                    backend._stopped = True
+                    backend.stopped.emit()
+                return 0
+
+            @staticmethod
+            def assert_before_start() -> None:
+                if events != [
+                    "lock_acquired:0.1",
+                    "quit_on_last:False",
+                    "window_shown",
+                ]:
+                    raise AssertionError(events)
+
+            @staticmethod
+            def assert_waiting_for_other_side() -> None:
+                if "window_completed" in events:
+                    raise AssertionError("window completed before both sides were ready")
+
+        class FakeLock:
+            def acquire(self, *, timeout: float) -> bool:
+                events.append(f"lock_acquired:{timeout}")
+                return True
+
+            def release(self) -> None:
+                events.append("lock_released")
+
+        settings = SimpleNamespace(
+            INDEX_DIR=self.tmpdir / "index",
+            LOG_DIR=self.tmpdir / "logs",
+            BASE_DIR=self.tmpdir,
+        )
+        with (
+            patch.object(app_gui_module, "get_settings", return_value=settings),
+            patch.object(
+                app_gui_module,
+                "configure_packaged_logging",
+                side_effect=lambda *_args: events.append("logging_configured"),
+            ),
+            patch.object(app_gui_module, "InterProcessFileLock", return_value=FakeLock()),
+            patch.object(app_gui_module, "read_desktop_gui_state", return_value={"language": "zh"}),
+            patch.object(
+                app_gui_module,
+                "prepare_desktop_runtime",
+                side_effect=lambda _settings, _state: app_gui_module.DesktopStartupResult(
+                    storage_ready=True,
+                ),
+            ),
+            patch.object(app_gui_module, "QApplication", FakeApplication),
+            patch.object(app_gui_module, "HaypileFloatingBall", FakeWidget),
+            patch.object(app_gui_module, "BackendRuntimeController", FakeBackend),
+            patch.object(
+                app_gui_module.QTimer,
+                "singleShot",
+                side_effect=lambda _delay, callback: scheduled.append(callback),
+            ),
+        ):
+            for backend_first in (False, True):
+                events.clear()
+                scheduled.clear()
+                instances.clear()
+                FakeApplication.backend_first = backend_first
+
+                result = app_gui_module.main([])
+
+                self.assertEqual(result, 0)
+                self.assertEqual(
+                    events[:3],
+                    ["lock_acquired:0.1", "quit_on_last:False", "window_shown"],
+                )
+                self.assertLess(
+                    events.index("window_shown"),
+                    events.index("sound_prepared"),
+                )
+                self.assertLess(
+                    events.index("sound_prepared"),
+                    events.index("logging_configured"),
+                )
+                self.assertLess(
+                    events.index("logging_configured"),
+                    events.index("runtime_applied"),
+                )
+                self.assertLess(
+                    events.index("runtime_applied"),
+                    events.index("backend_started"),
+                )
+                self.assertLess(
+                    events.index("backend_stop_requested"),
+                    events.index("window_completed"),
+                )
+                self.assertEqual(events.count("window_completed"), 1)
+                self.assertEqual(events[-1], "lock_released")
+                self.assertEqual(len(scheduled), 1)
+                widget = instances["widget"]
+                self.assertIs(widget.kwargs["settings"], settings)
+                self.assertEqual(widget.kwargs["initial_state"], {"language": "zh"})
+                self.assertTrue(widget.kwargs["deferred_runtime"])
+                self.assertTrue(widget.kwargs["managed_shutdown"])
+
+    def test_desktop_main_storage_failure_and_early_close_skip_backend_start(self) -> None:
+        def run_case(*, lock_fails: bool, close_before_hydrate: bool) -> list[str]:
+            events: list[str] = []
+            scheduled: list[object] = []
+            instances: dict[str, object] = {}
+
+            class FakeSignal:
+                def __init__(self) -> None:
+                    self.callbacks = []
+
+                def connect(self, callback) -> None:
+                    self.callbacks.append(callback)
+
+                def emit(self, *args) -> None:
+                    for callback in list(self.callbacks):
+                        callback(*args)
+
+            class FakeWidget:
+                def __init__(self, **_kwargs) -> None:
+                    self.shutdown_requested = FakeSignal()
+                    self.shutdown_ready = FakeSignal()
+                    instances["widget"] = self
+
+                def show(self) -> None:
+                    events.append("window_shown")
+
+                def shutdown(self) -> None:
+                    pass
+
+                def complete_shutdown(self) -> None:
+                    events.append("window_completed")
+
+                def apply_desktop_runtime(self, result) -> bool:
+                    events.append(f"runtime_ready:{result.storage_ready}")
+                    return bool(result.storage_ready)
+
+                def prepare_sound_feedback(self) -> int:
+                    events.append("sound_prepared")
+                    return 4
+
+                def _on_backend_notice(self, _code, _details) -> None:
+                    pass
+
+                def _on_backend_phase_changed(self, _phase) -> None:
+                    pass
+
+            class FakeBackend:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    self.stopped = FakeSignal()
+                    self.notice = FakeSignal()
+                    self.phase_changed = FakeSignal()
+                    instances["backend"] = self
+
+                @property
+                def is_stopped(self) -> bool:
+                    return True
+
+                def start(self) -> None:
+                    events.append("backend_started")
+
+                def stop(self) -> None:
+                    events.append("backend_stop_requested")
+
+            class FakeApplication:
+                def __init__(self, _args) -> None:
+                    self.aboutToQuit = FakeSignal()
+
+                def setQuitOnLastWindowClosed(self, _enabled: bool) -> None:
+                    pass
+
+                def exec(self) -> int:
+                    widget = instances["widget"]
+                    if close_before_hydrate:
+                        widget.shutdown_requested.emit()
+                        widget.shutdown_ready.emit()
+                        scheduled.pop(0)()
+                    else:
+                        scheduled.pop(0)()
+                        widget.shutdown_requested.emit()
+                        widget.shutdown_ready.emit()
+                    return 0
+
+            class FakeLock:
+                def acquire(self, *, timeout: float) -> bool:
+                    self.timeout = timeout
+                    if lock_fails:
+                        raise OSError("storage blocked")
+                    return True
+
+                def release(self) -> None:
+                    events.append("lock_released")
+
+            settings = SimpleNamespace(
+                INDEX_DIR=self.tmpdir / "index",
+                LOG_DIR=self.tmpdir / "logs",
+                BASE_DIR=self.tmpdir,
+            )
+            prepare = Mock(
+                return_value=app_gui_module.DesktopStartupResult(
+                    storage_ready=True,
+                )
+            )
+            with (
+                patch.object(app_gui_module, "get_settings", return_value=settings),
+                patch.object(app_gui_module, "configure_packaged_logging"),
+                patch.object(app_gui_module, "InterProcessFileLock", return_value=FakeLock()),
+                patch.object(app_gui_module, "read_desktop_gui_state", return_value={}),
+                patch.object(app_gui_module, "prepare_desktop_runtime", prepare),
+                patch.object(app_gui_module, "QApplication", FakeApplication),
+                patch.object(app_gui_module, "HaypileFloatingBall", FakeWidget),
+                patch.object(app_gui_module, "BackendRuntimeController", FakeBackend),
+                patch.object(
+                    app_gui_module.QTimer,
+                    "singleShot",
+                    side_effect=lambda _delay, callback: scheduled.append(callback),
+                ),
+            ):
+                self.assertEqual(app_gui_module.main([]), 0)
+
+            prepare.assert_not_called()
+            return events
+
+        storage_failure = run_case(
+            lock_fails=True,
+            close_before_hydrate=False,
+        )
+        early_close = run_case(
+            lock_fails=False,
+            close_before_hydrate=True,
+        )
+
+        self.assertIn("runtime_ready:False", storage_failure)
+        self.assertNotIn("backend_started", storage_failure)
+        self.assertNotIn("lock_released", storage_failure)
+        self.assertNotIn("runtime_ready:True", early_close)
+        self.assertNotIn("backend_started", early_close)
+        self.assertIn("lock_released", early_close)
+
+    def test_clipboard_raw_gif_runs_real_ingest_and_cleans_temp_file(self) -> None:
+        storage = self.tmpdir / "storage"
+        assets = storage / "assets"
+        index = storage / "index"
+        themes = storage / "themes"
+        environment = {
+            "STORAGE_DIR": storage.as_posix(),
+            "ASSETS_DIR": assets.as_posix(),
+            "INDEX_DIR": index.as_posix(),
+            "THEMES_DIR": themes.as_posix(),
+            "MANIFEST_PATH": (index / "assets_manifest.json").as_posix(),
+            "VISION_CLASSIFIER_ENABLED": "0",
+            "VISION_FALLBACK_THEME": "generic",
+        }
+        first = Image.new("RGBA", (4, 4), (255, 0, 0, 255))
+        second = Image.new("RGBA", (4, 4), (0, 255, 0, 255))
+        output = io.BytesIO()
+        first.save(
+            output,
+            format="GIF",
+            save_all=True,
+            append_images=[second],
+            duration=[100, 200],
+            loop=0,
+            optimize=False,
+        )
+        payload = output.getvalue()
+        expected_hash = hashlib.sha256(payload).hexdigest()
+        materialized: list[tuple[Path, int]] = []
+        ball = None
+        with patch.dict(os.environ, environment, clear=False):
+            app_gui_module.get_settings.cache_clear()
+            try:
+                ball = app_gui_module.HaypileFloatingBall()
+                ball.ai_enabled = False
+                original_write = ball._write_clipboard_bytes
+
+                def record_write(raw_payload: bytes, suffix: str) -> Path:
+                    path = original_write(raw_payload, suffix)
+                    materialized.append((path, path.stat().st_mode & 0o777))
+                    return path
+
+                ball._write_clipboard_bytes = record_write
+                ball._start_remote_download_worker = lambda *_args, **_kwargs: self.fail(
+                    "raw GIF should not use remote download"
+                )
+                mime_data = QMimeData()
+                mime_data.setData("image/gif", payload)
+                mime_data.setText("https://cdn.example.com/fallback.gif")
+
+                with patch.object(
+                    app_gui_module.IngestWorker,
+                    "start",
+                    lambda worker: worker.run(),
+                ):
+                    ball._ingest_clipboard_data(mime_data)
+
+                manifest = json.loads(
+                    (index / "assets_manifest.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(len(manifest), 1)
+                item = next(iter(manifest.values()))
+                self.assertEqual(item["content_type"], "image/gif")
+                self.assertEqual(item["frame_count"], 2)
+                self.assertEqual(item["duration_seconds"], 0.3)
+                stored = next(assets.rglob("*.gif"))
+                self.assertEqual(stored.read_bytes(), payload)
+                self.assertEqual(hashlib.sha256(stored.read_bytes()).hexdigest(), expected_hash)
+                self.assertEqual(len(materialized), 1)
+                self.assertFalse(materialized[0][0].exists())
+                self.assertEqual(ball._remote_ingest_paths, set())
+                self.assertEqual(ball._active_ingest_visual_kind, "gif")
+                self.assertTrue(ball._gif_open_timer.isActive())
+                self.assertIsNotNone(ball._pending_ingest_finish)
+                if os.name != "nt":
+                    self.assertEqual(materialized[0][1], 0o600)
+            finally:
+                if ball is not None:
+                    ball.close()
+                    self.app.processEvents()
+                app_gui_module.get_settings.cache_clear()
+
+    def test_clipboard_routes_files_and_urls_through_existing_ingest_paths(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        local = self.tmpdir / "local.gif"
+        local.write_bytes(b"local")
+        received: list[list[Path]] = []
+        remote: list[tuple[list[str], list[Path]]] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball._start_remote_download_worker = (
+            lambda urls, local_files=None: remote.append((urls, local_files or []))
+        )
+        try:
+            local_mime = QMimeData()
+            local_mime.setUrls([QUrl.fromLocalFile(str(local))])
+            local_mime.setData("image/gif", b"ignored")
+            ball._ingest_clipboard_data(local_mime)
+            self.assertEqual(received, [[local]])
+
+            url_mime = QMimeData()
+            url_mime.setText("https://cdn.example.com/asset.gif")
+            ball._ingest_clipboard_data(url_mime)
+            self.assertEqual(remote, [(["https://cdn.example.com/asset.gif"], [])])
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_clipboard_empty_gif_mime_with_url_uses_remote_download(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        received: list[list[Path]] = []
+        remote: list[list[str]] = []
+        messages: list[str] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball._start_remote_download_worker = lambda urls, local_files=None: remote.append(urls)
+        ball.show_toast = lambda message, tone: messages.append(message)
+        mime_data = QMimeData()
+        mime_data.setData("image/gif", b"")
+        mime_data.setText("https://cdn.example.com/asset.gif")
+        try:
+            self.assertTrue(mime_data.hasFormat("image/gif"))
+            ball._ingest_clipboard_data(mime_data)
+
+            self.assertEqual(remote, [["https://cdn.example.com/asset.gif"]])
+            self.assertEqual(received, [])
+            self.assertFalse(any("GIF 为空" in message for message in messages))
+            self.assertEqual(ball._remote_ingest_paths, set())
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_clipboard_static_png_is_used_only_when_remote_download_fails(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        original_settings = ball.settings
+        ball.settings = SimpleNamespace(STORAGE_DIR=self.tmpdir / "storage")
+        received: list[list[Path]] = []
+        remote: list[tuple[list[str], Path | None]] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball._start_remote_download_worker = (
+            lambda urls, local_files=None, *, fallback_file=None: remote.append(
+                (urls, fallback_file)
+            )
+        )
+        image = QPixmap(2, 2)
+        image.fill(Qt.GlobalColor.transparent)
+        mime_data = QMimeData()
+        mime_data.setText("https://cdn.example.com/asset.gif")
+        mime_data.setImageData(image.toImage())
+        try:
+            ball._ingest_clipboard_data(mime_data)
+
+            self.assertEqual(len(remote), 1)
+            fallback = remote[0][1]
+            self.assertIsNotNone(fallback)
+            self.assertEqual(received, [])
+            self.assertTrue(fallback.is_file())
+            self.assertIn(fallback, ball._remote_ingest_paths)
+
+            downloaded = self.tmpdir / "downloaded.gif"
+            downloaded.write_bytes(b"downloaded")
+            ball._on_remote_download_finished(
+                [downloaded],
+                "downloaded",
+                True,
+                [],
+                fallback,
+            )
+            self.assertEqual(received, [[downloaded]])
+            self.assertFalse(fallback.exists())
+            self.assertNotIn(fallback, ball._remote_ingest_paths)
+            ball._cleanup_remote_ingest_paths()
+            received.clear()
+
+            ball._ingest_clipboard_data(mime_data)
+            fallback = remote[-1][1]
+            self.assertIsNotNone(fallback)
+            ball._on_remote_download_finished(
+                [],
+                "remote failed",
+                False,
+                [],
+                fallback,
+            )
+
+            self.assertEqual(received, [[fallback]])
+            stored = QPixmap(str(fallback)).toImage()
+            self.assertFalse(stored.isNull())
+            self.assertEqual(stored.pixelColor(0, 0).alpha(), 0)
+            ball._cleanup_remote_ingest_paths()
+            self.assertFalse(fallback.exists())
+        finally:
+            ball.settings = original_settings
+            ball.close()
+            self.app.processEvents()
+
+    def test_clipboard_static_image_is_explicit_png_fallback_and_is_cleaned(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        original_settings = ball.settings
+        ball.settings = SimpleNamespace(STORAGE_DIR=self.tmpdir / "storage")
+        received: list[list[Path]] = []
+        messages: list[tuple[str, str]] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball.show_toast = lambda message, tone: messages.append((message, tone))
+        image = QPixmap(2, 2)
+        image.fill(Qt.GlobalColor.transparent)
+        mime_data = QMimeData()
+        mime_data.setImageData(image.toImage())
+        try:
+            ball._ingest_clipboard_data(mime_data)
+
+            path = received[0][0]
+            stored = QPixmap(str(path)).toImage()
+            self.assertEqual(path.suffix, ".png")
+            self.assertFalse(stored.isNull())
+            self.assertEqual(stored.pixelColor(0, 0).alpha(), 0)
+            self.assertIn("将按 PNG 收纳", messages[-1][0])
+            self.assertEqual(messages[-1][1], "progress")
+
+            ball._cleanup_remote_ingest_paths()
+            self.assertFalse(path.exists())
+        finally:
+            ball.settings = original_settings
+            ball.close()
+            self.app.processEvents()
+
+    def test_clipboard_busy_and_oversize_gif_leave_no_temp_file(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        original_settings = ball.settings
+        storage_dir = self.tmpdir / "storage"
+        ball.settings = SimpleNamespace(STORAGE_DIR=storage_dir)
+        received: list[list[Path]] = []
+        messages: list[tuple[str, str]] = []
+        ball._start_worker = lambda files: received.append(files)
+        ball.show_toast = lambda message, tone: messages.append((message, tone))
+        mime_data = QMimeData()
+        mime_data.setData("image/gif", b"GIF89a")
+        try:
+            ball.worker = SimpleNamespace(isRunning=lambda: False)
+            ball._ingest_clipboard_data(mime_data)
+            self.assertIn("正在入库", messages[-1][0])
+            self.assertFalse((storage_dir / "incoming/browser").exists())
+
+            ball.worker = None
+            with patch.object(app_gui_module, "MAX_GIF_BYTES", 3):
+                ball._ingest_clipboard_data(mime_data)
+            self.assertEqual(received, [])
+            self.assertIn("50MB", messages[-1][0])
+            self.assertFalse((storage_dir / "incoming/browser").exists())
+
+            with (
+                patch.object(app_gui_module.os, "fsync", side_effect=OSError("disk error")),
+                patch.object(app_gui_module.logger, "exception"),
+            ):
+                ball._ingest_clipboard_data(mime_data)
+            self.assertEqual(received, [])
+            self.assertIn("无法保存", messages[-1][0])
+            self.assertEqual(list((storage_dir / "incoming/browser").iterdir()), [])
+        finally:
+            ball.settings = original_settings
+            ball.close()
+            self.app.processEvents()
+
+    def test_quick_menu_exposes_clipboard_ingest_action(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        invoked: list[bool] = []
+        ball._ingest_clipboard = lambda: invoked.append(True)
+        try:
+            self.assertNotIn("paste_ingest", ball.quick_menu._detail_buttons)
+            self.assertEqual(
+                ball.material_panel.paste_ingest_button.text(),
+                "从剪贴板收纳",
+            )
+            self.assertFalse(ball.material_panel.paste_ingest_button.isHidden())
+            ball.material_panel.paste_ingest_button.click()
+            self.assertEqual(invoked, [True])
+        finally:
+            ball.close()
+            self.app.processEvents()
 
     def test_project_picker_handoff_refresh_populates_existing_confirmation_preview(self) -> None:
         project_root = self.tmpdir / "signal-pool-demo"
@@ -201,8 +905,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             project_picker_status_line="Project Picker：已读取 /tmp/picker.json",
             project_picker_tooltip="Project Picker preview",
         )
-        previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.build_material_panel_summary = lambda: summary
+        previous_builder = experimental_summary_module.build_material_panel_summary
+        experimental_summary_module.build_material_panel_summary = lambda **_kwargs: summary
         panel = MaterialPanelWindow()
         try:
             panel.refresh()
@@ -224,7 +928,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel.confirmation_preview._action, "reapply")
             self.assertEqual(panel.confirmation_preview._project_root, project_root.as_posix())
         finally:
-            app_gui_module.build_material_panel_summary = previous_builder
+            experimental_summary_module.build_material_panel_summary = previous_builder
             panel.confirmation_preview.close()
             panel.close()
 
@@ -250,11 +954,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
         previous_builder = app_gui_module.build_material_panel_summary
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
             {
+                "list_bundles": lambda _self, **_filters: [],
                 "get_bundle": lambda _self, _bundle_id: {
                     "id": "hero",
                     "theme_id": "generic",
@@ -281,13 +986,19 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         try:
             QApplication.clipboard().clear()
             panel.refresh()
-            point = panel.item_labels[0].rect().center()
-            event = QMouseEvent(QEvent.Type.MouseButtonPress, point, point, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
-
-            panel._select_recent_item(0, event)
+            panel.show()
+            panel.item_labels[0].setFocus()
+            for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+                panel._selected_bundle_id = ""
+                panel.item_labels[0].setChecked(False)
+                QTest.keyClick(panel.item_labels[0], key)
+                self.app.processEvents()
+                self.assertEqual(panel._selected_bundle_id, "hero")
+                self.assertTrue(panel.item_labels[0].isChecked())
 
             self.assertEqual(QApplication.clipboard().text(), "")
-            self.assertEqual(panel._selected_bundle_id, "hero")
+            self.assertEqual(panel.item_labels[0].accessibleName(), "hero.png")
+            self.assertIn("可用", panel.item_labels[0].accessibleDescription())
             self.assertIn("handoff 可复制", panel.detail_label.text())
             panel._copy_selected_handoff()
 
@@ -307,7 +1018,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("AI high · 主视觉 · 适合作为主视觉。", panel.detail_label.text())
             self.assertIn("origin https://cdn.example.com", panel.detail_label.text())
             self.assertIn("provenance 已包含", panel.detail_label.text())
-            self.assertIn("border: 2px solid #C8A24A", panel.item_labels[0].styleSheet())
+            self.assertTrue(panel.item_labels[0].isChecked())
             self.assertFalse(panel.retry_ai_button.isHidden())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
@@ -453,13 +1164,20 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         previous_bundle_service = app_gui_module.BundleService
         previous_ai_worker = app_gui_module.AIRefreshWorker
         previous_panel_ai_enabled = MaterialPanelWindow._panel_ai_enabled
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type("FakeBundleService", (), {"get_bundle": lambda _self, _id: dict(bundle)})()
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
+            "FakeBundleService",
+            (),
+            {
+                "list_bundles": lambda _self, **_filters: [],
+                "get_bundle": lambda _self, _id: dict(bundle),
+            },
+        )()
         app_gui_module.AIRefreshWorker = FakeWorker
         MaterialPanelWindow._panel_ai_enabled = staticmethod(lambda: True)
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             QApplication.clipboard().clear()
             panel.refresh()
@@ -471,7 +1189,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("model_call_failed", panel.detail_label.text())
             self.assertIn("AI 分拣未得到模型结果：model_call_failed", panel.detail_label.text())
             self.assertTrue(panel.retry_ai_button.isEnabled())
-            self.assertEqual(toasts, [("AI 分拣未得到模型结果：model_call_failed", False)])
+            self.assertEqual(toasts, [("AI 分拣未得到模型结果：model_call_failed", "error")])
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -527,8 +1245,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         previous_bundle_service = app_gui_module.BundleService
         previous_ai_worker = app_gui_module.AIRefreshWorker
         previous_panel_ai_enabled = MaterialPanelWindow._panel_ai_enabled
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type("FakeBundleService", (), {"get_bundle": lambda _self, bundle_id: dict(bundles[bundle_id])})()
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
+            "FakeBundleService",
+            (),
+            {
+                "list_bundles": lambda _self, **_filters: [],
+                "get_bundle": lambda _self, bundle_id: dict(bundles[bundle_id]),
+            },
+        )()
         app_gui_module.AIRefreshWorker = FakeWorker
         MaterialPanelWindow._panel_ai_enabled = staticmethod(lambda: True)
         panel = MaterialPanelWindow()
@@ -564,13 +1289,49 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             recognition_status="分类：可用",
         )
         previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.build_material_panel_summary = lambda: summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         panel = MaterialPanelWindow()
+        panel._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [],
+            theme_recoveries=[],
+        )
         try:
             panel.refresh()
 
-            self.assertEqual(panel.detail_label.text(), "拖入图片或音频开始收纳")
+            self.assertEqual(
+                panel.empty_state_label.text(),
+                "草窝还空着\n拖入图片、GIF 或音频开始收纳",
+            )
+            self.assertFalse(panel.empty_state_label.isHidden())
+            self.assertTrue(panel.detail_label.isHidden())
             self.assertFalse(panel.copy_ready_button.isVisible())
+        finally:
+            app_gui_module.build_material_panel_summary = previous_builder
+            panel.close()
+
+    def test_embedded_empty_state_points_to_drag_and_clipboard_intake(self) -> None:
+        summary = MaterialPanelSummary(
+            total_count=0,
+            recognized_count=0,
+            pending_count=0,
+            service_status="Haypile：等待入库",
+            recognition_status="分类：可用",
+        )
+        previous_builder = app_gui_module.build_material_panel_summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        panel = MaterialPanelWindow(embedded=True)
+        panel._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [],
+            get_latest_batch=lambda: None,
+            theme_recoveries=[],
+        )
+        try:
+            panel.refresh()
+
+            self.assertIn("图片、GIF 或音频", panel.empty_state_label.text())
+            self.assertIn("剪贴板", panel.empty_state_label.text())
+            self.assertFalse(panel.empty_state_label.isHidden())
+            self.assertFalse(panel.paste_ingest_button.isHidden())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             panel.close()
@@ -585,8 +1346,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             recognition_status="Classifier: ready",
         )
         previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.build_material_panel_summary = lambda: summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         panel = MaterialPanelWindow()
+        panel._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [],
+            theme_recoveries=[],
+        )
         try:
             panel.refresh()
 
@@ -595,7 +1360,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel.filter_buttons["pending"].text(), "Pending")
             self.assertEqual(panel.filter_buttons["image"].text(), "Images")
             self.assertEqual(panel.search_input.placeholderText(), "Search file, role, status")
-            self.assertEqual(panel.detail_label.text(), "Drop images or audio to start storing")
+            self.assertEqual(
+                panel.empty_state_label.text(),
+                "The nest is empty\nDrop an image, GIF, or audio file to start storing",
+            )
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             panel.close()
@@ -670,15 +1438,18 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         }
         previous_builder = app_gui_module.build_material_panel_summary
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
-            {"get_bundle": lambda _self, bundle_id: bundles[bundle_id]},
+            {
+                "list_bundles": lambda _self, **_filters: list(bundles.values()),
+                "get_bundle": lambda _self, bundle_id: bundles[bundle_id],
+            },
         )()
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             QApplication.clipboard().clear()
             panel.refresh()
@@ -699,8 +1470,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("Winter Ridge", panel.detail_label.text())
             self.assertFalse(panel.audio_usage_row.isHidden())
             self.assertTrue(panel.role_row.isHidden())
-            self.assertIn("border: 2px solid #C8A24A", panel.item_labels[0].styleSheet())
-            self.assertNotIn("border: 2px solid #C8A24A", panel.item_labels[1].styleSheet())
+            self.assertTrue(panel.item_labels[0].isChecked())
+            self.assertFalse(panel.item_labels[1].isChecked())
             self.assertEqual(toasts, [])
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
@@ -754,11 +1525,21 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         }
         previous_builder = app_gui_module.build_material_panel_summary
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.build_material_panel_summary = lambda: summary
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
-            {"get_bundle": lambda _self, bundle_id: {**bundles[bundle_id], "theme_id": "generic", "sha256": "", "url": "", "access": "manifest_static", "source_key": ""}},
+            {
+                "list_bundles": lambda _self, **_filters: [],
+                "get_bundle": lambda _self, bundle_id: {
+                    **bundles[bundle_id],
+                    "theme_id": "generic",
+                    "sha256": "",
+                    "url": "",
+                    "access": "manifest_static",
+                    "source_key": "",
+                },
+            },
         )()
         panel = MaterialPanelWindow()
         try:
@@ -791,7 +1572,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             panel.search_input.setText("不存在")
             self._wait_for_search_refresh(panel)
-            self.assertEqual(panel.detail_label.text(), "没有匹配资源")
+            self.assertIn("没有匹配素材", panel.empty_state_label.text())
+            self.assertFalse(panel.empty_state_label.isHidden())
+            self.assertTrue(panel.detail_label.isHidden())
             self.assertTrue(panel.item_labels[0].isHidden())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
@@ -822,6 +1605,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
 
         class FakeBundleService:
+            def __init__(self, **_kwargs):
+                pass
+
+            def list_bundles(self, **_filters):
+                return []
+
             def get_bundle(self, bundle_id):
                 return {
                     "id": bundle_id,
@@ -837,7 +1626,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
         previous_builder = app_gui_module.build_material_panel_summary
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.build_material_panel_summary = lambda: summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         app_gui_module.BundleService = FakeBundleService
         panel = MaterialPanelWindow()
         try:
@@ -867,6 +1656,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel._page_index, 0)
             self.assertTrue(panel.page_row.isHidden())
             self.assertIn("asset-1.png", panel.item_labels[0].text())
+            self.assertFalse(panel.item_labels[0].isChecked())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -908,6 +1698,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         previous_bundle_service = app_gui_module.BundleService
 
         class FakeBundleService:
+            def __init__(self, **_kwargs):
+                pass
+
+            def list_bundles(self, **_filters):
+                return []
+
             def get_bundle(self, _bundle_id):
                 return dict(bundle_state)
 
@@ -916,11 +1712,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 bundle_state.update({"role": role, "status": "ready"})
                 return dict(bundle_state)
 
-        app_gui_module.build_material_panel_summary = lambda: summary
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: summary
         app_gui_module.BundleService = FakeBundleService
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             QApplication.clipboard().clear()
             panel.refresh()
@@ -934,7 +1730,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(calls, [("unknown", "hero_image")])
             self.assertIn("已确认：主视觉", panel.detail_label.text())
             self.assertIn("agent 可用", panel.detail_label.text())
-            self.assertIn("background: #6F7F5A", panel.role_buttons["hero_image"].styleSheet())
+            self.assertTrue(panel.role_buttons["hero_image"].isChecked())
             self.assertEqual(QApplication.clipboard().text(), "")
             self.assertIn("handoff 可复制", panel.detail_label.text())
 
@@ -943,7 +1739,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(payload["assets"][0]["role"], "hero_image")
             self.assertEqual(payload["assets"][0]["status"], "ready")
             self.assertIn("已复制 handoff", panel.detail_label.text())
-            self.assertEqual(toasts, [("已复制 handoff", True)])
+            self.assertEqual(toasts, [("已复制 handoff", "success")])
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -951,11 +1747,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_material_panel_copy_ready_handoff_copies_all_ready_assets(self) -> None:
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
             {
-                "list_bundles": lambda _self, status=None: [
+                "list_bundles": lambda _self, status=None, **_filters: [
                     {
                         "id": "hero",
                         "theme_id": "generic",
@@ -982,8 +1778,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             },
         )()
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             panel._copy_ready_handoff()
 
@@ -1007,14 +1803,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_material_panel_copy_ready_handoff_handles_empty_ready_assets(self) -> None:
         previous_bundle_service = app_gui_module.BundleService
-        app_gui_module.BundleService = lambda: type(
+        app_gui_module.BundleService = lambda **_kwargs: type(
             "FakeBundleService",
             (),
-            {"list_bundles": lambda _self, status=None: []},
+            {"list_bundles": lambda _self, status=None, **_filters: []},
         )()
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         QApplication.clipboard().setText("keep")
         try:
             panel._copy_ready_handoff()
@@ -1028,8 +1824,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_material_panel_copy_agent_recipe_describes_agent_contract(self) -> None:
         panel = MaterialPanelWindow()
-        toasts: list[tuple[str, bool]] = []
-        panel.set_toast_handler(lambda message, success=True: toasts.append((message, success)))
+        toasts: list[tuple[str, str]] = []
+        panel.set_toast_handler(lambda message, tone="success": toasts.append((message, tone)))
         try:
             panel._copy_agent_recipe()
 
@@ -1145,11 +1941,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         menu = QuickMenuWindow()
         try:
             menu.set_track_center(QPointF(96, 112))
+            finished = QSignalSpy(menu._slide_animation.finished)
 
             menu.show_menu(10, 20)
 
             self.assertNotEqual(menu._content_shift, QPointF(0, 0))
-            QTest.qWait(210)
+            self.assertTrue(finished.wait(1_000))
             self.app.processEvents()
             self.assertEqual(menu._content_shift, QPointF(0, 0))
             center, _radius = menu._track_geometry()
@@ -1162,19 +1959,26 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         actions: list[str] = []
         menu.set_action_handler(actions.append)
         try:
+            description = menu._ring_action_buttons["assets"].accessibleDescription()
             menu.set_attention_action("assets")
             self.assertEqual(menu._attention_action, "assets")
+            self.assertIn(
+                "待确认",
+                menu._ring_action_buttons["assets"].accessibleDescription(),
+            )
 
             menu._emit_action("assets")
 
             self.assertEqual(actions, ["assets"])
             self.assertEqual(menu._attention_action, "")
+            self.assertEqual(
+                menu._ring_action_buttons["assets"].accessibleDescription(),
+                description,
+            )
         finally:
             menu.close()
 
     def test_floating_windows_are_top_level_not_tool_windows(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         menu = QuickMenuWindow()
         try:
@@ -1188,7 +1992,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             menu.close()
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_material_panel_accepts_focus_for_search_input(self) -> None:
         panel = MaterialPanelWindow()
@@ -1196,7 +1999,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             flags = panel.windowFlags()
             self.assertTrue(bool(flags & Qt.WindowType.WindowStaysOnTopHint))
             self.assertFalse(bool(flags & Qt.WindowType.WindowDoesNotAcceptFocus))
-            self.assertEqual(panel.search_input.focusPolicy(), Qt.FocusPolicy.ClickFocus)
+            self.assertEqual(panel.search_input.focusPolicy(), Qt.FocusPolicy.StrongFocus)
         finally:
             panel.close()
 
@@ -1217,8 +2020,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             panel.close()
 
     def test_floating_ball_quick_menu_copies_http_url(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball._toggle_quick_menu()
@@ -1231,11 +2032,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_left_click_closes_visible_material_panel(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball._handle_quick_menu_action("assets")
@@ -1260,11 +2058,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_quick_menu_first_open_aligns_to_ball_center(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 900, 700)
         try:
@@ -1283,13 +2078,10 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_quick_menu_actions_are_wired(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
-        app_gui_module.build_material_panel_summary = lambda: MaterialPanelSummary(
+        app_gui_module.build_material_panel_summary = lambda *_args, **_kwargs: MaterialPanelSummary(
             total_count=3,
             recognized_count=2,
             pending_count=1,
@@ -1297,8 +2089,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             recognition_status="分类：有待确认 · 模型：未安装 qwen3-vl:8b",
         )
         ball = app_gui_module.HaypileFloatingBall()
-        toasts: list[tuple[str, bool]] = []
-        ball.show_toast = lambda message, success=True: toasts.append((message, success))
+        toasts: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, tone="success": toasts.append((message, tone))
         try:
             ball._handle_quick_menu_action("assets")
             self.assertTrue(ball.material_panel.isVisible())
@@ -1308,7 +2100,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             ball._handle_quick_menu_action("mcp")
             self.assertIn('"haypile"', QApplication.clipboard().text())
-            self.assertIn(("已复制 MCP 配置", True), toasts)
+            self.assertIn(("已复制 MCP 配置", "success"), toasts)
 
             initial_ai = ball.ai_enabled
             ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
@@ -1317,7 +2109,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(ball.ai_enabled, not initial_ai)
             self.assertEqual(ball.quick_menu._ai_enabled, ball.ai_enabled)
             self.assertIn(
-                ("AI 分拣已开启" if ball.ai_enabled else "AI 分拣已关闭", True),
+                ("AI 分拣已开启" if ball.ai_enabled else "AI 分拣已关闭", "success"),
                 toasts,
             )
         finally:
@@ -1325,14 +2117,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
             app_gui_module.build_material_panel_summary = previous_builder
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_ai_action_opens_setup_when_model_missing(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
-        toasts: list[tuple[str, bool]] = []
-        ball.show_toast = lambda message, success=True: toasts.append((message, success))
+        toasts: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, tone="success": toasts.append((message, tone))
         ball._ai_model_state = lambda: ("missing", "模型未安装 qwen2.5vl:3b")
         try:
             ball.ai_enabled = False
@@ -1343,18 +2132,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertTrue(ball.quick_menu.is_drawer_open())
             self.assertEqual(ball.quick_menu.current_page(), "ai")
             self.assertIn("模型未安装", ball.quick_menu.ai_status_label.text())
-            self.assertIn(("先安装本地视觉模型", False), toasts)
+            self.assertIn(("先安装本地视觉模型", "pending"), toasts)
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_ai_setup_recheck_enables_when_model_ready(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
-        toasts: list[tuple[str, bool]] = []
-        ball.show_toast = lambda message, success=True: toasts.append((message, success))
+        toasts: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, tone="success": toasts.append((message, tone))
         ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
         ball._ai_status_text = lambda: "AI 分拣已开启"
         try:
@@ -1365,15 +2151,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             self.assertTrue(ball.ai_enabled)
             self.assertEqual(ball.quick_menu._ai_enabled, True)
-            self.assertIn(("AI 分拣已开启", True), toasts)
+            self.assertIn(("AI 分拣已开启", "success"), toasts)
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_gui_state_keeps_ai_and_position_together(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._gui_state_path = self.tmpdir / "gui_state.json"
         try:
@@ -1395,56 +2178,24 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_toast_anchors_to_grass_pile_when_material_panel_visible(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         anchors = []
-        ball.quick_menu.show_feedback = lambda _message, _success, anchor, available: anchors.append(anchor)
+        ball.quick_menu.show_feedback = lambda _message, _tone, anchor, available: anchors.append(anchor)
         try:
             ball.move(120, 140)
             ball._handle_quick_menu_action("assets")
 
-            ball.show_toast("ok", success=True)
+            ball.show_toast("ok", tone="success")
 
             self.assertEqual(anchors[-1], ball._toast_anchor())
             self.assertNotEqual(anchors[-1].topLeft(), ball.material_panel.frameGeometry().topLeft())
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
-
-    def test_floating_ball_toast_defaults_below_grass_pile(self) -> None:
-        toast = app_gui_module.ToastLabel()
-        try:
-            anchor = app_gui_module.QRect(100, 100, 72, 72)
-            available = app_gui_module.QRect(0, 0, 500, 500)
-
-            toast.show_message("ok", success=True, anchor=anchor, available=available)
-
-            self.assertGreaterEqual(toast.y(), anchor.bottom())
-        finally:
-            toast.close()
-
-    def test_floating_ball_toast_uses_side_position_near_bottom_edge(self) -> None:
-        toast = app_gui_module.ToastLabel()
-        try:
-            anchor = app_gui_module.QRect(120, 430, 72, 72)
-            available = app_gui_module.QRect(0, 0, 500, 520)
-
-            toast.show_message("ok", success=True, anchor=anchor, available=available)
-
-            self.assertLess(toast.y(), anchor.bottom())
-            self.assertGreaterEqual(toast.y() + toast.height(), anchor.top())
-            self.assertGreaterEqual(toast.x(), anchor.right())
-        finally:
-            toast.close()
 
     def test_floating_ball_toast_anchor_uses_visual_circle_when_expanded(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball.setGeometry(100, 120, ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
@@ -1457,11 +2208,88 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_ingest_feedback_keeps_fixed_target_anchor(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 800, 600)
+        try:
+            ball.setGeometry(10, 10, ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE)
+            ball._drag_hover = True
+            ball._open_drop_target()
+            ball._drop_open_animation.stop()
+            ball._set_drop_open_progress(1.0)
+            ball.show_toast("正在收纳", tone="progress")
+            ball.quick_menu.begin_progress(
+                ball._toast_anchor(),
+                ball._available_geometry(),
+                "正在收纳",
+            )
+            self.app.processEvents()
+
+            feedback_x = []
+            fixed_anchor = ball._toast_anchor()
+            for progress in (1.0, 0.5, 0.0):
+                ball._set_drop_open_progress(progress)
+                self.app.processEvents()
+                anchor = ball._toast_anchor()
+                self.assertEqual(anchor, fixed_anchor)
+                self.assertEqual(ball.quick_menu._anchor, anchor)
+                self.assertEqual(
+                    ball.quick_menu.drawer_shell.geometry(),
+                    app_gui_module.QRect(0, 0, 270, 64),
+                )
+                self.assertFalse(
+                    ball.quick_menu.feedback_label.geometry().intersects(
+                        ball.quick_menu.progress_bar.geometry()
+                    )
+                )
+                feedback_x.append(ball.quick_menu.x())
+
+            self.assertEqual(len(set(feedback_x)), 1)
+            long_message = (
+                "Blocked: only safe images/audio are supported, "
+                "or an asset exceeds its size limit"
+            )
+            ball.quick_menu.set_progress(50, long_message)
+            self.app.processEvents()
+            self.assertGreater(
+                ball.quick_menu.feedback_label.height(),
+                28,
+            )
+            self.assertEqual(
+                ball.quick_menu.drawer_shell.height(),
+                ball.quick_menu.feedback_label.height() + 36,
+            )
+            self.assertFalse(
+                ball.quick_menu.feedback_label.geometry().intersects(
+                    ball.quick_menu.progress_bar.geometry()
+                )
+            )
+            ball.quick_menu.complete_progress("success", "收纳完成")
+            self.assertEqual(
+                ball.quick_menu.drawer_shell.geometry(),
+                app_gui_module.QRect(0, 0, 270, 50),
+            )
+            ball.quick_menu.show_feedback(
+                long_message,
+                "error",
+                ball._toast_anchor(),
+                ball._available_geometry(),
+            )
+            self.app.processEvents()
+            self.assertGreater(
+                ball.quick_menu.feedback_label.height(),
+                28,
+            )
+            self.assertEqual(
+                ball.quick_menu.drawer_shell.height(),
+                ball.quick_menu.feedback_label.height() + 22,
+            )
+        finally:
+            ball.close()
+            self.app.processEvents()
 
     def test_floating_ball_drag_repositions_visible_toast(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         anchors = []
         ball.quick_menu.show()
@@ -1487,19 +2315,34 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_floating_ball_programmatic_move_repositions_visible_feedback(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball.show()
+            ball.show_toast("ok", tone="success")
+            before = ball.quick_menu.geometry()
+
+            ball.move(400, 300)
+            self.app.processEvents()
+
+            self.assertEqual(ball.quick_menu._anchor, ball._toast_anchor())
+            self.assertNotEqual(ball.quick_menu.geometry(), before)
+        finally:
+            ball.close()
+            self.app.processEvents()
 
     def test_floating_ball_progress_is_attached_to_hub(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         anchors: list[app_gui_module.QRect] = []
         ball.quick_menu.begin_progress = lambda anchor, available, text: anchors.append(anchor)
-        ball.show_toast = lambda message, success=True: None
+        ball.show_toast = lambda message, tone="success": None
         try:
             source = self.tmpdir / "queued.svg"
             source.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"/>', encoding="utf-8")
-            ball._start_worker([source])
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._start_worker([source])
+                play.assert_called_once_with("intake")
 
             self.assertEqual(anchors, [ball._toast_anchor()])
         finally:
@@ -1508,34 +2351,30 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 ball.worker.wait(1000)
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
-    def test_floating_ball_pending_badge_highlights_status_on_quick_menu_open(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
-        app_gui_module.build_material_panel_summary = lambda: MaterialPanelSummary(
-            total_count=1,
-            recognized_count=0,
-            pending_count=1,
-            service_status="Haypile：运行中",
-            recognition_status="分类：有待确认",
-        )
+    def test_floating_ball_pending_badge_highlights_assets_and_clears_when_resolved(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
+        pending = [{"id": "pending"}]
+        ball._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: list(pending)
+        )
         try:
+            ball._refresh_pending_badge()
             ball._toggle_quick_menu()
 
             self.assertTrue(ball.quick_menu.isVisible())
             self.assertEqual(ball.quick_menu._attention_action, "assets")
+
+            pending.clear()
+            ball._refresh_pending_badge()
+
+            self.assertFalse(ball._has_pending_assets)
+            self.assertEqual(ball.quick_menu._attention_action, "")
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.build_material_panel_summary = previous_builder
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_quick_menu_stays_anchored_when_ball_is_at_screen_edge(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
         positions = [
@@ -1573,11 +2412,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_resize_target_stays_on_screen_edge(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
         try:
@@ -1596,11 +2432,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drop_expands_from_screen_edge_without_a_visible_jump(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
         try:
@@ -1633,11 +2466,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drop_lets_leaf_frame_close_before_collapsing(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         received: list[list[Path]] = []
         file_path = self.tmpdir / "hero.png"
@@ -1668,7 +2498,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_extracts_remote_media_urls_from_browser_drop(self) -> None:
         mime_data = QMimeData()
@@ -1746,9 +2575,299 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                     "leaf",
                 )
 
+    def test_floating_ball_uses_gif_intake_only_for_pure_local_gif_drops(self) -> None:
+        first = self.tmpdir / "first.gif"
+        second = self.tmpdir / "second.GIF"
+        static = self.tmpdir / "cover.png"
+        for path in (first, second, static):
+            path.write_bytes(b"fixture")
+
+        pure_gif = QMimeData()
+        pure_gif.setUrls([QUrl.fromLocalFile(str(first)), QUrl.fromLocalFile(str(second))])
+        self.assertEqual(
+            app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(pure_gif),
+            "gif",
+        )
+
+        mixed = QMimeData()
+        mixed.setUrls([QUrl.fromLocalFile(str(first)), QUrl.fromLocalFile(str(static))])
+        self.assertEqual(
+            app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(mixed),
+            "leaf",
+        )
+
+        remote_gif = QMimeData()
+        remote_gif.setUrls([QUrl("https://cdn.example.com/loop.gif")])
+        self.assertEqual(
+            app_gui_module.HaypileFloatingBall._drop_visual_kind_for_mime_data(remote_gif),
+            "leaf",
+        )
+
+    def test_floating_ball_gif_intake_draws_timed_afterimages_and_reduced_motion_frame(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
+            ball.is_expanded = True
+            ball._drop_visual_kind = "gif"
+            ball._set_drop_open_progress(1.0)
+            expanded_at = 10.0
+            ball._gif_expand_started_at = expanded_at - ball.GIF_EXPAND_SECONDS
+
+            def render_at(timestamp: float) -> QPixmap:
+                frame = QPixmap(ball.size())
+                frame.fill(Qt.GlobalColor.transparent)
+                with patch.object(app_gui_module.time, "monotonic", return_value=timestamp):
+                    ball.render(frame)
+                return frame
+
+            first = render_at(expanded_at).toImage()
+            second = render_at(expanded_at + ball.GIF_TICK_SECONDS * 1.1).toImage()
+            self.assertNotEqual(first, second)
+            center = first.pixelColor(ball.width() // 2, ball.height() // 2 - 6)
+            self.assertGreater(center.alpha(), 120)
+            self.assertGreater(center.red(), center.green())
+
+            def render_symbol(elapsed: float):
+                symbol = QPixmap(160, 160)
+                symbol.fill(Qt.GlobalColor.transparent)
+                symbol_painter = QPainter(symbol)
+                ball._intake_renderer.paint(
+                    symbol_painter,
+                    app_gui_module.QRectF(symbol.rect()),
+                    app_gui_module.QRectF(9.5, 9.5, 141, 141),
+                    app_gui_module.IntakeVisualState(
+                        kind="gif",
+                        open_progress=1.0,
+                        gif_elapsed_seconds=elapsed,
+                    ),
+                )
+                symbol_painter.end()
+                return symbol.toImage()
+
+            symbol_image = render_symbol(ball.GIF_EXPAND_SECONDS)
+            colors = {
+                symbol_image.pixelColor(x, y).name().upper()
+                for y in range(symbol_image.height())
+                for x in range(symbol_image.width())
+                if symbol_image.pixelColor(x, y).alpha() > 200
+            }
+            self.assertTrue({"#78945B", "#D5A73D", "#D9795F"} <= colors)
+            occupied_x = [
+                x
+                for y in range(symbol_image.height())
+                for x in range(symbol_image.width())
+                if symbol_image.pixelColor(x, y).name().upper()
+                in {"#78945B", "#D5A73D", "#D9795F"}
+            ]
+            visible_width = max(occupied_x) - min(occupied_x) + 1
+            self.assertGreaterEqual(visible_width, 68)
+            self.assertGreater(visible_width, 52)
+
+            ball._set_gif_suction_progress(1.0)
+            contracted = render_at(expanded_at).toImage()
+            self.assertNotEqual(contracted, first)
+            self.assertFalse(
+                any(
+                    contracted.pixelColor(x, y).name().upper()
+                    in {"#78945B", "#D5A73D", "#D9795F"}
+                    for y in range(contracted.height())
+                    for x in range(contracted.width())
+                )
+            )
+
+            ball._set_gif_suction_progress(0.0)
+            ball.low_power_enabled = True
+            reduced_first = render_at(expanded_at).toImage()
+            reduced_second = render_at(expanded_at + ball.GIF_TICK_SECONDS * 2.2).toImage()
+            self.assertEqual(reduced_first, reduced_second)
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_floating_ball_gif_drop_sucks_once_and_clears_on_leave(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        received: list[list[Path]] = []
+        source = self.tmpdir / "loop.gif"
+        source.write_bytes(b"GIF89a")
+        ball._start_worker = lambda files: received.append(files)
+        try:
+            ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
+            ball.is_expanded = True
+            ball._drag_hover = True
+            ball._drop_visual_kind = "gif"
+            ball._set_drop_open_progress(1.0)
+            mime_data = QMimeData()
+            mime_data.setUrls([QUrl.fromLocalFile(str(source))])
+            event = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime_data,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+
+            ball.dropEvent(event)
+
+            self.assertEqual(received, [[source]])
+            self.assertIsNotNone(ball._gif_suction_animation)
+            self.assertEqual(ball._gif_suction_animation.endValue(), 1.0)
+            self.assertFalse(ball._collapse_timer.isActive())
+
+            ball._gif_suction_animation.stop()
+            ball._finish_gif_suction()
+            self.assertTrue(ball._collapse_timer.isActive())
+            self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+
+            ball._collapse_timer.stop()
+            ball._drop_open_animation.stop()
+            ball._set_drop_open_progress(1.0)
+            ball._drop_visual_kind = "gif"
+            ball._drag_hover = True
+            ball._animate_gif_suction()
+            ball.dragLeaveEvent(QDragLeaveEvent())
+            self.assertIsNone(ball._gif_suction_animation)
+            self.assertEqual(ball._gif_suction_progress, 0.0)
+            self.assertTrue(ball._collapse_timer.isActive())
+            self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_low_power_gif_ingest_starts_one_action_sound(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        source = self.tmpdir / "low-power.gif"
+        source.write_bytes(b"GIF89a")
+        try:
+            ball.low_power_enabled = True
+            ball._drop_visual_kind = "gif"
+            ball._set_drop_open_progress(1.0)
+            with (
+                patch.object(ball._sound_feedback, "play") as play,
+                patch.object(app_gui_module.IngestWorker, "start", lambda _worker: None),
+            ):
+                ball._animate_gif_suction()
+                ball._start_worker([source])
+
+            play.assert_called_once_with("intake")
+            self.assertEqual(ball._gif_suction_progress, 1.0)
+            self.assertIsNone(ball._gif_suction_animation)
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_floating_ball_drag_hover_closes_on_mouse_up_for_leaf_audio_and_gif(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            for kind in ("leaf", "audio", "gif"):
+                ball._collapse_timer.stop()
+                if ball._drop_open_animation is not None:
+                    ball._drop_open_animation.stop()
+                ball._set_drop_open_progress(1.0)
+                ball._drop_visual_kind = kind
+                ball._drag_hover = True
+                ball._drag_prepare_active = False
+                with patch.object(ball, "_global_left_button_down", return_value=False):
+                    ball._poll_external_drag_candidate()
+                self.assertFalse(ball._drag_hover)
+                self.assertTrue(ball._collapse_timer.isActive())
+                self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+                ball._collapse_timer.stop()
+                ball._drop_open_animation.stop()
+                ball._set_drop_open_progress(0.0)
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_floating_ball_remote_gif_starts_programmatic_intake_and_defers_success_feedback(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        source = self.tmpdir / "downloaded.gif"
+        source.write_bytes(b"GIF89a")
+        shown: list[tuple[str, str]] = []
+        completed: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
+        ball.quick_menu.complete_progress = lambda tone, message: completed.append((tone, message))
+        try:
+            with patch.object(app_gui_module.IngestWorker, "start", lambda _worker: None):
+                ball._on_remote_download_finished([source], "ok", True, [])
+
+            self.assertEqual(ball._active_ingest_visual_kind, "gif")
+            self.assertEqual(ball._drop_visual_kind, "gif")
+            self.assertTrue(ball._gif_open_timer.isActive())
+            self.assertEqual(shown[-1], ("正在校验 GIF…", "progress"))
+            self.assertEqual(ball.quick_menu._anchor, ball._toast_anchor())
+
+            ball.worker.result = app_gui_module.IngestResult(
+                status="completed",
+                accepted_count=1,
+            )
+            before_finish = ball._ingest_feedback_not_before - 0.1
+            with patch.object(app_gui_module.time, "monotonic", return_value=before_finish):
+                ball._on_ingest_finished("generic success", True)
+
+            self.assertIsNotNone(ball._pending_ingest_finish)
+            self.assertEqual(completed, [])
+            ball._ingest_feedback_timer.stop()
+            ball._flush_pending_ingest_finish()
+            self.assertEqual(shown[-1], ("GIF 已收纳 · 请选择用途", "pending"))
+            self.assertEqual(completed[-1], ("pending", "GIF 已收纳 · 请选择用途"))
+            self.assertEqual(ball._active_ingest_visual_kind, "leaf")
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_floating_ball_gif_failure_clears_cards_and_feedback_delay(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        try:
+            ball.worker = SimpleNamespace(
+                result=app_gui_module.IngestResult(status="failed"),
+                deleteLater=lambda: None,
+                isRunning=lambda: False,
+            )
+            ball._active_ingest_visual_kind = "gif"
+            ball._drop_visual_kind = "gif"
+            ball._set_drop_open_progress(1.0)
+            ball._ingest_feedback_not_before = app_gui_module.time.monotonic() + 10
+            ball._ingest_feedback_timer.start(10_000)
+
+            ball._on_ingest_finished("GIF 已被拒绝", False)
+
+            self.assertIsNone(ball._pending_ingest_finish)
+            self.assertFalse(ball._ingest_feedback_timer.isActive())
+            self.assertEqual(ball._drop_visual_kind, "leaf")
+            self.assertEqual(ball._drop_open_animation.endValue(), 0.0)
+            self.assertTrue(ball._reject_feedback_active())
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_floating_ball_gif_intake_resets_on_hide_and_low_power(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._gui_state_path = self.tmpdir / "gui_state.json"
+        try:
+            ball.show()
+            ball._begin_programmatic_gif_intake()
+            self.assertTrue(ball._gif_open_timer.isActive())
+
+            ball.hide()
+            self.app.processEvents()
+            self.assertFalse(ball._gif_open_timer.isActive())
+            self.assertIsNone(ball._gif_suction_animation)
+            self.assertEqual(ball._gif_suction_progress, 0.0)
+            self.assertEqual(ball._drop_visual_kind, "leaf")
+
+            ball.show()
+            ball._begin_programmatic_gif_intake()
+            self.assertTrue(ball._gif_open_timer.isActive())
+            ball._set_low_power_enabled(True)
+            self.assertFalse(ball._gif_open_timer.isActive())
+            self.assertIsNone(ball._gif_suction_animation)
+            self.assertTrue(ball._collapse_timer.isActive())
+        finally:
+            ball._cleanup_done = True
+            ball.close()
+            self.app.processEvents()
+
     def test_floating_ball_audio_intake_uses_distinct_leaf_nest_and_directional_suction(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
@@ -1813,7 +2932,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 panel_size,
                 panel_size,
             )
-            aperture_center = ball._audio_center_path(panel_rect, 1.0).boundingRect().center()
+            aperture_center = (
+                ball._intake_renderer.audio_center_path(panel_rect, 1.0)
+                .boundingRect()
+                .center()
+            )
             self.assertLess(app_gui_module.math.hypot(
                 aperture_center.x() - panel_rect.center().x(),
                 aperture_center.y() - panel_rect.center().y(),
@@ -1849,11 +2972,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_audio_leaf_nest_tracks_four_directions_without_moving_aperture(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
@@ -1876,11 +2996,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_audio_drop_sucks_once_before_collapse(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         received: list[list[Path]] = []
         audio = self.tmpdir / "voice.mp3"
@@ -1926,11 +3043,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drop_remote_url_starts_download_worker(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         received: list[tuple[list[str], list[Path]]] = []
         ball._start_remote_download_worker = lambda urls, local_files=None: received.append((urls, local_files or []))
@@ -1951,7 +3065,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_remote_download_worker_accepts_media_content_type(self) -> None:
         previous_opener = app_gui_module.open_safe_remote
@@ -2165,13 +3278,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 "temp_file": str(source),
             },
         )
-        worker = app_gui_module.IngestWorker([], assets_dir)
-
-        worker._persist_asset_provenance(
-            source_path=source,
-            destination=destination,
-            sha256_hex="abc123",
+        service = app_gui_module.IngestService(
+            storage_dir=assets_dir.parent,
+            assets_dir=assets_dir,
+            index_dir=assets_dir.parent / "index",
+            themes_dir=assets_dir.parent / "themes",
+            manifest_path=assets_dir.parent / "index/assets_manifest.json",
         )
+        service._persist_asset_provenance(source, destination, "abc123")
 
         provenance = read_asset_provenance(destination)
         self.assertEqual(provenance["origin_url"], "https://cdn.example.com")
@@ -2185,14 +3299,18 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         destination = assets_dir / "generic/images/generic_img_hero_image_deadbeef.png"
         destination.parent.mkdir(parents=True)
         source.write_bytes(b"image")
-        worker = app_gui_module.IngestWorker([], assets_dir)
-
-        worker._persist_asset_provenance(
-            source_path=source,
-            destination=destination,
-            sha256_hex="abc123",
-            ai_suggestions={"quality": "high", "tags": ["主视觉"]},
+        write_asset_provenance(
+            source,
+            {"ai_suggestions": {"quality": "high", "tags": ["主视觉"]}},
         )
+        service = app_gui_module.IngestService(
+            storage_dir=assets_dir.parent,
+            assets_dir=assets_dir,
+            index_dir=assets_dir.parent / "index",
+            themes_dir=assets_dir.parent / "themes",
+            manifest_path=assets_dir.parent / "index/assets_manifest.json",
+        )
+        service._persist_asset_provenance(source, destination, "abc123")
 
         provenance = read_asset_provenance(destination)
         self.assertEqual(provenance["source_key"], "generic/images/generic_img_hero_image_deadbeef.png")
@@ -2200,8 +3318,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         self.assertEqual(provenance["ai_suggestions"]["quality"], "high")
 
     def test_floating_ball_drag_enter_uses_short_prepare_state_before_leaf_frame(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         file_path = self.tmpdir / "hero.png"
         file_path.write_bytes(b"not-real-image")
@@ -2230,12 +3346,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_external_drag_candidate_activates_and_clears(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         previous_cursor = app_gui_module.QCursor
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         positions = iter([QPoint(300, 200), QPoint(320, 200), QPoint(320, 200)])
         button_states = iter([True, True, False])
@@ -2266,12 +3379,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             app_gui_module.QCursor = previous_cursor
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_own_window_drag_owns_cursor_and_never_activates_awareness(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
         previous_cursor = app_gui_module.QCursor
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._gui_state_path = self.tmpdir / "gui_state.json"
 
@@ -2338,11 +3448,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             app_gui_module.QCursor = previous_cursor
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_blocks_native_resize_between_its_own_size_changes(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball.show()
@@ -2359,11 +3466,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_awareness_uses_haypile_alpha_edge(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             rect = app_gui_module.QRectF(ball._get_collapsed_circle_rect()).adjusted(-1, -3, 1, 1)
@@ -2377,11 +3481,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_move_updates_awareness_direction(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         file_path = self.tmpdir / "hero.png"
         file_path.write_bytes(b"not-real-image")
@@ -2416,11 +3517,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_awareness_fades_into_leaf_frame(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball._external_drag_candidate = True
@@ -2435,11 +3533,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_directional_aura_uses_a_broad_contour_segment(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._has_pending_assets = False
         try:
@@ -2483,11 +3578,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drop_open_crossfades_without_a_blank_frame(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._has_pending_assets = False
         try:
@@ -2518,11 +3610,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_hover_aura_follows_top_contour_without_disc(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._has_pending_assets = False
         try:
@@ -2553,12 +3642,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_success_ingest_triggers_single_bounce_feedback(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
+        ball._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [{"id": "pending"}]
+        )
         try:
             rect = app_gui_module.QRectF(ball._get_collapsed_circle_rect())
             ball._on_ingest_finished("收纳完成", True)
@@ -2596,11 +3685,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_visual_timer_stops_when_idle(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             self.assertFalse(ball._visual_timer.isActive())
@@ -2623,11 +3709,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_release_has_set_down_feedback(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         previous_monotonic = app_gui_module.time.monotonic
         try:
@@ -2668,11 +3751,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             app_gui_module.time.monotonic = previous_monotonic
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_bend_follows_pointer_direction(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball._drag_velocity = QPointF(760, 0)
@@ -2693,14 +3773,22 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_duplicate_ingest_uses_nudge_not_bounce(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
-            ball._on_ingest_finished("收纳完成：新增 0，去重 1", True)
+            ball.worker = SimpleNamespace(
+                result=app_gui_module.IngestResult(
+                    status="completed",
+                    accepted_count=0,
+                    duplicate_count=1,
+                ),
+                deleteLater=lambda: None,
+                isRunning=lambda: False,
+            )
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._on_ingest_finished("收纳完成：新增 0，去重 1", True)
+                play.assert_called_once_with("duplicate")
 
             self.assertTrue(ball._nudge_feedback_active())
             self.assertFalse(ball._bounce_feedback_active())
@@ -2720,14 +3808,13 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_failed_ingest_uses_reject_feedback(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
-            ball._on_ingest_finished("文件被拦截", False)
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._on_ingest_finished("文件被拦截", False)
+                play.assert_called_once_with("error")
 
             self.assertTrue(ball._reject_feedback_active())
             self.assertFalse(ball._bounce_feedback_active())
@@ -2749,11 +3836,84 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_early_intake_rejection_plays_error_sound_and_toast(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        shown: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
+        try:
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._show_intake_error("unsupported")
+
+            play.assert_called_once_with("error")
+            self.assertEqual(shown, [("unsupported", "error")])
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_mixed_duplicate_and_rejection_uses_error_without_fake_gif_success(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        shown: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
+        try:
+            ball._active_ingest_visual_kind = "gif"
+            ball._ingest_feedback_not_before = app_gui_module.time.monotonic() + 10
+            ball._ingest_feedback_timer.start(10_000)
+            ball.worker = SimpleNamespace(
+                result=app_gui_module.IngestResult(
+                    status="completed",
+                    accepted_count=0,
+                    duplicate_count=1,
+                    rejected_count=1,
+                ),
+                deleteLater=lambda: None,
+                isRunning=lambda: False,
+            )
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._on_ingest_finished("0 new, 1 duplicate, 1 blocked", True)
+
+            play.assert_called_once_with("error")
+            self.assertEqual(shown[-1], ("0 new, 1 duplicate, 1 blocked", "error"))
+            self.assertTrue(ball._reject_feedback_active())
+            self.assertFalse(ball._bounce_feedback_active())
+            self.assertFalse(ball._nudge_feedback_active())
+            self.assertEqual(ball.quick_menu._attention_action, "")
+            self.assertIsNone(ball._pending_ingest_finish)
+            self.assertFalse(ball._ingest_feedback_timer.isActive())
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_partial_success_keeps_pending_result_but_plays_rejection_sound(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        ball._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [{"id": "pending"}]
+        )
+        shown: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
+        try:
+            ball.worker = SimpleNamespace(
+                result=app_gui_module.IngestResult(
+                    status="completed",
+                    accepted_count=1,
+                    rejected_count=1,
+                ),
+                deleteLater=lambda: None,
+                isRunning=lambda: False,
+            )
+            with patch.object(ball._sound_feedback, "play") as play:
+                ball._on_ingest_finished("1 new, 1 blocked", True)
+
+            play.assert_called_once_with("error")
+            self.assertEqual(shown[-1], ("1 new, 1 blocked", "pending"))
+            self.assertTrue(ball._bounce_feedback_active())
+            self.assertFalse(ball._reject_feedback_active())
+            self.assertEqual(ball.quick_menu._attention_action, "assets")
+        finally:
+            ball.close()
+            self.app.processEvents()
 
     def test_floating_ball_worker_running_uses_subtle_breath_rect(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             rect = app_gui_module.QRectF(ball._get_collapsed_circle_rect())
@@ -2765,21 +3925,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_pending_badge_renders_when_assets_need_review(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        previous_builder = app_gui_module.build_material_panel_summary
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
-        app_gui_module.build_material_panel_summary = lambda: MaterialPanelSummary(
-            total_count=1,
-            recognized_count=0,
-            pending_count=1,
-            service_status="Haypile：运行中",
-            recognition_status="分类：有待确认",
-        )
         ball = app_gui_module.HaypileFloatingBall()
+        ball._bundle_service = lambda: SimpleNamespace(
+            list_bundles=lambda **_filters: [{"id": "pending"}]
+        )
         try:
+            ball._refresh_pending_badge()
             self.assertTrue(ball._has_pending_assets)
             pixmap = QPixmap(ball.size())
             pixmap.fill(Qt.GlobalColor.transparent)
@@ -2793,12 +3946,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.build_material_panel_summary = previous_builder
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drag_and_shake_stay_on_screen_edge(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
         try:
@@ -2830,11 +3979,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_drop_leaf_state_is_drag_only(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         try:
             ball.resize(ball.EXPANDED_SIZE, ball.EXPANDED_SIZE)
@@ -2847,11 +3993,15 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.render(pixmap)
 
             self.assertEqual(ball._drop_open_progress, 1.0)
-            self.assertGreater(len(ball._drop_leaf_frame_runs), 1000)
-            leaf_buckets = {run[3] for run in ball._drop_leaf_frame_runs if len(run) > 3}
+            self.assertGreater(len(ball._intake_renderer.leaf_frame_runs), 1000)
+            leaf_buckets = {
+                run[3]
+                for run in ball._intake_renderer.leaf_frame_runs
+                if len(run) > 3
+            }
             self.assertGreater(len(leaf_buckets), 1)
             self.assertLessEqual(leaf_buckets, {0, 1, 2})
-            self.assertEqual(len(ball._drop_leaf_renderers), 5)
+            self.assertEqual(ball._intake_renderer.leaf_renderer_count, 5)
             self.assertFalse(ball.quick_menu.isVisible())
             image = pixmap.toImage()
             center_color = image.pixelColor(ball.width() // 2, ball.height() // 2)
@@ -2871,11 +4021,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_floating_ball_saves_and_restores_position(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
         ball._gui_state_path = self.tmpdir / "gui_state.json"
@@ -2893,75 +4040,348 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
-    def test_floating_ball_starts_backend_by_default(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        previous_popen = app_gui_module.subprocess.Popen
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
-        os.environ.pop("HAYPILE_GUI_ALLOW_BACKEND_START", None)
-        os.environ.pop("HAYPILE_BACKEND_HOST_ALLOW_START", None)
-        calls: list[dict[str, object]] = []
+    def test_floating_ball_constructor_has_no_product_runtime_side_effects(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+        initial_state = {
+            "x": 123,
+            "y": 145,
+            "language": "en",
+            "low_power_enabled": True,
+            "ai_enabled": True,
+            "ai_provider": "api",
+            "ai_api_base_url": "https://api.example.com",
+            "ai_api_model": "model",
+            "ai_api_authorized_host": "api.example.com",
+            "ai_api_key_present": True,
+        }
+        with (
+            patch.object(
+                app_gui_module,
+                "get_settings",
+                side_effect=AssertionError("explicit settings must be used"),
+            ),
+            patch.object(
+                app_gui_module,
+                "build_material_panel_summary",
+                side_effect=AssertionError("manifest summary must not load"),
+            ),
+            patch.object(
+                app_gui_module.SystemCredentialStore,
+                "get",
+                side_effect=AssertionError("credential store must not load"),
+            ),
+            patch.object(
+                Path,
+                "mkdir",
+                side_effect=AssertionError("storage directories must not be created"),
+            ),
+            patch.object(
+                app_gui_module.HaypileFloatingBall,
+                "_read_gui_state",
+                side_effect=AssertionError("product state must not be read"),
+            ),
+            patch.object(
+                app_gui_module,
+                "read_desktop_gui_state",
+                side_effect=AssertionError("startup loader must not run"),
+            ),
+            patch.object(
+                Path,
+                "unlink",
+                side_effect=AssertionError("temporary files must not be cleaned"),
+            ),
+            patch.object(
+                app_gui_module.BackendRuntimeController,
+                "_probe_backend_response",
+            ) as ipc_probe,
+            patch.object(
+                app_gui_module.BackendRuntimeController,
+                "_is_port_open",
+            ) as port_probe,
+            patch("app.gui.backend_runtime.subprocess.Popen") as popen,
+        ):
+            ball = app_gui_module.HaypileFloatingBall(
+                settings=settings,
+                initial_state=initial_state,
+            )
+        try:
+            ipc_probe.assert_not_called()
+            port_probe.assert_not_called()
+            popen.assert_not_called()
+            self.assertFalse(hasattr(ball, "api_process"))
+            self.assertFalse(hasattr(ball, "_backend_timer"))
+            self.assertIs(ball.settings, settings)
+            self.assertEqual(ball.language_mode, "en")
+            self.assertTrue(ball.low_power_enabled)
+            self.assertEqual(ball.pos(), app_gui_module.QPoint(123, 145))
+            self.assertEqual(ball.ai_provider_mode, "api")
+            self.assertFalse(ball.ai_enabled)
+            self.assertEqual(ball._session_api_key, "")
+        finally:
+            ball.close()
+            self.app.processEvents()
 
-        class FakeProcess:
-            pid = 12345
+    def test_embedded_catalog_uses_shared_settings_and_one_bundle_query(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "catalog-storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+        constructed: list[dict[str, object]] = []
+        queries: list[dict[str, object]] = []
 
-            def poll(self) -> None:
+        class FakeBundleService:
+            theme_recoveries = []
+
+            def __init__(self, **kwargs):
+                constructed.append(kwargs)
+
+            def list_bundles(self, **filters):
+                queries.append(filters)
+                return [
+                    {
+                        "id": "gif",
+                        "theme_id": "generic",
+                        "type": "image",
+                        "role": "unknown",
+                        "status": "pending",
+                        "source_key": "generic/images/clip.gif",
+                        "url": "/static/generic/images/clip.gif",
+                    }
+                ]
+
+            def get_latest_batch(self):
                 return None
 
-        def fake_popen(command, **kwargs):
-            calls.append({"command": command, **kwargs})
-            return FakeProcess()
+        with (
+            patch.object(app_gui_module, "BundleService", FakeBundleService),
+            patch.object(
+                experimental_summary_module,
+                "build_material_panel_summary",
+                side_effect=AssertionError("embedded catalog must not load experiments"),
+            ),
+        ):
+            menu = QuickMenuWindow(settings)
+            try:
+                panel = menu.material_panel
+                panel.refresh()
 
-        ball = app_gui_module.HaypileFloatingBall()
+                self.assertIs(panel.settings, settings)
+                self.assertEqual(queries, [{"batch_id": "latest"}])
+                self.assertEqual(
+                    constructed,
+                    [
+                        {
+                            "assets_dir": settings.ASSETS_DIR,
+                            "manifest_path": settings.MANIFEST_PATH,
+                            "themes_dir": settings.THEMES_DIR,
+                            "runtime_db_path": settings.INDEX_DIR / "storage_runtime.db",
+                        }
+                    ],
+                )
+                self.assertIn("clip.gif", panel.item_labels[0].text())
+            finally:
+                menu.close()
+                self.app.processEvents()
+
+    def test_dirty_catalog_clears_panel_status_and_pending_badge(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "dirty-storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+
+        class DirtyBundleService:
+            theme_recoveries = []
+
+            def list_bundles(self, **_filters):
+                raise app_gui_module.ManifestReadinessError("manifest_dirty", "dirty")
+
+            def get_latest_batch(self):
+                return None
+
+        panel = MaterialPanelWindow(embedded=True, settings=settings)
+        panel._all_recent_items = [
+            MaterialSummaryItem("old.png", "主视觉", "中等把握", "已识别")
+        ]
+        ball = app_gui_module.HaypileFloatingBall(settings=settings)
+        panel._bundle_service = lambda: DirtyBundleService()
+        ball._bundle_service = lambda: DirtyBundleService()
+        ball._has_pending_assets = True
         try:
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
-            app_gui_module.subprocess.Popen = fake_popen
-            ball._probe_backend_via_ipc = lambda: False
-            ball._is_port_open = lambda _host, _port: False
-            ball._wait_backend_ready = lambda timeout_seconds=5.0: True
+            panel.refresh()
+            ball._refresh_pending_badge()
 
-            ball.start_api_server()
-
-            self.assertTrue(ball.api_owned_by_gui)
-            self.assertEqual(Path(calls[0]["command"][-1]).name, "backend_host.py")
-            self.assertEqual(Path(calls[0]["cwd"]), ball.project_root)
-            env = calls[0]["env"]
-            self.assertEqual(env["HAYPILE_BACKEND_HOST_ALLOW_START"], "1")
+            self.assertEqual(panel._all_recent_items, [])
+            self.assertIn("Agent 接口待恢复", panel.empty_state_label.text())
+            self.assertFalse(panel.empty_state_label.isHidden())
+            self.assertFalse(ball._has_pending_assets)
+            self.assertIn("Agent 接口待恢复", ball._status_text())
         finally:
-            ball.api_owned_by_gui = False
-            ball.api_process = None
+            panel.close()
             ball.close()
             self.app.processEvents()
-            app_gui_module.subprocess.Popen = previous_popen
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
-    def test_floating_ball_can_disable_gui_backend_start(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        previous_popen = app_gui_module.subprocess.Popen
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
-        os.environ["HAYPILE_GUI_ALLOW_BACKEND_START"] = "0"
-        calls: list[object] = []
-        toasts: list[str] = []
-
-        ball = app_gui_module.HaypileFloatingBall()
+    def test_desktop_runtime_hydrates_once_and_enables_api_session(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+        ball = app_gui_module.HaypileFloatingBall(
+            settings=settings,
+            initial_state={
+                "ai_enabled": True,
+                "ai_provider": "api",
+                "ai_api_base_url": "https://api.example.com",
+                "ai_api_model": "model",
+                "ai_api_authorized_host": "api.example.com",
+                "ai_api_key_present": True,
+            },
+            deferred_runtime=True,
+        )
+        status_refreshes: list[bool] = []
+        pending_refreshes: list[bool] = []
+        ball._refresh_ai_menu_status = lambda **_kwargs: status_refreshes.append(True)
+        ball._refresh_pending_badge = lambda: pending_refreshes.append(True)
         try:
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
-            app_gui_module.subprocess.Popen = lambda *args, **kwargs: calls.append((args, kwargs))
-            ball._probe_backend_via_ipc = lambda: False
-            ball._is_port_open = lambda _host, _port: False
-            ball.show_toast = lambda message, success=True: toasts.append(message)
+            self.assertFalse(ball.acceptDrops())
+            self.assertFalse(ball.ai_enabled)
 
-            ball.start_api_server()
+            result = app_gui_module.DesktopStartupResult(
+                storage_ready=True,
+                session_api_key="secret",
+            )
+            self.assertTrue(ball.apply_desktop_runtime(result))
+            self.assertTrue(ball.apply_desktop_runtime(result))
 
-            self.assertFalse(ball.api_owned_by_gui)
-            self.assertEqual(calls, [])
-            self.assertIn("禁止界面自动启动", toasts[0])
+            self.assertTrue(ball.acceptDrops())
+            self.assertEqual(ball._session_api_key, "secret")
+            self.assertTrue(ball.ai_api_key_present)
+            self.assertTrue(ball.ai_enabled)
+            self.assertEqual(status_refreshes, [True])
+            self.assertEqual(pending_refreshes, [True])
         finally:
             ball.close()
             self.app.processEvents()
-            app_gui_module.subprocess.Popen = previous_popen
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
+
+    def test_storage_failure_keeps_settings_but_blocks_all_ingest_entries(self) -> None:
+        settings = app_gui_module.Settings(
+            STORAGE_DIR=self.tmpdir / "storage",
+            LOG_DIR=self.tmpdir / "logs",
+        )
+        ball = app_gui_module.HaypileFloatingBall(
+            settings=settings,
+            deferred_runtime=True,
+        )
+        messages: list[tuple[str, str]] = []
+        ball.show_toast = lambda message, *, tone: messages.append((message, tone))
+        source = self.tmpdir / "blocked.gif"
+        source.write_bytes(b"GIF89a")
+        try:
+            self.assertFalse(
+                ball.apply_desktop_runtime(
+                    app_gui_module.DesktopStartupResult(
+                        storage_ready=False,
+                        error_code="storage_unavailable",
+                    )
+                )
+            )
+            self.assertFalse(ball.acceptDrops())
+
+            mime_data = QMimeData()
+            mime_data.setData("image/gif", b"GIF89a")
+            with patch.object(
+                ball,
+                "_write_clipboard_bytes",
+                side_effect=AssertionError("clipboard bytes must not be written"),
+            ):
+                ball._ingest_clipboard_data(mime_data)
+            ball._start_remote_download_worker(["https://example.com/a.gif"])
+            ball._start_worker([source])
+
+            drag_mime = QMimeData()
+            drag_mime.setUrls([QUrl.fromLocalFile(str(source))])
+            drag_event = QDragEnterEvent(
+                QPoint(10, 10),
+                Qt.DropAction.CopyAction,
+                drag_mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            ball.dragEnterEvent(drag_event)
+
+            opened: list[str] = []
+            ball.quick_menu.open_drawer = (
+                lambda action, _anchor, _available: opened.append(action)
+            )
+            ball._handle_quick_menu_action("settings")
+
+            self.assertFalse(drag_event.isAccepted())
+            self.assertIsNone(ball.worker)
+            self.assertIsNone(ball.remote_worker)
+            self.assertEqual(opened, ["settings"])
+            self.assertTrue(messages)
+            self.assertTrue(all(tone == "error" for _message, tone in messages))
+            self.assertTrue(any("素材目录不可用" in message for message, _tone in messages))
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_backend_notices_are_localized_and_ready_refreshes_status(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall()
+        shown: list[tuple[str, str]] = []
+        refreshes: list[bool] = []
+        pending_refreshes: list[bool] = []
+        ball.show_toast = lambda message, *, tone: shown.append((message, tone))
+        ball._refresh_ai_menu_status = lambda: refreshes.append(True)
+        ball._refresh_pending_badge = lambda: pending_refreshes.append(True)
+        try:
+            ball._on_backend_notice("port_conflict", {"port": 18110})
+            ball._on_backend_notice("auto_start_disabled", {})
+            ball._on_backend_notice("start_slow", {})
+            ball._on_backend_notice("unknown", {})
+            ball._on_backend_phase_changed("starting")
+            ball._on_backend_phase_changed("ready")
+
+            self.assertIn("18110", shown[0][0])
+            self.assertEqual(shown[0][1], "error")
+            self.assertIn("禁止", shown[1][0])
+            self.assertEqual(shown[1][1], "error")
+            self.assertIn("准备素材库", shown[2][0])
+            self.assertEqual(shown[2][1], "progress")
+            self.assertEqual(len(shown), 3)
+            self.assertEqual(refreshes, [True])
+            self.assertEqual(pending_refreshes, [True])
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_managed_window_waits_for_runtime_barrier_before_final_close(self) -> None:
+        ball = app_gui_module.HaypileFloatingBall(managed_shutdown=True)
+        requested: list[bool] = []
+        ready: list[bool] = []
+        ball.shutdown_requested.connect(lambda: requested.append(True))
+        ball.shutdown_ready.connect(lambda: ready.append(True))
+        try:
+            ball.shutdown()
+
+            self.assertEqual(requested, [True])
+            self.assertEqual(ready, [True])
+            self.assertTrue(ball._shutdown_ready_emitted)
+            self.assertFalse(ball._cleanup_done)
+            self.assertFalse(ball._sound_feedback.enabled)
+            self.assertFalse(ball._sound_feedback.play("nav"))
+            ball._set_sound_enabled(True)
+            self.assertFalse(ball._sound_feedback.enabled)
+
+            ball.complete_shutdown()
+            self.assertTrue(ball._cleanup_done)
+        finally:
+            ball._cleanup_done = True
+            ball.close()
+            self.app.processEvents()
 
     def test_ingest_batch_preflight_rejects_limits_before_storage_changes(self) -> None:
         storage = self.tmpdir / "storage"
@@ -2971,32 +4391,49 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         first.write_bytes(b"1234")
         second.write_bytes(b"56")
 
+        def preflight(
+            files: list[Path],
+            *,
+            max_files: int,
+            max_bytes: int,
+            reserve_bytes: int,
+        ) -> str | None:
+            service = app_gui_module.IngestService(
+                storage_dir=storage,
+                assets_dir=storage / "assets",
+                index_dir=storage / "index",
+                themes_dir=storage / "themes",
+                manifest_path=storage / "index/assets_manifest.json",
+                max_files=max_files,
+                max_batch_bytes=max_bytes,
+                reserve_bytes=reserve_bytes,
+            )
+            return service._batch_preflight_error(files)
+
         with patch(
-            "app_gui.shutil.disk_usage",
+            "app.services.ingest_service.shutil.disk_usage",
             return_value=SimpleNamespace(free=1024),
         ):
-            too_many = app_gui_module._ingest_batch_preflight_error(
-                [first, second], storage, max_files=1, max_bytes=100, reserve_bytes=10
+            too_many = preflight(
+                [first, second], max_files=1, max_bytes=100, reserve_bytes=10
             )
-            too_large = app_gui_module._ingest_batch_preflight_error(
-                [first], storage, max_files=2, max_bytes=3, reserve_bytes=10
+            too_large = preflight(
+                [first], max_files=2, max_bytes=3, reserve_bytes=10
             )
-            no_space = app_gui_module._ingest_batch_preflight_error(
-                [first], storage, max_files=2, max_bytes=100, reserve_bytes=1021
+            no_space = preflight(
+                [first], max_files=2, max_bytes=100, reserve_bytes=1021
             )
-            accepted = app_gui_module._ingest_batch_preflight_error(
-                [first], storage, max_files=2, max_bytes=100, reserve_bytes=10
+            accepted = preflight(
+                [first], max_files=2, max_bytes=100, reserve_bytes=10
             )
 
-        self.assertIn("最多", too_many)
-        self.assertIn("2GB", too_large)
-        self.assertIn("空间不足", no_space)
-        self.assertEqual(accepted, "")
+        self.assertEqual(too_many, "batch_file_limit")
+        self.assertEqual(too_large, "batch_byte_limit")
+        self.assertEqual(no_space, "storage_space_low")
+        self.assertIsNone(accepted)
         self.assertEqual(list(storage.iterdir()), [])
 
     def test_worker_shutdown_requests_interruption_without_forcing_thread(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
 
         class FakeWorker:
             requested = False
@@ -3024,7 +4461,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.material_panel.ai_refresh_worker = None
             ball._cleanup_done = True
             ball.close()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def test_remote_worker_cleans_downloaded_files_when_cancelled(self) -> None:
         incoming = self.tmpdir / "incoming"
@@ -3043,163 +4479,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
         self.assertFalse(downloaded.exists())
 
-    def test_backend_identity_and_graceful_deadline(self) -> None:
-        self.assertTrue(
-            app_gui_module.HaypileFloatingBall._is_haypile_backend(
-                {
-                    "ok": True,
-                    "product": "haypile",
-                    "protocol_version": 1,
-                    "ready": True,
-                },
-                require_ready=True,
-            )
-        )
-        self.assertFalse(
-            app_gui_module.HaypileFloatingBall._is_haypile_backend(
-                {"ok": True, "ready": True},
-                require_ready=True,
-            )
-        )
-
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
-
-        class FakeProcess:
-            pid = 123
-            terminated = False
-
-            def poll(self):
-                return None
-
-            def terminate(self):
-                self.terminated = True
-
-            def kill(self):
-                raise AssertionError("kill must not run at the graceful deadline")
-
-        ball = app_gui_module.HaypileFloatingBall()
-        process = FakeProcess()
-        ball.api_process = process
-        ball.api_owned_by_gui = True
-        try:
-            configured = {
-                "ok": True,
-                "product": "haypile",
-                "protocol_version": 1,
-                "host": ball.settings.HOST,
-                "port": ball.settings.PORT,
-                "pid": process.pid,
-                "ready": True,
-            }
-            self.assertTrue(
-                ball._is_configured_haypile_backend(
-                    configured,
-                    require_ready=True,
-                    expected_pid=process.pid,
-                )
-            )
-            self.assertFalse(
-                ball._is_configured_haypile_backend(
-                    {**configured, "port": ball.settings.PORT + 1},
-                    require_ready=True,
-                )
-            )
-            self.assertFalse(
-                ball._is_configured_haypile_backend(
-                    configured,
-                    require_ready=True,
-                    expected_pid=process.pid + 1,
-                )
-            )
-            with patch("app_gui.send_ipc_request", return_value={"ok": True}):
-                ball.stop_api_server()
-            self.assertFalse(process.terminated)
-            ball._backend_phase_started_at = time.monotonic() - 10.1
-            ball._poll_api_server()
-            self.assertTrue(process.terminated)
-            self.assertEqual(ball._backend_phase, "terminating")
-        finally:
-            ball.api_process = None
-            ball.api_owned_by_gui = False
-            ball._cleanup_done = True
-            ball.close()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
-
-    def test_slow_backend_start_is_not_terminated_after_five_seconds(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
-
-        class FakeProcess:
-            terminated = False
-
-            def poll(self):
-                return None
-
-            def terminate(self):
-                self.terminated = True
-
-        ball = app_gui_module.HaypileFloatingBall()
-        process = FakeProcess()
-        notices: list[str] = []
-        ball.api_process = process
-        ball.api_owned_by_gui = True
-        ball._backend_phase = "starting"
-        ball._backend_phase_started_at = time.monotonic() - 5.1
-        ball._probe_backend_response = lambda: None
-        ball.show_toast = lambda message, success=True: notices.append(message)
-        try:
-            ball._poll_api_server()
-
-            self.assertFalse(process.terminated)
-            self.assertEqual(ball._backend_phase, "starting")
-            self.assertTrue(notices)
-        finally:
-            ball.api_process = None
-            ball.api_owned_by_gui = False
-            ball._cleanup_done = True
-            ball.close()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
-
-    def test_backend_restart_clears_finished_process_before_probe(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
-        ball = app_gui_module.HaypileFloatingBall()
-        finished: list[bool] = []
-
-        class FinishedProcess:
-            @staticmethod
-            def poll():
-                return 0
-
-        ball.api_process = FinishedProcess()
-        ball._finish_api_process = lambda: (
-            finished.append(True),
-            setattr(ball, "api_process", None),
-        )
-        ball._probe_backend_response = lambda: {
-            "ok": True,
-            "product": "haypile",
-            "protocol_version": 1,
-            "host": ball.settings.HOST,
-            "port": ball.settings.PORT,
-            "pid": 999,
-            "ready": True,
-        }
-        try:
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
-            ball.start_api_server()
-            self.assertEqual(finished, [True])
-            self.assertIsNone(ball.api_process)
-            self.assertEqual(ball._backend_phase, "ready")
-        finally:
-            ball._cleanup_done = True
-            ball.close()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
-
     def test_ingest_finish_refreshes_visible_panel_and_triggers_feedback(self) -> None:
-        previous_start = app_gui_module.HaypileFloatingBall.start_api_server
-        app_gui_module.HaypileFloatingBall.start_api_server = lambda self: None
         ball = app_gui_module.HaypileFloatingBall()
         refreshes: list[bool] = []
         previous_refresh = ball.material_panel.refresh
@@ -3217,7 +4497,6 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.material_panel.refresh = previous_refresh
             ball.close()
             self.app.processEvents()
-            app_gui_module.HaypileFloatingBall.start_api_server = previous_start
 
     def _write_project(self, *, state: str) -> tuple[Path, Path, list[str]]:
         project_root = self.tmpdir / "signal-pool-demo"

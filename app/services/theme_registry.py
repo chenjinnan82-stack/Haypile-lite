@@ -243,6 +243,9 @@ class ThemeRegistry:
                     "icon",
                     "content_image",
                     "texture",
+                    "reaction",
+                    "sticker",
+                    "ui_animation",
                     "audio",
                     "unknown",
                 }:
@@ -297,6 +300,9 @@ class ThemeRegistry:
             "icon",
             "content_image",
             "texture",
+            "reaction",
+            "sticker",
+            "ui_animation",
             "audio",
         )
         candidates = (asset_key, Path(asset_url.removeprefix("/static/")).stem.lower())
@@ -327,6 +333,9 @@ class ThemeRegistry:
             "hero_image": "object-cover object-center",
             "icon": "w-6 h-6 object-contain",
             "texture": "bg-repeat opacity-80",
+            "reaction": "max-w-full h-auto object-contain",
+            "sticker": "max-w-full h-auto object-contain",
+            "ui_animation": "max-w-full h-auto object-contain",
         }
         return mapping.get(normalized_role, "object-contain")
 
@@ -338,5 +347,8 @@ class ThemeRegistry:
             "hero_image": "Use as the primary hero visual.",
             "icon": "Use as a functional icon or status marker.",
             "texture": "Use as a repeated or layered page texture.",
+            "reaction": "Use as a brief animated reaction near the content it responds to.",
+            "sticker": "Use as a compact animated overlay or decorative accent.",
+            "ui_animation": "Use as a small interface-state or feedback animation.",
         }
         return mapping.get(normalized_role, "Use as a general visual asset.")

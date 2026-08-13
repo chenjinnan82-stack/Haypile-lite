@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.3.0-alpha.8 (upcoming)
+
+Alpha.7 was not published. Alpha.8 supersedes its planned GIF slice after the
+shared intake transaction and clipboard entry landed on the same source line.
+
+- Accept and fully validate true GIF images from local drops, direct
+  `image/gif` URLs, and chat apps that expose actual file attachments while
+  preserving the original bytes.
+- Enforce GIF-specific size, frame, dimension, decoded-pixel, and effective
+  duration limits in the shared validator and legacy recovery path.
+- Preview one GIF loop in the Assets drawer, keep single-frame GIFs static,
+  stop animation in low-power mode, and add manual reaction, sticker, and
+  UI-animation roles. New GIFs remain pending until a role is confirmed.
+- Keep GIFs out of AI sorting and expose verified MIME and animation metadata
+  through the manifest, HTTP, MCP, and `asset-handoff.v1`.
+- Move the complete intake transaction behind a Qt-free service and one
+  cross-process writer lock shared by GUI intake and startup recovery.
+- Add an explicit clipboard action for local files, exact GIF payloads, safe
+  direct URLs, and an honest static-PNG fallback when only pixels are available.
+- Add a local privacy-safe clipboard-format diagnostic that reports format
+  names, sizes, and selected intake route without exposing content or locations.
+- Guide an empty Assets drawer toward drag or clipboard intake, and let users
+  copy a privacy-safe desktop diagnostic with only whitelisted runtime state.
+- Render image, audio, and GIF intake through one reproducible, offscreen-testable
+  entry renderer while preserving the existing leaf, nest, and three-frame motion.
+- Move backend ownership and deferred storage hydration out of the floating
+  window constructor so the UI can appear first, degrade safely when storage is
+  unavailable, and coordinate shutdown without stopping a reused backend.
+- Make the Assets drawer, pending badge, and service status share explicit
+  storage settings and the same manifest fail-close catalog; keep real-project
+  rehearsal and Project Picker logic outside the embedded product path.
+- Give C-ring navigation, Assets, and Settings native keyboard focus, checked
+  states, accessible descriptions, semantic progress/result colors, and a
+  font-tolerant role grid.
+- Keep the attached drawer clear of its action ring and rotate the selected
+  Assets, Agent, or Settings action to the connector as pages change.
+- Keep settings lookup side-effect free, defer product storage preparation to
+  desktop hydration and the IPC secret to first use, and let file-logging
+  failures preserve the degraded UI.
+- Build and test alpha.8 against one exact Python and dependency constraint set,
+  and generate an offscreen attached-hub layout report alongside intake visuals.
+- Build GUI, MCP, and HTTP-example handoffs through one shared serializer so
+  additive contract fields cannot drift between entry points.
+- Refuse release package builds from a dirty Git worktree so `BUILD_INFO.json`
+  always identifies the exact committed source bytes.
+
 ## v0.3.0-alpha.6 (seed safety candidate)
 
 - Keep the `alpha.5` source tag immutable after both desktop package gates

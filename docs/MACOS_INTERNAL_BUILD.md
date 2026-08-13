@@ -18,6 +18,9 @@ From the repository root:
 ./scripts/build_macos_app.sh
 ```
 
+The release build requires a clean Git worktree so the embedded commit identifies
+the exact packaged source. Commit all intended changes before running it.
+
 The script creates an isolated `.build-venv`, generates `build/Haypile.icns`,
 runs `pyside6-deploy` in standalone mode, ad-hoc signs the app, and executes
 packaged MCP and backend smoke tests.
@@ -26,8 +29,8 @@ Outputs:
 
 ```text
 dist/Haypile.app
-dist/Haypile-v0.3.0-alpha.6-macos-arm64.app.zip
-dist/Haypile-v0.3.0-alpha.6-macos-arm64.app.zip.sha256
+dist/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip
+dist/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip.sha256
 ```
 
 Build outputs are intentionally ignored by Git.

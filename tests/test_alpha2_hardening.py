@@ -413,7 +413,10 @@ class AtomicIngestRecoveryTests(unittest.TestCase):
             async with lifespan(fastapi_app):
                 pass
 
-        with patch("app.main.StorageRuntimeDB", side_effect=RuntimeError("damaged database")):
+        with patch(
+            "app.main.IngestService.recover_and_project",
+            side_effect=RuntimeError("damaged database"),
+        ):
             with self.assertRaisesRegex(RuntimeError, "storage initialization failed"):
                 asyncio.run(start_once())
 
@@ -848,6 +851,7 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
             text = workflow.read_text(encoding="utf-8")
             self.assertIn("source_ref:", text)
             self.assertIn("tag_commit", text.lower())
+            self.assertIn("EXPECTED_RELEASE_TAG: v0.3.0-alpha.8", text)
             self.assertIn("attest-build-provenance@", text)
             self.assertIn('--repo "$GITHUB_REPOSITORY"', text)
         macos_text = workflows[1].read_text(encoding="utf-8")
@@ -870,6 +874,91 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
                 self.assertIn(forbidden_name, text, f"{relative}: {forbidden_name}")
             self.assertIn("BUILD_INFO.json", text)
 
+    def test_release_builds_require_clean_git_worktree_before_writes(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        scripts = {
+            "scripts/build_macos_app.sh": '"$PYTHON" -m venv "$VENV"',
+            "scripts/build_windows_app.ps1": "[System.IO.Path]::GetTempFileName()",
+        }
+        for relative, first_write in scripts.items():
+            text = (root / relative).read_text(encoding="utf-8")
+            guard = text.index("--porcelain=v1 --untracked-files=all")
+            self.assertIn(
+                "Release builds require a clean Git worktree",
+                text,
+            )
+            self.assertLess(guard, text.index(first_write), relative)
+
+    def test_release_gates_use_one_exact_python_and_dependency_constraint_set(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        constraints_path = root / "constraints-release.txt"
+        constraints = [
+            line.strip()
+            for line in constraints_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        self.assertTrue(constraints)
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z0-9_.-]+==[^=\s]+", line) for line in constraints))
+        normalized = {line.split("==", 1)[0].lower().replace("_", "-") for line in constraints}
+        self.assertTrue(
+            {
+                "fastapi",
+                "uvicorn",
+                "colorama",
+                "pydantic-settings",
+                "pillow",
+                "httpx",
+                "pyside6",
+                "nuitka",
+            }.issubset(normalized)
+        )
+        paths = (
+            root / ".github/workflows/ci.yml",
+            root / ".github/workflows/macos-build.yml",
+            root / ".github/workflows/windows-build.yml",
+            root / "scripts/build_macos_app.sh",
+            root / "scripts/build_windows_app.ps1",
+        )
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("constraints-release.txt", text, path.name)
+            self.assertIn("3.12.13", text, path.name)
+            self.assertIn("pip==26.2", text, path.name)
+        self.assertIn(
+            "constraints-release.txt",
+            (root / "RELEASE_MANIFEST.md").read_text(encoding="utf-8"),
+        )
+
+    def test_alpha8_versions_are_consistent_across_release_entry_points(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        public_version = "0.3.0-alpha.8"
+        python_version = "0.3.0a8"
+        self.assertIn(
+            f'APP_VERSION = "{python_version}"',
+            (root / "app/core/config.py").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            f'version = "{python_version}"',
+            (root / "pyproject.toml").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            f'SERVER_VERSION = "{public_version}"',
+            (root / "mcp_server.py").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            f'RELEASE_VERSION="{public_version}"',
+            (root / "scripts/build_macos_app.sh").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            f'$ReleaseVersion = "{public_version}"',
+            (root / "scripts/build_windows_app.ps1").read_text(encoding="utf-8"),
+        )
+        for workflow in (
+            root / ".github/workflows/macos-build.yml",
+            root / ".github/workflows/windows-build.yml",
+        ):
+            self.assertIn(f"v{public_version}", workflow.read_text(encoding="utf-8"))
+
     def test_windows_build_mcp_smoke_uses_the_server_release_version(self) -> None:
         root = Path(__file__).resolve().parents[1]
         build_text = (root / "scripts/build_windows_app.ps1").read_text(encoding="utf-8")
@@ -889,7 +978,37 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
         self.assertIn('DEPLOY_DIR="$ROOT/deployment"', text)
         self.assertIn('rm -rf "$DEPLOY_DIR"', text)
         self.assertIn('DEPLOY_LOG="$BUILD_DIR/pyside6-deploy.log"', text)
-        self.assertIn('MACOS_BUILD_VERSION="3006"', text)
+        self.assertIn('MACOS_BUILD_VERSION="3008"', text)
+        self.assertIn("libqgif.dylib", text)
+        for filename in (
+            "haypile-nav.wav",
+            "haypile-intake.wav",
+            "haypile-duplicate.wav",
+            "haypile-error.wav",
+        ):
+            self.assertIn(filename, text)
+        self.assertIn("QtMultimedia.so", text)
+        self.assertIn("Contents/MacOS/QtMultimedia", text)
+        self.assertIn("PySide6/qt-plugins/multimedia", text)
+        self.assertIn("lib*mediaplugin.dylib", text)
+        windows_text = (root / "scripts/build_windows_app.ps1").read_text(encoding="utf-8")
+        self.assertIn("qgif.dll", windows_text)
+        for filename in (
+            "haypile-nav.wav",
+            "haypile-intake.wav",
+            "haypile-duplicate.wav",
+            "haypile-error.wav",
+        ):
+            self.assertIn(filename, windows_text)
+        self.assertIn("QtMultimedia.pyd", windows_text)
+        self.assertIn("Qt6Multimedia.dll", windows_text)
+        self.assertIn("PySide6/qt-plugins/multimedia", windows_text)
+        self.assertIn("*mediaplugin.dll", windows_text)
+        for spec_name in ("pysidedeploy.spec", "pysidedeploy.windows.spec"):
+            spec_text = (root / spec_name).read_text(encoding="utf-8")
+            self.assertIn("Multimedia", spec_text)
+            self.assertIn(",multimedia,", spec_text)
+            self.assertIn("--include-data-dir=ui_assets=ui_assets", spec_text)
         self.assertIn("Add :CFBundleVersion string", text)
 
 
