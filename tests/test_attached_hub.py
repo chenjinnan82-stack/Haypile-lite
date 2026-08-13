@@ -500,13 +500,13 @@ class AttachedHubTests(unittest.TestCase):
             "Pending",
         )
 
-    def test_enlarged_english_role_labels_fit_the_grid(self) -> None:
+    def test_enlarged_english_role_labels_reflow_without_clipping(self) -> None:
         app_gui.set_ui_language("en")
         self.ball._handle_quick_menu_action("assets")
         panel = self.ball.material_panel
         panel.retranslate()
         enlarged = QFont(panel.font())
-        enlarged.setPointSizeF(max(11.0, enlarged.pointSizeF() * 1.25))
+        enlarged.setPointSizeF(max(18.0, enlarged.pointSizeF() * 1.75))
         for button in panel.role_buttons.values():
             button.setFont(enlarged)
         panel.role_row.show()
@@ -516,6 +516,13 @@ class AttachedHubTests(unittest.TestCase):
         for button in panel.role_buttons.values():
             required = button.fontMetrics().horizontalAdvance(button.text()) + 4
             self.assertGreaterEqual(button.width(), required, button.text())
+        columns = {
+            panel.role_row.layout().getItemPosition(
+                panel.role_row.layout().indexOf(button)
+            )[1]
+            for button in panel.role_buttons.values()
+        }
+        self.assertLessEqual(max(columns), 1)
 
     def test_api_key_never_enters_gui_state_when_credential_store_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

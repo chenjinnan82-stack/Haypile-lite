@@ -133,6 +133,7 @@ from app.services.theme_registry import ThemeRegistry
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
+    QEvent,
     QPoint,
     QPointF,
     QPropertyAnimation,
@@ -1315,6 +1316,8 @@ class MaterialPanelWindow(QWidget):
             button.clicked.connect(lambda _checked=False, selected_role=role: self._set_selected_role(selected_role))
             self.role_buttons[role] = button
             role_layout.addWidget(button, index // 3, index % 3)
+            button.installEventFilter(self)
+        self.role_row.installEventFilter(self)
         self.role_row.hide()
         layout.addWidget(self.role_row)
 
@@ -1538,6 +1541,37 @@ class MaterialPanelWindow(QWidget):
         for current, following in zip(focus_order, focus_order[1:]):
             QWidget.setTabOrder(current, following)
 
+    def _layout_image_role_buttons(self) -> None:
+        role_layout = self.role_row.layout()
+        buttons = list(self.role_buttons.values())
+        available_width = self.role_row.contentsRect().width()
+        spacing = max(0, role_layout.horizontalSpacing())
+        required_width = max(
+            max(button.sizeHint().width(), button.fontMetrics().horizontalAdvance(button.text()) + 4)
+            for button in buttons
+        )
+        columns = 3
+        while (
+            columns > 1
+            and available_width > 0
+            and columns * required_width + (columns - 1) * spacing > available_width
+        ):
+            columns -= 1
+        for index, button in enumerate(buttons):
+            role_layout.addWidget(button, index // columns, index % columns)
+        role_layout.activate()
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            watched is self.role_row
+            and event.type() in {QEvent.Type.Resize, QEvent.Type.Show}
+        ) or (
+            watched in self.role_buttons.values()
+            and event.type() == QEvent.Type.FontChange
+        ):
+            QTimer.singleShot(0, self._layout_image_role_buttons)
+        return super().eventFilter(watched, event)
+
     def set_toast_handler(self, callback) -> None:
         self._toast_callback = callback
         if self._theme_recovery_notice_pending and self._toast_callback is not None:
@@ -1613,6 +1647,7 @@ class MaterialPanelWindow(QWidget):
         self.scope_buttons["latest"].setText(ui_text("最新批次", "Latest batch"))
         self.scope_buttons["all"].setText(ui_text("全部素材", "All assets"))
         self.retry_batch_button.setText(ui_text("重试整理", "Retry sorting"))
+        QTimer.singleShot(0, self._layout_image_role_buttons)
         self.refresh()
 
     def show_panel(self) -> None:
