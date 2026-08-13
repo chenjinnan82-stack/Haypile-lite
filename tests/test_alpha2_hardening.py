@@ -860,6 +860,9 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
             macos_text.index("python -m unittest discover -s tests"),
             macos_text.index("./scripts/build_macos_app.sh"),
         )
+        windows_build = (root / "scripts/build_windows_app.ps1").read_text(encoding="utf-8")
+        self.assertIn("Haypile/storage/index/mcp_sessions", windows_build)
+        self.assertNotIn("ExpectedMcpKey", windows_build)
 
     def test_build_scripts_reject_runtime_state_in_packages(self) -> None:
         root = Path(__file__).resolve().parents[1]

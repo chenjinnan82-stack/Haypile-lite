@@ -187,9 +187,9 @@ try {
     if ($McpOutput -notmatch ('"version"\s*:\s*"' + $McpVersionPattern + '"')) {
         throw "Haypile.exe --mcp did not return server version $ReleaseVersion."
     }
-    $ExpectedMcpKey = Join-Path $SmokeRoot "Haypile/storage/ipc_authkey"
-    if (-not (Test-Path $ExpectedMcpKey -PathType Leaf)) {
-        throw "Packaged MCP did not place its IPC key under LOCALAPPDATA."
+    $ExpectedMcpSessionDir = Join-Path $SmokeRoot "Haypile/storage/index/mcp_sessions"
+    if (-not (Test-Path $ExpectedMcpSessionDir -PathType Container)) {
+        throw "Packaged MCP did not place its session state under LOCALAPPDATA."
     }
     if (Test-Path $PackagedRuntimeDir) {
         throw "Packaged MCP wrote runtime state beside Haypile.exe."
