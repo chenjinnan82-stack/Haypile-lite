@@ -55,12 +55,12 @@ command -v iconutil >/dev/null
 command -v codesign >/dev/null
 command -v ditto >/dev/null
 test -f "$ICON_SOURCE"
-test "$("$PYTHON" -c 'import platform; print(platform.python_version())')" = "3.12.13"
+test "$("$PYTHON" -c 'import platform; print(platform.python_version())')" = "3.12.10"
 
 if [[ ! -x "$VENV/bin/python3" ]]; then
   "$PYTHON" -m venv "$VENV"
 fi
-test "$("$VENV/bin/python3" -c 'import platform; print(platform.python_version())')" = "3.12.13"
+test "$("$VENV/bin/python3" -c 'import platform; print(platform.python_version())')" = "3.12.10"
 
 "$VENV/bin/python3" -m pip install --quiet --upgrade "pip==26.2"
 "$VENV/bin/python3" -m pip install --quiet \

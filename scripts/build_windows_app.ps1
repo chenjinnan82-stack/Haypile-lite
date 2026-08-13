@@ -68,8 +68,8 @@ try {
     }
     $PythonVersion = (& $Python -c "import platform; print(platform.python_version())").Trim()
     Assert-LastExitCode "Could not inspect the Windows build Python."
-    if ($PythonVersion -ne "3.12.13") {
-        throw "Haypile alpha.8 release builds require Python 3.12.13."
+    if ($PythonVersion -ne "3.12.10") {
+        throw "Haypile alpha.8 release builds require Python 3.12.10."
     }
     if (-not (Test-Path $VenvPython -PathType Leaf)) {
         if ($SkipInstall) {
@@ -80,8 +80,8 @@ try {
     }
     $VenvPythonVersion = (& $VenvPython -c "import platform; print(platform.python_version())").Trim()
     Assert-LastExitCode "Could not inspect the Windows build environment Python."
-    if ($VenvPythonVersion -ne "3.12.13") {
-        throw "Haypile alpha.8 build environment requires Python 3.12.13."
+    if ($VenvPythonVersion -ne "3.12.10") {
+        throw "Haypile alpha.8 build environment requires Python 3.12.10."
     }
     if (-not $SkipInstall) {
         & $VenvPython -m pip install --quiet --upgrade "pip==26.2"

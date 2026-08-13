@@ -55,7 +55,7 @@ jobs:
           "commit=$SourceCommit" >> $env:GITHUB_OUTPUT
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.12.13"
+          python-version: "3.12.10"
           architecture: x64
       - name: Prepare build environment
         shell: pwsh

@@ -922,7 +922,7 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
         for path in paths:
             text = path.read_text(encoding="utf-8")
             self.assertIn("constraints-release.txt", text, path.name)
-            self.assertIn("3.12.13", text, path.name)
+            self.assertIn("3.12.10", text, path.name)
             self.assertIn("pip==26.2", text, path.name)
         self.assertIn(
             "constraints-release.txt",

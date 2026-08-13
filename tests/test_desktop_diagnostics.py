@@ -18,7 +18,7 @@ class DesktopDiagnosticTests(unittest.TestCase):
             build_commit="a" * 40,
             runtime="packaged",
             platform_name="darwin",
-            python_version="3.12.13",
+            python_version="3.12.10",
             qt_version="6.11.1",
             language="zh",
             low_power_enabled=True,
