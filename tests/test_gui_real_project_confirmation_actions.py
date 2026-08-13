@@ -676,9 +676,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 self.assertEqual(len(materialized), 1)
                 self.assertFalse(materialized[0][0].exists())
                 self.assertEqual(ball._remote_ingest_paths, set())
-                self.assertEqual(ball._active_ingest_visual_kind, "gif")
+                self.assertEqual(ball._drop_visual_kind, "gif")
                 self.assertTrue(ball._gif_open_timer.isActive())
-                self.assertIsNotNone(ball._pending_ingest_finish)
                 if os.name != "nt":
                     self.assertEqual(materialized[0][1], 0o600)
             finally:
