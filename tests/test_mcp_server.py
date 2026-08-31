@@ -115,7 +115,7 @@ class McpServerTests(unittest.TestCase):
         )
 
         response = json.loads(process.stdout)
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.8")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.9")
         self.assertNotIn("PySide6", process.stderr)
 
     def test_lists_haypile_tools(self) -> None:
@@ -433,7 +433,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "haypile")
-        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.8")
+        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.9")
         names = [tool["name"] for tool in responses[1]["result"]["tools"]]
         self.assertIn("haypile_copy_handoff", names)
 
@@ -457,7 +457,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual([responses[0]["error"]["code"], responses[1]["error"]["code"]], [-32700, -32700])
-        self.assertEqual(responses[2]["result"]["serverInfo"]["version"], "0.3.0-alpha.8")
+        self.assertEqual(responses[2]["result"]["serverInfo"]["version"], "0.3.0-alpha.9")
         self.assertIn("tools", responses[3]["result"])
 
 

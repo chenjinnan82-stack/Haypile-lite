@@ -1,12 +1,13 @@
 # macOS Test Build
 
 Haypile v0.3 can be built as a standalone Apple Silicon utility app. This is
-an unsigned limited-test artifact, not a notarized public installer.
+an ad-hoc-signed limited-test artifact, not a notarized public installer.
 
 ## Requirements
 
 - Apple Silicon Mac
-- Python 3.12
+- Python 3.12.10
+- [uv](https://docs.astral.sh/uv/) for the exact Python installation
 - Xcode Command Line Tools
 - Network access on the first build for Python packages and Nuitka tooling
 
@@ -15,7 +16,8 @@ an unsigned limited-test artifact, not a notarized public installer.
 From the repository root:
 
 ```bash
-./scripts/build_macos_app.sh
+uv python install 3.12.10
+PYTHON="$(uv python find 3.12.10)" ./scripts/build_macos_app.sh
 ```
 
 The release build requires a clean Git worktree so the embedded commit identifies
@@ -29,8 +31,8 @@ Outputs:
 
 ```text
 dist/Haypile.app
-dist/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip
-dist/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip.sha256
+dist/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip
+dist/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip.sha256
 ```
 
 Build outputs are intentionally ignored by Git.

@@ -851,7 +851,7 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
             text = workflow.read_text(encoding="utf-8")
             self.assertIn("source_ref:", text)
             self.assertIn("tag_commit", text.lower())
-            self.assertIn("EXPECTED_RELEASE_TAG: v0.3.0-alpha.8", text)
+            self.assertIn("EXPECTED_RELEASE_TAG: v0.3.0-alpha.9", text)
             self.assertIn("attest-build-provenance@", text)
             self.assertIn('--repo "$GITHUB_REPOSITORY"', text)
         macos_text = workflows[1].read_text(encoding="utf-8")
@@ -932,10 +932,10 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
             (root / "RELEASE_MANIFEST.md").read_text(encoding="utf-8"),
         )
 
-    def test_alpha8_versions_are_consistent_across_release_entry_points(self) -> None:
+    def test_alpha9_versions_are_consistent_across_release_entry_points(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        public_version = "0.3.0-alpha.8"
-        python_version = "0.3.0a8"
+        public_version = "0.3.0-alpha.9"
+        python_version = "0.3.0a9"
         self.assertIn(
             f'APP_VERSION = "{python_version}"',
             (root / "app/core/config.py").read_text(encoding="utf-8"),
@@ -962,6 +962,21 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
         ):
             self.assertIn(f"v{public_version}", workflow.read_text(encoding="utf-8"))
 
+    def test_alpha9_cleanup_removes_unused_release_inputs(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        dependency_text = "\n".join(
+            (root / relative).read_text(encoding="utf-8")
+            for relative in (
+                "pyproject.toml",
+                "requirements-core.txt",
+                "constraints-release.txt",
+            )
+        )
+        self.assertNotIn("filetype", dependency_text.lower())
+        macos_spec = (root / "pysidedeploy.spec").read_text(encoding="utf-8")
+        self.assertIn("modules = Core,Gui,Multimedia,Svg,Widgets", macos_spec)
+        self.assertNotIn("modules = Core,DBus", macos_spec)
+
     def test_windows_build_mcp_smoke_uses_the_server_release_version(self) -> None:
         root = Path(__file__).resolve().parents[1]
         build_text = (root / "scripts/build_windows_app.ps1").read_text(encoding="utf-8")
@@ -981,7 +996,7 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
         self.assertIn('DEPLOY_DIR="$ROOT/deployment"', text)
         self.assertIn('rm -rf "$DEPLOY_DIR"', text)
         self.assertIn('DEPLOY_LOG="$BUILD_DIR/pyside6-deploy.log"', text)
-        self.assertIn('MACOS_BUILD_VERSION="3008"', text)
+        self.assertIn('MACOS_BUILD_VERSION="3009"', text)
         self.assertIn("libqgif.dylib", text)
         for filename in (
             "haypile-nav.wav",

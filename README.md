@@ -20,22 +20,20 @@ A local-first asset intake for AI creators and independent developers.
 
 ## Desktop Downloads
 
-`v0.3.0-alpha.8` is a prerelease for informed testing.
+`v0.3.0-alpha.9` is a cleanup prerelease for informed testing.
 
 | Platform | Download | Verify |
 | --- | --- | --- |
-| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip.sha256) |
-| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-windows-x64.zip.sha256) |
+| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip.sha256) |
+| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-windows-x64.zip.sha256) |
 
-[Release notes](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.8)
+[Release notes](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.9)
 
-> **Alpha.8 GIF and clipboard intake:** true GIF files can be dropped from the desktop,
-> direct browser image URLs, or chat apps that expose an actual file attachment.
-> The app also has an explicit clipboard action: exact GIF or file payloads keep
-> their bytes, while pixel-only clipboard data is stored honestly as a static
-> PNG. Low-volume original action sounds accompany navigation, intake,
-> duplicates, and rejection and can be disabled independently. App-private
-> animated emoji formats are not supported.
+> **Alpha.9 cleanup:** this release adds no product capability. It aligns the
+> bilingual release pages and reproducible build metadata, removes one unused
+> media-detection dependency, stops explicitly requesting Qt DBus in the macOS
+> deployment spec, and retains Alpha.8's image, true-GIF, clipboard, audio,
+> HTTP, MCP, and handoff behavior.
 
 The macOS build is ad-hoc signed and not notarized; right-click the app and
 choose **Open** on first launch. The Windows build is unsigned and portable;
@@ -84,7 +82,7 @@ Haypile is local-first by design:
 
 See [Security Policy](SECURITY.md) or [report privately on GitHub](https://github.com/chenjinnan82-stack/Haypile-lite/security/advisories/new).
 
-## What Main / Upcoming Alpha.8 Adds
+## Current Alpha Capabilities
 
 - True GIF intake from local files, direct `image/gif` URLs, and file
   attachments, with original bytes preserved and strict frame-by-frame limits.
@@ -194,7 +192,7 @@ python3 -m unittest discover -s tests
 
 Build notes live in [macOS internal build](docs/MACOS_INTERNAL_BUILD.md) and the
 platform scripts under `scripts/`. The
-[alpha.8 release notes](docs/OPEN_SOURCE_RELEASE.md) record the exact feature
+[alpha.9 release notes](docs/OPEN_SOURCE_RELEASE.md) record the exact feature
 and support boundary; the private release gate is documented in
 [AI evaluation](docs/AI_EVALUATION.md).
 

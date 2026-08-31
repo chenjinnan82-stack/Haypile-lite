@@ -6,7 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$ReleaseVersion = "0.3.0-alpha.8"
+$ReleaseVersion = "0.3.0-alpha.9"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $GitStatus = @(git -C $Root status --porcelain=v1 --untracked-files=all)
 if ($LASTEXITCODE -ne 0) {
@@ -69,7 +69,7 @@ try {
     $PythonVersion = (& $Python -c "import platform; print(platform.python_version())").Trim()
     Assert-LastExitCode "Could not inspect the Windows build Python."
     if ($PythonVersion -ne "3.12.10") {
-        throw "Haypile alpha.8 release builds require Python 3.12.10."
+        throw "Haypile alpha.9 release builds require Python 3.12.10."
     }
     if (-not (Test-Path $VenvPython -PathType Leaf)) {
         if ($SkipInstall) {
@@ -81,7 +81,7 @@ try {
     $VenvPythonVersion = (& $VenvPython -c "import platform; print(platform.python_version())").Trim()
     Assert-LastExitCode "Could not inspect the Windows build environment Python."
     if ($VenvPythonVersion -ne "3.12.10") {
-        throw "Haypile alpha.8 build environment requires Python 3.12.10."
+        throw "Haypile alpha.9 build environment requires Python 3.12.10."
     }
     if (-not $SkipInstall) {
         & $VenvPython -m pip install --quiet --upgrade "pip==26.2"

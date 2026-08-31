@@ -15,7 +15,7 @@ if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   exit 1
 fi
 
-RELEASE_VERSION="0.3.0-alpha.8"
+RELEASE_VERSION="0.3.0-alpha.9"
 PYTHON="${PYTHON:-python3.12}"
 VENV="$ROOT/.build-venv"
 BUILD_DIR="$ROOT/build"
@@ -26,7 +26,7 @@ ICONSET="$BUILD_DIR/Haypile.iconset"
 APP="$DIST_DIR/Haypile.app"
 BIN="$APP/Contents/MacOS/Haypile"
 ZIP="$DIST_DIR/Haypile-v$RELEASE_VERSION-macos-arm64.app.zip"
-MACOS_BUILD_VERSION="3008"
+MACOS_BUILD_VERSION="3009"
 SPEC="$ROOT/pysidedeploy.spec"
 ICON_SOURCE="$ROOT/assets/haypile-app-icon.png"
 SPEC_BACKUP=""

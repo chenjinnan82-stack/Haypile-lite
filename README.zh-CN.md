@@ -20,19 +20,18 @@
 
 ## 桌面版下载
 
-`v0.3.0-alpha.6` 是面向知情测试用户的安全种子预览版。
+`v0.3.0-alpha.9` 是面向知情测试用户的清理版预览。
 
 | 平台 | 下载 | 校验 |
 | --- | --- | --- |
-| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-macos-arm64.app.zip.sha256) |
-| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-windows-x64.zip.sha256) |
+| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip.sha256) |
+| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-windows-x64.zip.sha256) |
 
-[版本说明](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.6)
+[版本说明](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.9)
 
-> **main / 即将发布的 alpha.8：** 可从桌面、浏览器直接图片 URL，或能提供真实
-> 文件附件的聊天软件拖入 GIF。应用也提供明确的剪贴板收纳动作：完整 GIF 或文件
-> 载荷保留原始字节，仅有静态像素时则如实保存为 PNG；应用私有的动态表情格式尚
-> 不支持。上方 alpha.6 下载版尚不包含这些能力。
+> **Alpha.9 清理版：** 本版不增加产品能力，只统一中英文发布信息与可复现构建
+> 元数据，删除一个未使用的媒体识别依赖，并让 macOS 部署配置不再显式请求 Qt
+> DBus；图片、原字节 GIF、剪贴板、音频、HTTP、MCP 与 handoff 行为保持不变。
 
 macOS 包采用临时签名且尚未公证，首次启动请右键应用并选择“打开”。Windows
 包尚未签名，请先解压再运行 `Haypile.exe`。Haypile 会保存受控的本地副本，但
@@ -79,7 +78,7 @@ Haypile 的本地优先不是一句口号：
 
 安全边界问题请按 [SECURITY.md](SECURITY.md) 或通过 [GitHub 私密漏洞报告](https://github.com/chenjinnan82-stack/Haypile-lite/security/advisories/new) 提交。
 
-## main / 即将发布的 alpha.8 增加了什么
+## 当前 Alpha 能力
 
 - 支持从本地文件、真实 `image/gif` 直链和文件附件安全收纳 GIF；逐帧校验并
   保留原始字节。
@@ -181,7 +180,7 @@ python3 -m unittest discover -s tests
 ```
 
 macOS 构建说明见 [MACOS_INTERNAL_BUILD.md](docs/MACOS_INTERNAL_BUILD.md)，平台脚本位于
-`scripts/`。[alpha.8 发布草稿](docs/OPEN_SOURCE_RELEASE.md)记录了准确的功能与
+`scripts/`。[alpha.9 发布说明](docs/OPEN_SOURCE_RELEASE.md)记录了准确的功能与
 支持边界；私有评估与发布门槛见 [AI_EVALUATION.md](docs/AI_EVALUATION.md)。
 
 ## 项目边界

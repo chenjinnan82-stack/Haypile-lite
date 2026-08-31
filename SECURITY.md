@@ -20,7 +20,7 @@ which is enabled for this repository, or email the maintainer. Include:
 
 ## Supported Version
 
-`v0.3.0-alpha.8` is the current supported prerelease. Verify its published
+`v0.3.0-alpha.9` is the current supported prerelease. Verify its published
 SHA-256 before running a desktop package. Earlier alpha and `v0.2.x` assets
 remain available for provenance but are not supported test paths. Include the
 exact version or commit when reporting issues.

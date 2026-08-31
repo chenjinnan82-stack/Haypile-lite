@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.3.0-alpha.9
+
+Alpha.9 is a cleanup-only prerelease. It intentionally adds no product
+capability and retains the Alpha.8 storage, HTTP, MCP, handoff, image, GIF,
+clipboard, and audio behavior.
+
+- Align English and Chinese download pages, supported-version guidance,
+  package names, build metadata, and release copy on Alpha.9.
+- Remove the unused `filetype` dependency while keeping the existing Pillow,
+  Mutagen, and defusedxml validation paths unchanged.
+- Stop requesting the unused Qt DBus module in the macOS deployment spec.
+- Document one exact Python 3.12.10 setup path for reproducible local macOS
+  release builds.
+- Keep experimental real-project selection, apply, and rollback helpers frozen,
+  disabled by default, and outside the embedded product path.
+
 ## v0.3.0-alpha.8
 
 Alpha.7 was not published. Alpha.8 supersedes its planned GIF slice after the
