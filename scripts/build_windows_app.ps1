@@ -200,7 +200,10 @@ try {
     $BackendInfo.Arguments = "--backend"
     $BackendInfo.UseShellExecute = $false
     $BackendInfo.CreateNoWindow = $true
+    $BackendInfo.Environment["LOCALAPPDATA"] = $SmokeRoot
     $BackendInfo.Environment["STORAGE_DIR"] = (Join-Path $SmokeRoot "storage")
+    $BackendInfo.Environment["INDEX_DIR"] = (Join-Path $SmokeRoot "storage/index")
+    $BackendInfo.Environment["LOG_DIR"] = (Join-Path $SmokeRoot "logs")
     $BackendInfo.Environment["PORT"] = [string]$SmokePort
     $BackendInfo.Environment["IPC_CHANNEL"] = "haypile_v030_windows_smoke_$PID"
     $BackendInfo.Environment["HAYPILE_IPC_AUTHKEY_FILE"] = (Join-Path $SmokeRoot "ipc_authkey")

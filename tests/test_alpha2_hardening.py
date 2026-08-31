@@ -871,6 +871,16 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
         self.assertIn("draft prerelease", release_notes.lower())
         windows_build = (root / "scripts/build_windows_app.ps1").read_text(encoding="utf-8")
         self.assertIn("Haypile/storage/index/mcp_sessions", windows_build)
+        windows_backend = windows_build[windows_build.index("$BackendInfo =") :]
+        self.assertIn('$BackendInfo.Environment["LOCALAPPDATA"] = $SmokeRoot', windows_backend)
+        self.assertIn(
+            '$BackendInfo.Environment["INDEX_DIR"] = (Join-Path $SmokeRoot "storage/index")',
+            windows_backend,
+        )
+        self.assertIn(
+            '$BackendInfo.Environment["LOG_DIR"] = (Join-Path $SmokeRoot "logs")',
+            windows_backend,
+        )
         self.assertNotIn("ExpectedMcpKey", windows_build)
 
     def test_build_scripts_reject_runtime_state_in_packages(self) -> None:
