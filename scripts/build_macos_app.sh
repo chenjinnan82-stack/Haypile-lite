@@ -142,17 +142,22 @@ fi
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 
+SMOKE_ROOT="$(mktemp -d)"
 MCP_SMOKE_OUTPUT="$(printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"haypile-build","version":"1"}}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  | "$BIN" --mcp)"
+  | STORAGE_DIR="$SMOKE_ROOT/storage" \
+    INDEX_DIR="$SMOKE_ROOT/storage/index" \
+    LOG_DIR="$SMOKE_ROOT/logs" \
+    "$BIN" --mcp)"
 grep -Fq "\"version\": \"$RELEASE_VERSION\"" <<<"$MCP_SMOKE_OUTPUT"
 
-SMOKE_ROOT="$(mktemp -d)"
 SMOKE_PORT="${HAYPILE_SMOKE_PORT:-18010}"
 
 STORAGE_DIR="$SMOKE_ROOT/storage" \
+INDEX_DIR="$SMOKE_ROOT/storage/index" \
+LOG_DIR="$SMOKE_ROOT/logs" \
 PORT="$SMOKE_PORT" \
 IPC_CHANNEL="haypile_v030_packaged_smoke_$$" \
 HAYPILE_IPC_AUTHKEY_FILE="$SMOKE_ROOT/ipc_authkey" \

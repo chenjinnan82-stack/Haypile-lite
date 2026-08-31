@@ -25,7 +25,9 @@ the exact packaged source. Commit all intended changes before running it.
 
 The script creates an isolated `.build-venv`, generates `build/Haypile.icns`,
 runs `pyside6-deploy` in standalone mode, ad-hoc signs the app, and executes
-packaged MCP and backend smoke tests.
+packaged MCP and backend smoke tests. Both packaged smokes use disposable
+storage and log directories; a release build does not touch the builder's
+Haypile user library.
 
 Outputs:
 

@@ -10,9 +10,12 @@ clipboard, and audio behavior.
   package names, build metadata, and release copy on Alpha.9.
 - Remove the unused `filetype` dependency while keeping the existing Pillow,
   Mutagen, and defusedxml validation paths unchanged.
-- Stop requesting the unused Qt DBus module in the macOS deployment spec.
+- Remove the redundant explicit Qt DBus request from the macOS deployment spec;
+  QtGui still brings its required QtDBus runtime into the package.
 - Document one exact Python 3.12.10 setup path for reproducible local macOS
   release builds.
+- Keep packaged MCP and backend build smokes inside disposable storage and log
+  directories rather than touching the builder's Haypile user library.
 - Keep experimental real-project selection, apply, and rollback helpers frozen,
   disabled by default, and outside the embedded product path.
 

@@ -5,6 +5,35 @@ no product capability and keeps the Alpha.8 storage, HTTP, MCP, handoff, image,
 true-GIF, clipboard, and audio behavior unchanged. Publish only after both tag
 workflows, package checks, and compatibility smoke tests pass.
 
+## Release procedure
+
+The tag workflows upload assets to an existing GitHub Release; they do not
+create one. Create a **draft prerelease** for the exact Alpha.9 tag before its
+release jobs reach the upload step, and keep that draft private while the two
+platform builds run. A tag without the draft Release is not sufficient.
+
+Publish only after CI, macOS, and Windows are green; both archives and both
+checksum files are present; their embedded commit matches the tag; package
+sizes and SHA-256 values are recorded; and the project owner accepts the
+release. Do not announce or open the pilot before that acceptance.
+
+### Local package comparison
+
+A same-environment rebuild at cleanup commit `68b16b6` produced:
+
+| Package | ZIP bytes | Expanded bytes | ZIP entries |
+| --- | ---: | ---: | ---: |
+| Alpha.8 comparison build | 70,582,478 | 192,201,111 | 285 |
+| Alpha.9 candidate | 70,582,503 | 192,201,111 | 285 |
+
+The 25-byte ZIP increase came from archive metadata; the package tree and
+expanded size did not grow. Both builds still contain the same QtDBus runtime
+because QtGui links it, so the spec change removes only a redundant explicit
+request. The published Alpha.8 ZIP is 70,057,790 bytes; its difference from the
+same-source local Alpha.8 rebuild is build-environment drift, not an Alpha.9
+source addition. Repeat and record the comparison using the official Alpha.9
+workflow assets before publishing, and explain any unexplained growth.
+
 ## GitHub About
 
 Collect local images, true GIFs, and audio, organize the latest batch, and hand
@@ -37,7 +66,7 @@ developers.
 
 Alpha.9 is deliberately small. It synchronizes the English and Chinese release
 pages and build metadata, removes the unused `filetype` dependency, stops
-requesting the unused Qt DBus module in the macOS deployment spec, and
+making a redundant explicit Qt DBus request in the macOS deployment spec, and
 documents an exact Python 3.12.10 local build path.
 
 There are no storage, API, MCP, handoff, or user-flow changes. Images, true GIFs,
@@ -95,7 +124,7 @@ Haypile Alpha.9 is a cleanup release for the local-first asset intake.
 
 It adds no feature: image, true-GIF, clipboard, audio, HTTP, MCP, and
 `asset-handoff.v1` behavior stay unchanged. The release aligns bilingual
-downloads and build metadata, removes one unused dependency and one unused
+downloads and build metadata, removes one unused dependency and one redundant
 macOS Qt module request, and preserves the existing local trust boundary.
 
 Repo: https://github.com/chenjinnan82-stack/Haypile-lite
@@ -105,7 +134,7 @@ Repo: https://github.com/chenjinnan82-stack/Haypile-lite
 Haypile · 冬藏 Alpha.9 是一次不增加功能的清理版发布。
 
 本版统一中英文下载信息与构建元数据，删除一个未使用的媒体识别依赖和 macOS
-部署配置中未使用的 Qt DBus 显式请求，并补齐精确 Python 3.12.10 的本地构建
+部署配置中冗余的 Qt DBus 显式请求，并补齐精确 Python 3.12.10 的本地构建
 路径。图片、原字节 GIF、剪贴板、音频、HTTP、MCP 与 `asset-handoff.v1`
 行为均保持不变。
 

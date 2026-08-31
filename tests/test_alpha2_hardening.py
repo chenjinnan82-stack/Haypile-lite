@@ -860,6 +860,15 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
             macos_text.index("python -m unittest discover -s tests"),
             macos_text.index("./scripts/build_macos_app.sh"),
         )
+        macos_build = (root / "scripts/build_macos_app.sh").read_text(encoding="utf-8")
+        smoke_root = macos_build.index('SMOKE_ROOT="$(mktemp -d)"')
+        packaged_mcp = macos_build.index('STORAGE_DIR="$SMOKE_ROOT/storage"')
+        self.assertLess(smoke_root, packaged_mcp)
+        self.assertEqual(macos_build.count('STORAGE_DIR="$SMOKE_ROOT/storage"'), 2)
+        self.assertEqual(macos_build.count('INDEX_DIR="$SMOKE_ROOT/storage/index"'), 2)
+        self.assertEqual(macos_build.count('LOG_DIR="$SMOKE_ROOT/logs"'), 2)
+        release_notes = (root / "docs/OPEN_SOURCE_RELEASE.md").read_text(encoding="utf-8")
+        self.assertIn("draft prerelease", release_notes.lower())
         windows_build = (root / "scripts/build_windows_app.ps1").read_text(encoding="utf-8")
         self.assertIn("Haypile/storage/index/mcp_sessions", windows_build)
         self.assertNotIn("ExpectedMcpKey", windows_build)
@@ -929,6 +938,10 @@ class ReleaseWorkflowSafetyTests(unittest.TestCase):
             self.assertIn("pip==26.2", text, path.name)
         self.assertIn(
             "constraints-release.txt",
+            (root / "RELEASE_MANIFEST.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "docs/ALPHA9_PILOT.md",
             (root / "RELEASE_MANIFEST.md").read_text(encoding="utf-8"),
         )
 

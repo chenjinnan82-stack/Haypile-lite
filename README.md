@@ -31,9 +31,9 @@ A local-first asset intake for AI creators and independent developers.
 
 > **Alpha.9 cleanup:** this release adds no product capability. It aligns the
 > bilingual release pages and reproducible build metadata, removes one unused
-> media-detection dependency, stops explicitly requesting Qt DBus in the macOS
-> deployment spec, and retains Alpha.8's image, true-GIF, clipboard, audio,
-> HTTP, MCP, and handoff behavior.
+> media-detection dependency, removes a redundant explicit Qt DBus request from
+> the macOS deployment spec, and retains Alpha.8's image, true-GIF, clipboard,
+> audio, HTTP, MCP, and handoff behavior.
 
 The macOS build is ad-hoc signed and not notarized; right-click the app and
 choose **Open** on first launch. The Windows build is unsigned and portable;

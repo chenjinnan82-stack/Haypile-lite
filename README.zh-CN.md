@@ -30,8 +30,9 @@
 [版本说明](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.9)
 
 > **Alpha.9 清理版：** 本版不增加产品能力，只统一中英文发布信息与可复现构建
-> 元数据，删除一个未使用的媒体识别依赖，并让 macOS 部署配置不再显式请求 Qt
-> DBus；图片、原字节 GIF、剪贴板、音频、HTTP、MCP 与 handoff 行为保持不变。
+> 元数据，删除一个未使用的媒体识别依赖，并移除 macOS 部署配置中冗余的 Qt
+> DBus 显式请求；图片、原字节 GIF、剪贴板、音频、HTTP、MCP 与 handoff
+> 行为保持不变。
 
 macOS 包采用临时签名且尚未公证，首次启动请右键应用并选择“打开”。Windows
 包尚未签名，请先解压再运行 `Haypile.exe`。Haypile 会保存受控的本地副本，但
