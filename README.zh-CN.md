@@ -38,12 +38,21 @@ macOS 包采用临时签名且尚未公证，首次启动请右键应用并选�
 包尚未签名，请先解压再运行 `Haypile.exe`。Haypile 会保存受控的本地副本，但
 Alpha 版本不应成为不可替代素材的唯一备份。
 
-## 60 秒看懂 Haypile
+## Alpha.9 私测产品片（40 秒）
+
+[![观看 Haypile Alpha.9 私测产品片](docs/haypile-alpha9-pilot-poster.webp)](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-pilot-zh-40s.mp4)
+
+本片使用 Alpha.9 当前组件和仓库自有测试素材，展示图片、GIF、音频收纳、重复
+识别、用途确认、最新批次 handoff 与本地 MCP 连接。测试入口会在双平台包、CI
+和项目所有者验收完成后开放。
+
+## 品牌概念片（60 秒）
 
 [![观看 Haypile 产品概览](docs/haypile-overview-poster.webp)](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.6/Haypile-v0.3.0-alpha.6-product-overview-zh.mp4)
 
-这是一支产品概览片。下方 GIF 是最初的工作流示意；当前收纳入口与附着式面板
-还会由仓库内的离屏视觉 smoke 命令生成验收图。
+这支 Alpha.6 时代的视频保留为品牌概念片，不再代表当前产品界面。下方 GIF
+同样是最初的工作流示意；当前收纳入口与附着式面板由仓库内的离屏视觉 smoke
+命令生成验收图。
 
 ## 看它怎么工作
 
