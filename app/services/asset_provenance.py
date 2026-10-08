@@ -46,14 +46,25 @@ def sanitize_provenance(payload: dict[str, Any]) -> dict[str, Any]:
     annotation = payload.get("font_annotation")
     if isinstance(annotation, dict):
         cleaned["font_annotation"] = {
-            key: re.sub(r"https?://\S+", lambda match: public_origin_url(match.group()), value)
+            key: value
             for key, limit in {"source_note": 512, "license_note": 2048}.items()
-            if (value := _bounded_public_string(annotation.get(key), limit))
+            if (value := _public_font_note(annotation.get(key), limit))
         }
     suggestions = _sanitize_ai_suggestions(payload.get("ai_suggestions"))
     if suggestions:
         cleaned["ai_suggestions"] = suggestions
     return cleaned
+
+
+def _public_font_note(value: Any, limit: int) -> str:
+    text = _bounded_public_string(value, limit)
+    url_pattern = r"https?://[^\s<>\"'()，。]+"
+    text = re.sub(url_pattern, lambda match: public_origin_url(match.group()), text, flags=re.IGNORECASE)
+    without_urls = re.sub(url_pattern, "", text, flags=re.IGNORECASE)
+    if re.search(r"file://|(?<![\w/])(?:/\S|[a-z]:[\\/]|\\\\)",
+                 without_urls, flags=re.IGNORECASE):
+        return ""
+    return text
 
 
 def _bounded_public_string(value: Any, limit: int) -> str:

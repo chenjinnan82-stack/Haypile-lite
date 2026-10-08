@@ -100,10 +100,12 @@ class FontSupportTests(unittest.TestCase):
 
     def test_formats_license_and_default_variable_instance(self) -> None:
         otf, variable, unknown = (self.root / name for name in ("outline.otf", "variable.ttf", "unknown.ttf"))
+        truetype_otf = self.root / "truetype.otf"
+        truetype_otf.write_bytes(self.ttf.read_bytes())
         write_test_font(otf)
         write_test_font(variable, variable=True)
         write_test_font(unknown, license=False)
-        for font in (self.ttf, otf, variable, unknown):
+        for font in (self.ttf, otf, truetype_otf, variable, unknown):
             with self.subTest(font=font.name):
                 metadata = validate_media(font)
                 self.assertEqual(metadata.kind, "font")
@@ -128,6 +130,10 @@ class FontSupportTests(unittest.TestCase):
         collection.close()
         with self.assertRaises(MediaValidationError):
             validate_media(invalid)
+        invalid_otf = self.root / "invalid.otf"
+        invalid_otf.write_bytes(b"OTTO" + self.ttf.read_bytes()[4:])
+        with self.assertRaises(MediaValidationError):
+            validate_media(invalid_otf)
         oversized_glyphs = self.root / "oversized-glyphs.ttf"
         with TTFont(self.ttf) as font:
             font["head"].unitsPerEm = 16
@@ -362,6 +368,20 @@ class FontSupportTests(unittest.TestCase):
         self.assertNotIn("source_note", cleaned["font_annotation"])
         self.assertEqual(len(cleaned["font_annotation"]["license_note"]), 2048)
         self.assertNotIn("command", cleaned["font_annotation"])
+        for note in ("来源：/Users/private/font.ttf", r"Downloaded from C:\Users\private\font.ttf",
+                     "file:///Users/private/font.ttf", r"Source: \\server\private\font.ttf",
+                     "Source `/Users/private/font.ttf`", "Source //server/private/font.ttf"):
+            with self.subTest(note=note):
+                cleaned = sanitize_provenance({"font_annotation": {"source_note": note, "license_note": note}})
+                self.assertEqual(cleaned["font_annotation"], {})
+        notes = {"source_note": "HTTPS://user:secret@example.com:8443/font.ttf?token=secret",
+                 "license_note": "See (HtTpS://example.com/license?token=secret). SIL/OFL 1.1"}
+        cleaned = sanitize_provenance({"font_annotation": notes})
+        self.assertEqual(cleaned["font_annotation"], {
+            "source_note": "https://example.com:8443",
+            "license_note": "See (https://example.com). SIL/OFL 1.1",
+        })
+        self.assertEqual(sanitize_provenance(cleaned), cleaned)
 
     def test_gui_fonts_filter_all_201_items_async_preview_notes_export_cancel(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

@@ -29,9 +29,14 @@ def main() -> int:
     samples = output / "storage/assets/generic/fonts"
     samples.mkdir(parents=True)
     hashes = {}
-    for name, variable in (("static.ttf", False), ("outline.otf", False), ("variable.ttf", True)):
+    for name, variable in (("static.ttf", False), ("outline.otf", False), ("variable.ttf", True), ("truetype.otf", False)):
         path = samples / name
-        write_test_font(path, variable=variable)
+        if name == "truetype.otf":
+            original = output / "truetype.ttf"
+            write_test_font(original, width=250)
+            original.replace(path)
+        else:
+            write_test_font(path, variable=variable)
         hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
         write_asset_provenance(path, {"font_usage": "body", "font_annotation": {"license_note": "Original MIT test outlines"}})
     with socket.socket() as probe:
@@ -61,7 +66,7 @@ def main() -> int:
                         raise RuntimeError("Packaged backend did not become ready; inspect backend.log")
                     time.sleep(.1)
             fonts = json.loads(get("/api/v1/bundles?type=font&font_usage=body&status=ready")[0])
-            assert len(fonts) == 3, fonts
+            assert len(fonts) == len(hashes), fonts
             assert sum(font["font_metadata"]["is_variable"] for font in fonts) == 1
             for font in fonts:
                 name = Path(font["source_key"]).name
@@ -81,14 +86,14 @@ def main() -> int:
             tool = next(response["result"] for response in responses if response.get("id") == 2)
             assert not tool.get("isError"), tool
             handoff = json.loads(tool["content"][0]["text"])
-            assert handoff["asset_count"] == 3 and handoff["complete"]
+            assert handoff["asset_count"] == len(hashes) and handoff["complete"]
             assert handoff["manifest_generation"] == ready["manifest_generation"]
             assert {asset["sha256"] for asset in handoff["assets"]} == set(hashes.values())
             assert all(asset["font_annotation"]["license_note"] == "Original MIT test outlines" for asset in handoff["assets"])
-            report = {"result": "passed", "formats": ["TTF", "CFF OTF", "variable TTF default"], "hashes": hashes,
+            report = {"result": "passed", "formats": ["TTF", "CFF OTF", "variable TTF default", "TrueType OTF"], "hashes": hashes,
                       "manifest_generation": ready["manifest_generation"], "mcp_handoff": handoff}
             (output / "font-package-results.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-            print("PASS: packaged TTF / CFF OTF / variable default, static hashes, HTTP and MCP handoff")
+            print("PASS: packaged TTF / CFF OTF / TrueType OTF / variable default, static hashes, HTTP and MCP handoff")
         finally:
             backend.terminate()
             try:

@@ -31,8 +31,8 @@ def read_font_metadata(path: Path) -> dict[str, Any]:
         if len(header) != 12:
             raise ValueError("invalid_font")
         signature, count, *_ = struct.unpack(">4sHHHH", header)
-        expected = b"OTTO" if path.suffix.lower() == ".otf" else b"\x00\x01\x00\x00"
-        if path.suffix.lower() not in {".ttf", ".otf"} or signature != expected:
+        signatures = {b"\x00\x01\x00\x00", b"OTTO"} if path.suffix.lower() == ".otf" else {b"\x00\x01\x00\x00"}
+        if path.suffix.lower() not in {".ttf", ".otf"} or signature not in signatures:
             raise ValueError("font_extension_mismatch")
         if not count or 12 + count * 16 > size:
             raise ValueError("invalid_font_directory")
@@ -50,7 +50,8 @@ def read_font_metadata(path: Path) -> dict[str, Any]:
             raise ValueError("invalid_font_directory")
     with TTFont(path, lazy=False) as font:
         required = {"head", "hhea", "maxp", "hmtx", "name", "cmap"}
-        if not required.issubset(font.keys()) or not any(tag in font for tag in ("glyf", "CFF ", "CFF2")):
+        outlines = ("CFF ", "CFF2") if signature == b"OTTO" else ("glyf",)
+        if not required.issubset(font.keys()) or not any(tag in font for tag in outlines):
             raise ValueError("invalid_font_tables")
         font.ensureDecompiled()
         if not font.getBestCmap():
