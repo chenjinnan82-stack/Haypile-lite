@@ -94,8 +94,10 @@ def _item_from_bundle(bundle: dict[str, Any]) -> MaterialSummaryItem:
     asset_type = str(bundle.get("type") or "")
     role = str(bundle.get("role") or "unknown")
     return MaterialSummaryItem(
-        title=Path(source_key).name or str(bundle.get("id") or ""),
-        usage_label=ROLE_LABELS.get(role, "未确定"),
+        title=(" ".join(str(bundle.get("font_metadata", {}).get(key) or "") for key in ("family", "style")).strip()
+               if asset_type == "font" else "") or Path(source_key).name or str(bundle.get("id") or ""),
+        usage_label=({"heading": "标题字体", "body": "正文字体", "decorative": "装饰字体"}.get(bundle.get("font_usage"), "字体待确认")
+                     if asset_type == "font" else ROLE_LABELS.get(role, "未确定")),
         confidence_label="中等把握" if status == "ready" else "低把握",
         status_label=status_label,
         preview_url=str(bundle.get("url") or ""),

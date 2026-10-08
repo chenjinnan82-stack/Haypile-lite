@@ -115,7 +115,7 @@ class McpServerTests(unittest.TestCase):
         )
 
         response = json.loads(process.stdout)
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.9")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0-alpha.10")
         self.assertNotIn("PySide6", process.stderr)
 
     def test_lists_haypile_tools(self) -> None:
@@ -235,7 +235,7 @@ class McpServerTests(unittest.TestCase):
             )
 
         list_bundles.assert_called_once_with(
-            status="ready", asset_type="image", role=None, theme_id=None, audio_usage=None, batch_id=None
+            status="ready", asset_type="image", role=None, theme_id=None, audio_usage=None, font_usage=None, batch_id=None
         )
         payload = json.loads(response["result"]["content"][0]["text"])
         self.assertEqual(payload["source"], "haypile")
@@ -280,6 +280,7 @@ class McpServerTests(unittest.TestCase):
             role=None,
             theme_id=None,
             audio_usage=None,
+            font_usage=None,
             batch_id="batch-1",
         )
         self.assertEqual(payload["batch_id"], "batch-1")
@@ -347,6 +348,7 @@ class McpServerTests(unittest.TestCase):
             role=None,
             theme_id=None,
             audio_usage=None,
+            font_usage=None,
             batch_id="batch-2",
             limit=100,
             cursor=None,
@@ -433,7 +435,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "haypile")
-        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.9")
+        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0-alpha.10")
         names = [tool["name"] for tool in responses[1]["result"]["tools"]]
         self.assertIn("haypile_copy_handoff", names)
 
@@ -457,7 +459,7 @@ class McpServerTests(unittest.TestCase):
 
         responses = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual([responses[0]["error"]["code"], responses[1]["error"]["code"]], [-32700, -32700])
-        self.assertEqual(responses[2]["result"]["serverInfo"]["version"], "0.3.0-alpha.9")
+        self.assertEqual(responses[2]["result"]["serverInfo"]["version"], "0.3.0-alpha.10")
         self.assertIn("tools", responses[3]["result"])
 
 

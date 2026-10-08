@@ -43,6 +43,7 @@ def build_handoff_asset(bundle: dict[str, Any], *, base_url: str) -> dict[str, A
             "content_type": bundle.get("content_type", ""),
             "downloaded_at": bundle.get("downloaded_at", ""),
             "ai_suggestions": bundle.get("ai_suggestions", {}),
+            "font_annotation": bundle.get("font_annotation", {}),
         }
     )
     return {
@@ -64,6 +65,9 @@ def build_handoff_asset(bundle: dict[str, Any], *, base_url: str) -> dict[str, A
         "audio_metadata": bundle.get("audio_metadata", {}),
         "audio_tags": bundle.get("audio_tags", {}),
         "audio_usage": bundle.get("audio_usage", "unknown"),
+        "font_usage": bundle.get("font_usage", "unknown"),
+        "font_metadata": bundle.get("font_metadata", {}),
+        "font_annotation": public_metadata.get("font_annotation", {}),
         "provenance": {
             "source": "haypile",
             "id": bundle["id"],
@@ -75,5 +79,6 @@ def build_handoff_asset(bundle: dict[str, Any], *, base_url: str) -> dict[str, A
             "origin_url": public_metadata.get("origin_url", ""),
             "content_type": public_metadata.get("content_type", ""),
             "downloaded_at": public_metadata.get("downloaded_at", ""),
+            "font_annotation": public_metadata.get("font_annotation", {}),
         },
     }

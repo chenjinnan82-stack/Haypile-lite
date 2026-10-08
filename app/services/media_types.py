@@ -16,3 +16,9 @@ AUDIO_CONTENT_TYPE_EXTENSIONS: dict[str, str] = {
 }
 
 SUPPORTED_AUDIO_EXTENSIONS = frozenset(AUDIO_CONTENT_TYPE_EXTENSIONS.values())
+FONT_CONTENT_TYPE_EXTENSIONS = {
+    "font/ttf": ".ttf", "font/otf": ".otf",
+    "application/x-font-ttf": ".ttf", "application/x-font-opentype": ".otf",
+    "application/font-sfnt": ".ttf", "application/x-font-truetype": ".ttf",
+}
+SUPPORTED_FONT_EXTENSIONS = frozenset({".ttf", ".otf"})

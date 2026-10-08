@@ -130,6 +130,7 @@ from app.services.safe_remote_fetcher import (
     open_safe_remote,
 )
 from app.services.theme_registry import ThemeRegistry
+from app.services.font_service import DEFAULT_FONT_TEXT, export_font_original, render_font_preview
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
@@ -148,6 +149,7 @@ from PySide6.QtCore import (
     qVersion,
 )
 from PySide6.QtGui import (
+    QImage,
     QColor,
     QCursor,
     QDesktopServices,
@@ -169,6 +171,10 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
     QButtonGroup,
     QGraphicsOpacityEffect,
     QGridLayout,
@@ -178,7 +184,10 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QScrollArea,
+    QSpinBox,
     QStackedWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -387,6 +396,7 @@ class RemoteDownloadWorker(QThread):
         failed = 0
         too_large = 0
         gif_too_large = 0
+        font_too_large = 0
         unsupported = 0
         video_not_supported = 0
         downloaded_bytes = 0
@@ -414,6 +424,8 @@ class RemoteDownloadWorker(QThread):
                     too_large += 1
                 elif reason == "gif_too_large":
                     gif_too_large += 1
+                elif reason == "font_too_large":
+                    font_too_large += 1
                 elif reason == "video_not_supported":
                     video_not_supported += 1
                 elif reason == "unsupported":
@@ -431,9 +443,11 @@ class RemoteDownloadWorker(QThread):
                     "Video is not supported; drop a true GIF image",
                 )
             elif unsupported and not failed and not too_large:
-                message = ui_text("没有找到可收纳的图片或音频", "No images or audio to store")
+                message = ui_text("没有找到可收纳的图片、音频或 TTF/OTF 字体", "No images, audio, or TTF/OTF fonts to store")
             elif gif_too_large and not failed and not too_large:
                 message = ui_text("GIF 素材超过 50MB", "GIF asset is over 50MB")
+            elif font_too_large and not failed and not too_large:
+                message = ui_text("字体素材超过 50MB", "Font asset is over 50MB")
             elif too_large and not failed:
                 message = ui_text("网页素材超过 500MB", "Web asset is over 500MB")
             else:
@@ -441,7 +455,7 @@ class RemoteDownloadWorker(QThread):
             self.finished_signal.emit([], message, False)
             return
         message = ui_text(f"已获取 {len(downloaded)} 个网页素材", f"Fetched {len(downloaded)} web assets")
-        skipped = failed + too_large + gif_too_large + unsupported + video_not_supported
+        skipped = failed + too_large + gif_too_large + font_too_large + unsupported + video_not_supported
         if skipped:
             message += ui_text(f"，跳过 {skipped}", f", skipped {skipped}")
         self.progress_signal.emit(95, message)
@@ -615,8 +629,8 @@ class IngestWorker(QThread):
                 "Video is not supported; drop a true GIF image",
             ),
             "unsupported_media": ui_text(
-                "文件被拦截：只支持安全的图片/音频，或素材超过允许的体积",
-                "Blocked: only safe images/audio are supported, or an asset exceeds its size limit",
+                "文件被拦截：只支持安全的图片/音频/TTF/OTF 字体，或素材超过允许的体积",
+                "Blocked: only safe images/audio/TTF/OTF fonts are supported, or an asset exceeds its size limit",
             ),
         }
         return messages.get(
@@ -1052,6 +1066,28 @@ class ConfirmationPreviewWindow(QWidget):
         self._execute_callback(self._action, self._project_root)
 
 
+class FontPreviewWorker(QThread):
+    def __init__(self, request: tuple, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.request = request
+        self.result: tuple[bytes, int, int, str] | None = None
+        self.error = False
+
+    def run(self) -> None:
+        _generation, _bundle_id, path, text, size, sha256 = self.request
+        try:
+            if self.isInterruptionRequested():
+                return
+            if BundleService._sha256(path) != sha256:
+                raise ValueError("font_hash_mismatch")
+            canvas, missing = render_font_preview(path, text, size)
+            with canvas:
+                if not self.isInterruptionRequested():
+                    self.result = (canvas.tobytes(), canvas.width, canvas.height, missing)
+        except Exception:
+            self.error = True
+
+
 class MaterialPanelWindow(QWidget):
     def __init__(
         self,
@@ -1099,6 +1135,15 @@ class MaterialPanelWindow(QWidget):
         self._gif_stop_timer.setSingleShot(True)
         self._gif_stop_timer.timeout.connect(self._finish_gif_preview)
         self.ai_refresh_worker: AIRefreshWorker | None = None
+        self.font_preview_worker: FontPreviewWorker | None = None
+        self._font_preview_generation = 0
+        self._font_preview_request: tuple | None = None
+        self._font_preview_closing = False
+        self._font_close_pending = False
+        self._font_preview_timer = QTimer(self)
+        self._font_preview_timer.setSingleShot(True)
+        self._font_preview_timer.setInterval(180)
+        self._font_preview_timer.timeout.connect(self._queue_font_preview)
         self.confirmation_preview: ConfirmationPreviewWindow | None = None
         if not self._embedded:
             self.confirmation_preview = ConfirmationPreviewWindow()
@@ -1196,6 +1241,7 @@ class MaterialPanelWindow(QWidget):
             ("pending", ui_text("待确认", "Pending")),
             ("image", ui_text("图片", "Images")),
             ("audio", ui_text("音频", "Audio")),
+            ("font", ui_text("字体", "Fonts")),
         ):
             button = QPushButton(label, self.filter_row)
             _configure_choice_button(button, self.filter_button_group)
@@ -1226,8 +1272,8 @@ class MaterialPanelWindow(QWidget):
         self.paste_ingest_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.paste_ingest_button.setAccessibleDescription(
             ui_text(
-                "收纳剪贴板中的图片、音频或 GIF",
-                "Store an image, audio file, or GIF from the clipboard",
+                "收纳剪贴板中的图片、音频、GIF 或 TTF/OTF 字体",
+                "Store an image, audio file, GIF, or TTF/OTF font from the clipboard",
             )
         )
         self.paste_ingest_button.setStyleSheet(_ACTION_BUTTON_STYLE)
@@ -1286,6 +1332,7 @@ class MaterialPanelWindow(QWidget):
 
         self.detail_label = QLabel("", self.container)
         self.detail_label.setWordWrap(True)
+        self.detail_label.setTextFormat(Qt.TextFormat.PlainText)
         self.detail_label.setMinimumHeight(104)
         self.detail_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.detail_label.setStyleSheet(
@@ -1389,6 +1436,7 @@ class MaterialPanelWindow(QWidget):
 
         self.preview_label = QLabel("", self.container)
         self.preview_label.setFixedHeight(48)
+        self.preview_label.setTextFormat(Qt.TextFormat.PlainText)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setStyleSheet(
             "QLabel { background: #F6F1E4; border: 1px solid #DDD3BB; border-radius: 8px; }"
@@ -1397,6 +1445,65 @@ class MaterialPanelWindow(QWidget):
         self.preview_label.mousePressEvent = self._replay_gif_preview
         self.preview_label.hide()
         layout.addWidget(self.preview_label)
+        self.font_preview_scroll = QScrollArea(self.container)
+        self.font_preview_scroll.setFixedHeight(72)
+        self.font_preview_label = QLabel()
+        self.font_preview_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.font_preview_label.setStyleSheet("QLabel { background: #F6F1E4; color: #333333; }")
+        self.font_preview_scroll.setWidget(self.font_preview_label)
+        self.font_preview_scroll.setAccessibleName(ui_text("字体原尺寸预览，可滚动", "Font preview at actual size; scroll to view"))
+        self.font_preview_scroll.hide()
+        layout.addWidget(self.font_preview_scroll)
+
+        self.font_controls = QWidget(self.container)
+        font_layout = QVBoxLayout(self.font_controls)
+        font_layout.setContentsMargins(0, 0, 0, 0)
+        font_layout.setSpacing(4)
+        sample_row = QHBoxLayout()
+        self.font_text_input = QLineEdit(DEFAULT_FONT_TEXT, self.font_controls)
+        self.font_text_input.setMaxLength(120)
+        self.font_text_input.setMinimumHeight(26)
+        self.font_text_input.setStyleSheet(_LINE_EDIT_STYLE)
+        self.font_size_input = QSpinBox(self.font_controls)
+        self.font_size_input.setRange(12, 72)
+        self.font_size_input.setValue(32)
+        self.font_size_input.setSuffix(" px")
+        self.font_size_input.setMinimumHeight(26)
+        self.font_text_input.textChanged.connect(self._on_font_preview_changed)
+        self.font_size_input.valueChanged.connect(self._on_font_preview_changed)
+        sample_row.addWidget(self.font_text_input, 1)
+        sample_row.addWidget(self.font_size_input)
+        font_layout.addLayout(sample_row)
+        self.font_missing_label = QLabel("", self.font_controls)
+        self.font_missing_label.setWordWrap(True)
+        self.font_missing_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.font_missing_label.setStyleSheet("QLabel { color: #A67624; font-size: 11px; }")
+        font_layout.addWidget(self.font_missing_label)
+        usage_row = QGridLayout()
+        self.font_usage_buttons: dict[str, QPushButton] = {}
+        self.font_usage_button_group = QButtonGroup(self)
+        for index, usage in enumerate(("heading", "body", "decorative", "unknown")):
+            button = QPushButton(self.font_controls)
+            _configure_choice_button(button, self.font_usage_button_group)
+            button.setMinimumHeight(24)
+            button.clicked.connect(lambda _checked=False, value=usage: self._set_selected_font_usage(value))
+            self.font_usage_buttons[usage] = button
+            usage_row.addWidget(button, index // 2, index % 2)
+        font_layout.addLayout(usage_row)
+        action_row = QHBoxLayout()
+        self.font_notes_button = QPushButton(self.font_controls)
+        self.font_export_button = QPushButton(self.font_controls)
+        for button in (self.font_notes_button, self.font_export_button):
+            button.setStyleSheet(_ACTION_BUTTON_STYLE)
+            button.setMinimumHeight(26)
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            action_row.addWidget(button)
+        self.font_notes_button.clicked.connect(self._edit_font_notes)
+        self.font_export_button.clicked.connect(self._export_selected_font)
+        font_layout.addLayout(action_row)
+        self._retranslate_font_controls()
+        self.font_controls.hide()
+        layout.addWidget(self.font_controls)
 
         self.copy_selected_button = QPushButton(ui_text("复制 handoff", "Copy handoff"), self.container)
         self.copy_selected_button.setFixedHeight(28)
@@ -1510,16 +1617,23 @@ class MaterialPanelWindow(QWidget):
         self.detail_label.setMinimumHeight(54)
         detail_layout.addWidget(self.empty_state_label, 1)
         detail_layout.addWidget(self.preview_label)
+        detail_layout.addWidget(self.font_preview_scroll)
         detail_layout.addWidget(self.detail_label, 1)
         detail_layout.addWidget(self.accept_ai_button)
         detail_layout.addWidget(self.role_row)
         detail_layout.addWidget(self.gif_role_row)
         detail_layout.addWidget(self.audio_usage_row)
+        detail_layout.addWidget(self.font_controls)
         detail_layout.addWidget(self.retry_ai_button)
         detail_layout.addWidget(self.copy_selected_button)
 
         body_layout.addWidget(list_pane, 42)
-        body_layout.addWidget(detail_pane, 58)
+        detail_scroll = QScrollArea(body)
+        detail_scroll.setWidgetResizable(True)
+        detail_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        detail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        detail_scroll.setWidget(detail_pane)
+        body_layout.addWidget(detail_scroll, 58)
         layout.addWidget(body, 1)
 
         focus_order = [
@@ -1535,6 +1649,9 @@ class MaterialPanelWindow(QWidget):
             *self.role_buttons.values(),
             *self.gif_role_buttons.values(),
             *self.audio_usage_buttons.values(),
+            self.font_text_input, self.font_size_input,
+            *self.font_usage_buttons.values(),
+            self.font_notes_button, self.font_export_button,
             self.retry_ai_button,
             self.copy_selected_button,
         ]
@@ -1595,12 +1712,14 @@ class MaterialPanelWindow(QWidget):
             self._stop_gif_preview(reset_to_first=True)
 
     def retranslate(self) -> None:
+        self._retranslate_font_controls()
         labels = {
             "all": ui_text("全部", "All"),
             "ready": ui_text("可用", "Ready"),
             "pending": ui_text("待确认", "Pending"),
             "image": ui_text("图片", "Images"),
             "audio": ui_text("音频", "Audio"),
+            "font": ui_text("字体", "Fonts"),
         }
         for mode, button in self.filter_buttons.items():
             button.setText(labels[mode])
@@ -1609,8 +1728,8 @@ class MaterialPanelWindow(QWidget):
         self.paste_ingest_button.setText(ui_text("从剪贴板收纳", "Import from clipboard"))
         self.paste_ingest_button.setAccessibleDescription(
             ui_text(
-                "收纳剪贴板中的图片、音频或 GIF",
-                "Store an image, audio file, or GIF from the clipboard",
+                "收纳剪贴板中的图片、音频、GIF 或 TTF/OTF 字体",
+                "Store an image, audio file, GIF, or TTF/OTF font from the clipboard",
             )
         )
         role_labels = {
@@ -1705,6 +1824,7 @@ class MaterialPanelWindow(QWidget):
         summary = build_material_panel_summary(
             scoped_bundles,
             assets_dir=self.settings.ASSETS_DIR,
+            max_items=len(scoped_bundles),
         )
         if getattr(service, "theme_recoveries", []):
             if self._toast_callback is not None:
@@ -1745,10 +1865,13 @@ class MaterialPanelWindow(QWidget):
         self.role_row.hide()
         self.gif_role_row.hide()
         self.audio_usage_row.hide()
+        self.font_controls.hide()
+        self._cancel_font_preview()
         self.retry_ai_button.hide()
         self.accept_ai_button.hide()
         self._suggested_ai_role = ""
         self.preview_label.hide()
+        self.font_preview_scroll.hide()
         self.copy_selected_button.setEnabled(False)
         self.copy_ready_button.setVisible(bool(scoped_items) and not self._embedded)
         if not scoped_items:
@@ -1759,13 +1882,13 @@ class MaterialPanelWindow(QWidget):
                 )
                 if catalog_unavailable
                 else ui_text(
-                    "草窝还空着\n把图片、GIF 或音频拖到桌面草堆\n也可以用上方按钮收纳剪贴板内容",
-                    "The nest is empty\nDrop an image, GIF, or audio file onto the desktop pile\nor use the clipboard button above",
+                    "草窝还空着\n把图片、GIF、音频或字体拖到桌面草堆\n也可以用上方按钮收纳剪贴板内容",
+                    "The nest is empty\nDrop an image, GIF, audio file, or font onto the desktop pile\nor use the clipboard button above",
                 )
                 if self._embedded
                 else ui_text(
-                    "草窝还空着\n拖入图片、GIF 或音频开始收纳",
-                    "The nest is empty\nDrop an image, GIF, or audio file to start storing",
+                    "草窝还空着\n拖入图片、GIF、音频或字体开始收纳",
+                    "The nest is empty\nDrop an image, GIF, audio file, or font to start storing",
                 )
             )
             self.empty_state_label.setText(empty_text)
@@ -1964,7 +2087,7 @@ class MaterialPanelWindow(QWidget):
         mode = self._filter_mode
         if mode == "all":
             return True
-        if mode in {"image", "audio"}:
+        if mode in {"image", "audio", "font"}:
             return str(item.asset_type or "").lower() == mode
         return self._bundle_for_item(item)["status"] == mode
 
@@ -1989,6 +2112,9 @@ class MaterialPanelWindow(QWidget):
                 bundle["type"],
                 bundle.get("audio_usage", ""),
                 bundle.get("audio_tags", {}),
+                bundle.get("font_usage", ""),
+                bundle.get("font_metadata", {}),
+                bundle.get("font_annotation", {}),
                 item.preview_url,
                 item.theme_id,
                 item.asset_type,
@@ -2036,7 +2162,8 @@ class MaterialPanelWindow(QWidget):
             str(bundle.get("content_type") or "").lower() == "image/gif"
             and bundle.get("frame_count") is not None
         )
-        ai_line = "" if is_gif else self._ai_suggestion_line(bundle.get("ai_suggestions"))
+        is_font = str(bundle.get("type") or "").lower() == "font"
+        ai_line = "" if is_gif or is_font else self._ai_suggestion_line(bundle.get("ai_suggestions"))
         is_audio = str(bundle.get("type") or "").lower() == "audio"
         audio_line = self._audio_detail_line(bundle) if is_audio else ""
         full_detail_text = (
@@ -2073,12 +2200,13 @@ class MaterialPanelWindow(QWidget):
             self.detail_label.setToolTip("")
         self.detail_label.show()
         self.copy_selected_button.setEnabled(bool(bundle.get("id")))
-        self.role_row.setVisible(not is_audio and bundle["status"] != "missing")
+        self.role_row.setVisible(not is_audio and not is_font and bundle["status"] != "missing")
         self.gif_role_row.setVisible(is_gif and bundle["status"] != "missing")
         self.audio_usage_row.setVisible(is_audio and bundle["status"] != "missing")
         self._suggested_ai_role = self._suggested_role(bundle.get("ai_suggestions"))
         self.accept_ai_button.setVisible(
             not is_audio
+            and not is_font
             and not is_gif
             and bundle["status"] != "missing"
             and bool(self._suggested_ai_role)
@@ -2089,6 +2217,25 @@ class MaterialPanelWindow(QWidget):
         else:
             self._refresh_role_buttons(bundle["role"])
             self._refresh_gif_role_buttons(str(bundle.get("role") or ""))
+        self.font_controls.setVisible(is_font)
+        if is_font:
+            available = bundle["status"] != "missing"
+            self.font_controls.setEnabled(available)
+            self.font_usage_button_group.setExclusive(False)
+            for usage, button in self.font_usage_buttons.items():
+                button.setChecked(usage == bundle.get("font_usage", "unknown"))
+            self.font_usage_button_group.setExclusive(True)
+            metadata = bundle.get("font_metadata") or {}
+            license_known = bool(metadata.get("license_description") or metadata.get("license_url"))
+            font_detail = (f"{metadata.get('family', '')} · {metadata.get('style', '')}\n"
+                           f"{self._bundle_status_label(str(bundle['status']))} · {self._font_usage_label(str(bundle.get('font_usage', 'unknown')))} · "
+                           + ui_text("可变默认实例" if metadata.get("is_variable") else "静态字体",
+                                     "Variable default" if metadata.get("is_variable") else "Static font")
+                           + "\n" + ui_text("已读取内嵌许可，请核实使用范围" if license_known else "许可未知，请核实后使用",
+                                           "Embedded license available; verify permitted use" if license_known else "License unknown; verify before use"))
+            self.detail_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.detail_label.setText(font_detail)
+            self.detail_label.setToolTip(full_detail_text)
         self._refresh_retry_ai_button(bundle)
 
     def _refresh_retry_ai_button(self, bundle: dict[str, object]) -> None:
@@ -2260,10 +2407,190 @@ class MaterialPanelWindow(QWidget):
         if self._suggested_ai_role:
             self._set_selected_role(self._suggested_ai_role)
 
+    @staticmethod
+    def _font_usage_label(usage: str) -> str:
+        return {
+            "heading": ui_text("标题", "Heading"), "body": ui_text("正文", "Body"),
+            "decorative": ui_text("装饰", "Decorative"), "unknown": ui_text("待确认", "Pending"),
+        }.get(usage, usage)
+
+    def _retranslate_font_controls(self) -> None:
+        self.font_text_input.setAccessibleName(ui_text("字体预览文字，最多 120 字", "Font preview text, up to 120 characters"))
+        self.font_text_input.setToolTip(ui_text("使用当前字体文件预览", "Preview this exact font file"))
+        self.font_size_input.setAccessibleName(ui_text("字号，12 到 72 像素", "Font size, 12 to 72 pixels"))
+        for usage, button in self.font_usage_buttons.items():
+            button.setText(self._font_usage_label(usage))
+        self.font_notes_button.setText(ui_text("来源与许可", "Source / license"))
+        self.font_export_button.setText(ui_text("导出原文件", "Export original"))
+
+    def _cancel_font_preview(self) -> None:
+        self._font_preview_generation += 1
+        self._font_preview_timer.stop()
+        self._font_preview_request = None
+        if self.font_preview_worker is not None:
+            self.font_preview_worker.requestInterruption()
+
+    def _on_font_preview_changed(self, _value=None) -> None:
+        self._cancel_font_preview()
+        if not self._font_preview_closing:
+            self._font_preview_timer.start()
+
+    def _queue_font_preview(self) -> None:
+        if self._font_preview_closing:
+            return
+        bundle = next((value for value in self._bundle_by_source_key.values()
+                       if value.get("id") == self._selected_bundle_id), None)
+        if not bundle or bundle.get("type") != "font":
+            return
+        self.font_preview_scroll.show()
+        if bundle.get("status") == "missing":
+            self.font_preview_label.setText(ui_text("字体副本缺失", "Font copy missing"))
+            self.font_preview_label.adjustSize()
+            self.font_missing_label.clear()
+            return
+        path = self._bundle_service()._asset_path(str(bundle["source_key"]))
+        if path is None:
+            return
+        self._font_preview_generation += 1
+        self._font_preview_request = (
+            self._font_preview_generation, self._selected_bundle_id, path,
+            self.font_text_input.text(), self.font_size_input.value(), str(bundle.get("sha256") or ""),
+        )
+        self.font_preview_label.setText(ui_text("正在预览字体…", "Rendering font…"))
+        self.font_preview_label.adjustSize()
+        self.font_missing_label.clear()
+        self._start_font_preview()
+
+    def _start_font_preview(self) -> None:
+        if self.font_preview_worker is not None or self._font_preview_request is None:
+            return
+        self.font_preview_worker = FontPreviewWorker(self._font_preview_request, self)
+        self._font_preview_request = None
+        self.font_preview_worker.finished.connect(self._finish_font_preview)
+        self.font_preview_worker.start()
+
+    def _finish_font_preview(self) -> None:
+        worker = self.font_preview_worker
+        if worker is None:
+            return
+        self.font_preview_worker = None
+        if (worker.request[0] == self._font_preview_generation
+                and worker.request[1] == self._selected_bundle_id
+                and not self._font_preview_closing):
+            if worker.result is not None:
+                pixels, width, height, missing = worker.result
+                bitmap = QImage(pixels, width, height, width * 4, QImage.Format.Format_RGBA8888).copy()
+                self.font_preview_label.setPixmap(QPixmap.fromImage(bitmap))
+                self.font_preview_label.setFixedSize(width, height)
+                self.font_missing_label.setText(
+                    ui_text(f"缺字：{missing}", f"Missing glyphs: {missing}") if missing
+                    else ui_text("当前文字均有字形", "All sample characters have glyphs")
+                )
+            elif worker.error:
+                self.font_preview_label.setText(ui_text("字体预览失败，请检查原文件", "Font preview failed; check the original file"))
+        worker.deleteLater()
+        if self._font_close_pending:
+            self._font_preview_request = None
+            self.close()
+        else:
+            self._start_font_preview()
+
+    def _set_selected_font_usage(self, usage: str) -> None:
+        try:
+            bundle = self._bundle_service().update_bundle_font(self._selected_bundle_id, font_usage=usage)
+        except (OSError, TimeoutError, ValueError, ManifestReadinessError):
+            bundle = None
+        if bundle is None:
+            self.detail_label.setText(ui_text("用途保存失败，请重试", "Usage could not be saved; retry"))
+            return
+        self.refresh()
+
+    def _edit_font_notes(self) -> None:
+        bundle = self._get_bundle_safely(self._selected_bundle_id)
+        if not bundle or bundle.get("type") != "font" or bundle.get("status") == "missing":
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(ui_text("字体来源与许可", "Font source and license"))
+        dialog.resize(460, 410)
+        form = QFormLayout(dialog)
+        metadata = bundle.get("font_metadata") or {}
+        embedded = QTextEdit(dialog)
+        embedded.setReadOnly(True)
+        embedded.setPlainText("\n".join(str(metadata.get(key) or "") for key in ("license_description", "license_url")).strip()
+                              or ui_text("许可未知", "License unknown"))
+        embedded.setMaximumHeight(140)
+        form.addRow(ui_text("内嵌许可", "Embedded license"), embedded)
+        source = QLineEdit(str((bundle.get("font_annotation") or {}).get("source_note") or ""), dialog)
+        source.setMaxLength(512)
+        source.setAccessibleName(ui_text("来源备注", "Source note"))
+        form.addRow(ui_text("来源备注", "Source note"), source)
+        license_note = QTextEdit(dialog)
+        license_note.setAcceptRichText(False)
+        license_note.setPlainText(str((bundle.get("font_annotation") or {}).get("license_note") or ""))
+        license_note.setAccessibleName(ui_text("许可备注，最多 2048 字", "License note, up to 2048 characters"))
+        form.addRow(ui_text("许可备注", "License note"), license_note)
+        message = QLabel(ui_text("请核实许可范围；备注为人工记录，来源 URL 仅保存站点。", "Verify permitted use. Notes are manual records; source URLs retain the site only."), dialog)
+        message.setWordWrap(True)
+        message.setTextFormat(Qt.TextFormat.PlainText)
+        form.addRow(message)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel, dialog)
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText(ui_text("保存", "Save"))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(ui_text("取消", "Cancel"))
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        def save() -> None:
+            if len(license_note.toPlainText()) > 2048:
+                message.setText(ui_text("许可备注不能超过 2048 字", "License notes cannot exceed 2048 characters"))
+                return
+            try:
+                updated = self._bundle_service().update_bundle_font(str(bundle["id"]), annotation={
+                    "source_note": source.text(), "license_note": license_note.toPlainText(),
+                })
+            except (OSError, TimeoutError, ValueError, ManifestReadinessError):
+                updated = None
+            if updated is None:
+                message.setText(ui_text("保存失败，原记录已保留，请重试", "Save failed; the previous record is retained. Retry."))
+                return
+            dialog.accept()
+            self.refresh()
+
+        buttons.accepted.connect(save)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _export_selected_font(self) -> None:
+        bundle = self._get_bundle_safely(self._selected_bundle_id)
+        if not bundle or bundle.get("type") != "font" or bundle.get("status") == "missing":
+            return
+        source = self._bundle_service()._asset_path(str(bundle["source_key"]))
+        if source is None:
+            return
+        target, _filter = QFileDialog.getSaveFileName(
+            self, ui_text("导出字体原文件", "Export original font"), source.name,
+            f"{source.suffix.upper()[1:]} (*{source.suffix})",
+        )
+        if not target:
+            return
+        try:
+            export_font_original(source, Path(target), sha256=str(bundle["sha256"]), storage_dir=self.settings.STORAGE_DIR,
+                                 protected_paths=(self.settings.ASSETS_DIR, self.settings.INDEX_DIR,
+                                                  self.settings.THEMES_DIR, self.settings.MANIFEST_PATH))
+        except (OSError, ValueError):
+            self.detail_label.setText(ui_text("导出失败，目标原文件已保留；请选择素材库外的位置", "Export failed; the previous destination is retained. Choose a location outside the library."))
+        else:
+            self.detail_label.setText(ui_text("已导出字体原文件", "Original font exported"))
+
     def _show_preview_for_item(self, item, bundle: dict[str, object] | None = None) -> None:
         self._stop_gif_preview(reset_to_first=True, discard=True)
+        self._cancel_font_preview()
         self.preview_label.clear()
+        self.font_preview_scroll.hide()
         asset_type = str(item.asset_type or "").lower()
+        if asset_type == "font":
+            self.preview_label.hide()
+            self._queue_font_preview()
+            return
         if asset_type == "audio":
             self.preview_label.setText(ui_text("音频资源\n不在这里播放，agent 通过 URL 使用", "Audio asset\nAgents use it through URL"))
             self.preview_label.show()
@@ -2369,6 +2696,8 @@ class MaterialPanelWindow(QWidget):
             return ui_text("图片", "Image")
         if value == "audio":
             return ui_text("音频", "Audio")
+        if value == "font":
+            return ui_text("字体", "Font")
         return value or ui_text("资源", "Asset")
 
     @staticmethod
@@ -2488,9 +2817,14 @@ class MaterialPanelWindow(QWidget):
             "sticker": ui_text("贴纸", "Sticker"),
             "ui_animation": ui_text("界面动画", "UI animation"),
             "audio": ui_text("音频", "Audio"),
+            "font": ui_text("字体", "Font"),
             "unknown": ui_text("未确定", "Unknown"),
             "参考图": ui_text("参考图", "Reference"),
             "未确定": ui_text("未确定", "Unknown"),
+            "标题字体": ui_text("标题字体", "Heading font"),
+            "正文字体": ui_text("正文字体", "Body font"),
+            "装饰字体": ui_text("装饰字体", "Decorative font"),
+            "字体待确认": ui_text("字体待确认", "Font pending"),
             "背景": ui_text("背景", "Background"),
             "主视觉": ui_text("主视觉", "Hero"),
             "图标": ui_text("图标", "Icon"),
@@ -2542,6 +2876,7 @@ class MaterialPanelWindow(QWidget):
                 'Default batch selector: batch_id="latest".',
                 "Use each bundle's id, sha256, source_key, url, resolved_url, and provenance.",
                 "Also preserve content_type; for image/gif, respect frame_count, duration_seconds, loop_count, and the confirmed role.",
+                "For fonts, preserve font_usage, font_metadata, and font_annotation; verify the license before use.",
                 "Fetch files through resolved_url or the MCP haypile_list_bundles tool.",
                 "Do not read Haypile's local asset directory directly.",
             ]
@@ -2633,12 +2968,19 @@ class MaterialPanelWindow(QWidget):
         return "#666666"
 
     def hideEvent(self, event) -> None:
+        self._cancel_font_preview()
         self._stop_gif_preview(reset_to_first=True, discard=True)
         if self.confirmation_preview is not None:
             self.confirmation_preview.hide_preview()
         super().hideEvent(event)
 
     def closeEvent(self, event) -> None:
+        self._cancel_font_preview()
+        if self.font_preview_worker is not None and self.font_preview_worker.isRunning():
+            self._font_close_pending = True
+            event.ignore()
+            self.hide()
+            return
         self._stop_gif_preview(reset_to_first=True, discard=True)
         if self.confirmation_preview is not None:
             self.confirmation_preview.hide()
@@ -4923,8 +5265,8 @@ class HaypileFloatingBall(QWidget):
         if route.name == ROUTE_UNSUPPORTED:
             self._show_intake_error(
                 ui_text(
-                    "没有找到可收纳的图片或音频",
-                    "No images or audio to store",
+                    "没有找到可收纳的图片、音频或 TTF/OTF 字体",
+                    "No images, audio, or TTF/OTF fonts to store",
                 )
             )
             return
@@ -5403,7 +5745,7 @@ class HaypileFloatingBall(QWidget):
             failure_message = (
                 message
                 if not success
-                else ui_text("没有找到可收纳的图片或音频", "No images or audio to store")
+                else ui_text("没有找到可收纳的图片、音频或 TTF/OTF 字体", "No images, audio, or TTF/OTF fonts to store")
             )
             self._show_intake_error(failure_message)
             self.quick_menu.complete_progress("error", failure_message)
@@ -6130,6 +6472,8 @@ class HaypileFloatingBall(QWidget):
         self._shutdown_worker()
         self._shutdown_ai_batch_worker()
         self._shutdown_ai_refresh_worker()
+        self.material_panel._font_preview_closing = True
+        self.material_panel._cancel_font_preview()
         self.shutdown_requested.emit()
         self.show_toast(
             ui_text("正在安全结束当前操作", "Finishing the current operation safely"),
@@ -6150,6 +6494,7 @@ class HaypileFloatingBall(QWidget):
                 self.worker,
                 self.ai_batch_worker,
                 self.material_panel.ai_refresh_worker,
+                self.material_panel.font_preview_worker,
             )
         )
         if workers_done:

@@ -1,4 +1,4 @@
-# Exact dependency set used by the alpha.9 Python 3.12 release gates.
+# Exact dependency set used by the alpha.10 Python 3.12 release gates.
 # Platform markers in the requirements still decide which packages are installed.
 annotated-doc==0.0.4
 annotated-types==0.7.0
@@ -8,6 +8,7 @@ click==8.4.2
 colorama==0.4.6
 defusedxml==0.7.1
 fastapi==0.139.0
+fonttools==4.66.1
 h11==0.16.0
 httpcore==1.0.9
 httptools==0.8.0

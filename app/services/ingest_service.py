@@ -13,12 +13,13 @@ from app.services.asset_provenance import (
     read_asset_provenance,
     write_asset_provenance,
 )
-from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
+from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_FONT_EXTENSIONS
 from app.services.media_validator import (
     MAX_GIF_BYTES,
     MediaValidationError,
     validate_media,
 )
+from app.services.font_service import MAX_FONT_BYTES
 from app.services.scanner import AssetScanner, mark_manifest_dirty
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.theme_registry import ThemeRegistry
@@ -478,12 +479,15 @@ class IngestService:
             return "empty_file"
         if file_path.suffix.lower() == ".gif" and file_size > MAX_GIF_BYTES:
             return "gif_file_too_large"
+        if file_path.suffix.lower() in SUPPORTED_FONT_EXTENSIONS and file_size > MAX_FONT_BYTES:
+            return "font_file_too_large"
         if file_size > self.max_file_bytes:
             return "file_too_large"
         suffix = file_path.suffix.lower()
         if (
             suffix not in self.SUPPORTED_IMAGE_EXTENSIONS
             and suffix not in SUPPORTED_AUDIO_EXTENSIONS
+            and suffix not in SUPPORTED_FONT_EXTENSIONS
         ):
             return "unsupported_extension"
         return None
@@ -498,11 +502,11 @@ class IngestService:
         role: str,
     ) -> Path:
         safe_theme = self._safe_identifier(theme_id or self.fallback_theme)
-        bucket = "images" if media_kind == "image" else "audio"
+        bucket = {"image": "images", "audio": "audio", "font": "fonts"}[media_kind]
         extension = Path(original_name).suffix.lower() or ".bin"
         short_hash = sha256_hex[:8]
         safe_role = self._safe_identifier(role or "unknown")
-        kind = "img" if media_kind == "image" else "aud"
+        kind = {"image": "img", "audio": "aud", "font": "font"}[media_kind]
         prefix = f"{safe_theme}_{kind}_{safe_role}_{short_hash}"
         themed_dir = self.assets_dir / safe_theme / bucket
         candidate = themed_dir / f"{prefix}{extension}"

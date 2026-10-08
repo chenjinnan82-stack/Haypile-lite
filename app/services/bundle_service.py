@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
+from app.core.file_lock import InterProcessFileLock
+from app.services.font_service import FONT_USAGES
 from app.services.asset_provenance import public_origin_url, read_asset_provenance, write_asset_provenance
 from app.services.scanner import read_manifest_snapshot
 from app.services.storage_runtime import StorageRuntimeDB
@@ -25,7 +27,7 @@ ALLOWED_IMAGE_ROLES = {
     "unknown",
 }
 GIF_ONLY_ROLES = {"reaction", "sticker", "ui_animation"}
-ALLOWED_BUNDLE_ROLES = {*ALLOWED_IMAGE_ROLES, "audio"}
+ALLOWED_BUNDLE_ROLES = {*ALLOWED_IMAGE_ROLES, "audio", "font"}
 ALLOWED_AUDIO_USAGES = {"music", "voice", "ambience", "sound_effect", "loop", "unknown"}
 MAX_BUNDLE_PAGE_SIZE = 100
 
@@ -57,6 +59,7 @@ class BundleService:
         role: str | None = None,
         theme_id: str | None = None,
         audio_usage: str | None = None,
+        font_usage: str | None = None,
         batch_id: str | None = None,
         limit: int | None = None,
         cursor: str | None = None,
@@ -77,7 +80,7 @@ class BundleService:
                 continue
 
             theme_asset = theme_assets.get(url, {})
-            item_role = self._role_from(source_key=source_key, theme_asset=theme_asset)
+            item_role = "font" if item_type == "font" else self._role_from(source_key=source_key, theme_asset=theme_asset)
             source_path = self._asset_path(source_key)
             if source_path is None:
                 continue
@@ -92,6 +95,8 @@ class BundleService:
             provenance = read_asset_provenance(source_path) if asset_exists else {}
             ai_suggestions = provenance.get("ai_suggestions")
             bundle_audio_usage = self._audio_usage_from(provenance) if item_type == "audio" else "unknown"
+            font_usage_value = str(provenance.get("font_usage") or "unknown")
+            bundle_font_usage = font_usage_value if item_type == "font" and font_usage_value in FONT_USAGES else "unknown"
             bundle_id = sha256 or self._missing_id(source_key)
             bundles.append(
                 {
@@ -103,7 +108,7 @@ class BundleService:
                         "missing"
                         if not asset_exists
                         else "pending"
-                        if item_role == "unknown" or (item_type == "audio" and bundle_audio_usage == "unknown")
+                        if item_role == "unknown" or (item_type == "audio" and bundle_audio_usage == "unknown") or (item_type == "font" and bundle_font_usage == "unknown")
                         else "ready"
                     ),
                     "sha256": sha256,
@@ -122,6 +127,9 @@ class BundleService:
                     "audio_metadata": self._audio_metadata_from(item),
                     "audio_tags": self._audio_tags_from(item),
                     "audio_usage": bundle_audio_usage,
+                    "font_usage": bundle_font_usage,
+                    "font_metadata": item.get("font_metadata", {}) if item_type == "font" else {},
+                    "font_annotation": provenance.get("font_annotation", {}) if item_type == "font" else {},
                 }
             )
 
@@ -144,6 +152,7 @@ class BundleService:
             "role": role,
             "theme_id": theme_id,
             "audio_usage": audio_usage,
+            "font_usage": font_usage,
         }
         filtered = [
             bundle
@@ -199,6 +208,8 @@ class BundleService:
         bundle = self.get_bundle(bundle_id)
         if bundle is None or bundle["status"] == "missing":
             return None
+        if bundle["type"] == "font":
+            raise ValueError("font uses separate usage confirmation")
         if bundle["type"] == "audio" and normalized_role != "audio":
             raise ValueError("role incompatible with asset type")
         if bundle["type"] == "image" and normalized_role not in ALLOWED_IMAGE_ROLES:
@@ -249,6 +260,30 @@ class BundleService:
         except OSError:
             return None
         return self.get_bundle(bundle_id)
+
+    def update_bundle_font(
+        self, bundle_id: str, *, font_usage: str | None = None,
+        annotation: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        if font_usage is not None and font_usage not in FONT_USAGES:
+            raise ValueError("unsupported font usage")
+        if annotation is not None and (set(annotation) - {"source_note", "license_note"} or
+                                      any(not isinstance(value, str) for value in annotation.values())):
+            raise ValueError("invalid font annotation")
+        with InterProcessFileLock(self.runtime_db_path.parent / "ingest.transaction.lock"):
+            bundle = self.get_bundle(bundle_id)
+            if bundle is None or bundle["status"] == "missing" or bundle["type"] != "font":
+                return None
+            asset_path = self._asset_path(bundle["source_key"])
+            if asset_path is None:
+                return None
+            provenance = read_asset_provenance(asset_path)
+            if font_usage is not None:
+                provenance["font_usage"] = font_usage
+            if annotation is not None:
+                provenance["font_annotation"] = annotation
+            write_asset_provenance(asset_path, provenance)
+            return self.get_bundle(bundle_id)
 
     def _theme_assets_by_url(self) -> dict[str, dict[str, Any]]:
         assets: dict[str, dict[str, Any]] = {}

@@ -62,7 +62,7 @@ BASE_URL = _validate_base_url(
 )
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = {PROTOCOL_VERSION, "2024-11-05"}
-SERVER_VERSION = "0.3.0-alpha.9"
+SERVER_VERSION = "0.3.0-alpha.10"
 MAX_LINE_BYTES = 1024 * 1024
 LOCAL_OPENER = urllib.request.build_opener(
     urllib.request.ProxyHandler({}),
@@ -175,6 +175,7 @@ def list_bundles(
     role: str | None = None,
     theme_id: str | None = None,
     audio_usage: str | None = None,
+    font_usage: str | None = None,
     batch_id: str | None = None,
     limit: int | None = None,
     cursor: str | None = None,
@@ -185,6 +186,7 @@ def list_bundles(
         "role": role,
         "theme_id": theme_id,
         "audio_usage": audio_usage,
+        "font_usage": font_usage,
         "batch_id": batch_id,
         "limit": limit,
         "cursor": cursor,
@@ -241,6 +243,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             role=arguments.get("role"),
             theme_id=arguments.get("theme_id"),
             audio_usage=arguments.get("audio_usage"),
+            font_usage=arguments.get("font_usage"),
             batch_id=arguments.get("batch_id"),
             limit=arguments.get("limit", 100),
             cursor=arguments.get("cursor"),
@@ -258,6 +261,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             role=arguments.get("role"),
             theme_id=arguments.get("theme_id"),
             audio_usage=arguments.get("audio_usage"),
+            font_usage=arguments.get("font_usage"),
             batch_id=resolved_batch_id,
         )
         if not isinstance(bundles, list):
@@ -314,10 +318,10 @@ def _validate_tool_arguments(name: str, arguments: object) -> dict[str, Any]:
     allowed_by_tool = {
         "haypile_health": set(),
         "haypile_list_bundles": {
-            "status", "type", "role", "theme_id", "audio_usage", "batch_id", "limit", "cursor"
+            "status", "type", "role", "theme_id", "audio_usage", "font_usage", "batch_id", "limit", "cursor"
         },
         "haypile_copy_handoff": {
-            "status", "type", "role", "theme_id", "audio_usage", "batch_id", "limit", "cursor"
+            "status", "type", "role", "theme_id", "audio_usage", "font_usage", "batch_id", "limit", "cursor"
         },
         "haypile_get_bundle": {"bundle_id"},
         "haypile_list_themes": set(),
@@ -333,12 +337,13 @@ def _validate_tool_arguments(name: str, arguments: object) -> dict[str, Any]:
     result = dict(arguments)
     enums = {
         "status": {"ready", "pending", "missing"},
-        "type": {"image", "audio", "asset"},
+        "type": {"image", "audio", "font", "asset"},
         "role": {
             "main_background", "hero_image", "logo", "icon", "content_image",
-            "texture", "reaction", "sticker", "ui_animation", "audio", "unknown",
+            "texture", "reaction", "sticker", "ui_animation", "audio", "font", "unknown",
         },
         "audio_usage": {"music", "voice", "ambience", "sound_effect", "loop", "unknown"},
+        "font_usage": {"unknown", "heading", "body", "decorative"},
     }
     for key, allowed_values in enums.items():
         if key in result and result[key] is not None and result[key] not in allowed_values:
@@ -364,13 +369,14 @@ TOOLS = [
     },
     {
         "name": "haypile_list_bundles",
-        "description": "List registered Haypile bundles. GIF images include content_type, frame_count, duration_seconds, and loop_count.",
+        "description": "List registered Haypile bundles. GIF images include animation metadata; fonts include font_metadata, font_usage, and font_annotation.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "status": {"type": "string", "enum": ["ready", "pending", "missing"]},
-                "type": {"type": "string", "enum": ["image", "audio", "asset"]},
-                "role": {"type": "string", "enum": ["main_background", "hero_image", "logo", "icon", "content_image", "texture", "reaction", "sticker", "ui_animation", "audio", "unknown"]},
+                "type": {"type": "string", "enum": ["image", "audio", "font", "asset"]},
+                "role": {"type": "string", "enum": ["main_background", "hero_image", "logo", "icon", "content_image", "texture", "reaction", "sticker", "ui_animation", "audio", "font", "unknown"]},
+                "font_usage": {"type": "string", "enum": ["unknown", "heading", "body", "decorative"]},
                 "theme_id": {"type": "string", "maxLength": 128},
                 "audio_usage": {"type": "string", "enum": ["music", "voice", "ambience", "sound_effect", "loop", "unknown"]},
                 "batch_id": {"type": "string", "maxLength": 64, "description": "Use latest or a completed ingest batch id."},
@@ -382,13 +388,14 @@ TOOLS = [
     },
     {
         "name": "haypile_copy_handoff",
-        "description": "Return asset-handoff JSON with identity, provenance, media type, and available animation or audio metadata.",
+        "description": "Return asset-handoff JSON with identity, provenance, media type, and available animation, audio, or font metadata.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "status": {"type": "string", "enum": ["ready", "pending", "missing"]},
-                "type": {"type": "string", "enum": ["image", "audio", "asset"]},
-                "role": {"type": "string", "enum": ["main_background", "hero_image", "logo", "icon", "content_image", "texture", "reaction", "sticker", "ui_animation", "audio", "unknown"]},
+                "type": {"type": "string", "enum": ["image", "audio", "font", "asset"]},
+                "role": {"type": "string", "enum": ["main_background", "hero_image", "logo", "icon", "content_image", "texture", "reaction", "sticker", "ui_animation", "audio", "font", "unknown"]},
+                "font_usage": {"type": "string", "enum": ["unknown", "heading", "body", "decorative"]},
                 "theme_id": {"type": "string", "maxLength": 128},
                 "audio_usage": {"type": "string", "enum": ["music", "voice", "ambience", "sound_effect", "loop", "unknown"]},
                 "batch_id": {"type": "string", "maxLength": 64, "description": "Use latest or a completed ingest batch id."},

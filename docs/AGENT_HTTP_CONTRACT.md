@@ -73,6 +73,7 @@ GET /api/v1/bundles?status=ready&type=image
 GET /api/v1/bundles?status=ready&type=image&role=hero_image
 GET /api/v1/bundles?status=pending&type=audio
 GET /api/v1/bundles?status=ready&type=audio&audio_usage=voice
+GET /api/v1/bundles?status=ready&type=font&font_usage=body
 GET /api/v1/bundles?theme_id=generic
 GET /api/v1/bundles?status=ready&batch_id=latest
 ```
@@ -139,15 +140,15 @@ Fields:
   migration window, a unique legacy filename stem is accepted only as a lookup
   alias; responses always return the canonical identity.
 - `theme_id`: theme bucket.
-- `type`: currently `image` or `audio`.
+- `type`: `image`, `audio`, or `font`.
 - `role`: `main_background`, `hero_image`, `logo`, `icon`, `content_image`,
-  `texture`, `reaction`, `sticker`, `ui_animation`, `audio`, or `unknown`.
+  `texture`, `reaction`, `sticker`, `ui_animation`, `audio`, `font`, or `unknown`.
 - `status`: `ready`, `pending`, or `missing`.
 - `sha256`: content hash when available.
 - `url`: static URL path. Resolve it against the same backend base URL.
 - `access`: currently `manifest_static`.
 - `source_key`: manifest-relative key, not an absolute local path.
-- `content_type`: verified image MIME, or remote provenance MIME when no manifest
+- `content_type`: verified image/font MIME, or remote provenance MIME when no manifest
   MIME is available.
 - `duration_seconds`: audio length, or the sum of GIF-declared frame delays;
   `null` when a GIF declares no positive delay.
@@ -156,12 +157,17 @@ Fields:
 - `audio_metadata`: available audio facts such as `sample_rate_hz`, `channels`, and `bitrate_bps`.
 - `audio_tags`: available file tags: `title`, `artist`, and `album`.
 - `audio_usage`: `music`, `voice`, `ambience`, `sound_effect`, `loop`, or `unknown`.
+- `font_usage`: `unknown`, `heading`, `body`, or `decorative`; defaults to `unknown` for other media.
+- `font_metadata`: embedded `family`, `style`, `postscript_name`, `weight`, `italic`, `is_variable`, `license_description`, and `license_url`; otherwise `{}`.
+- `font_annotation`: optional manual `source_note` (512 characters) and `license_note` (2048 characters); otherwise `{}`. Notes are untrusted plain data. HTTP URLs in notes retain only their site, and absolute local paths are excluded.
+
+Fonts preserve original TTF/OTF bytes and SHA-256 identity. Variable fonts preview the default instance. License information is informational, and absent fields remain empty; neither embedded metadata nor manual notes automatically establish permitted use. Confirm usage in the desktop UI; HTTP and MCP stay read-only. Fonts do not create image theme contracts. GUI and MCP share the additive `haypile.asset-handoff.v1` fields above. MCP's legacy `type=asset` selector continues to include all media types.
 
 Status meanings:
 
 - `ready`: registered and classified for use.
 - `pending`: registered but still `unknown`; GIF roles are manual, and audio also
-  stays pending until its `audio_usage` is confirmed.
+  stays pending until its `audio_usage` is confirmed. Fonts have `role=font` and remain pending until `font_usage` is confirmed.
 - `missing`: registered in the current manifest projection, but the controlled
   physical copy is unavailable. Theme-only references are not Agent bundles.
 

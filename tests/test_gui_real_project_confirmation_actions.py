@@ -1299,7 +1299,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             self.assertEqual(
                 panel.empty_state_label.text(),
-                "草窝还空着\n拖入图片、GIF 或音频开始收纳",
+                "草窝还空着\n拖入图片、GIF、音频或字体开始收纳",
             )
             self.assertFalse(panel.empty_state_label.isHidden())
             self.assertTrue(panel.detail_label.isHidden())
@@ -1327,7 +1327,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         try:
             panel.refresh()
 
-            self.assertIn("图片、GIF 或音频", panel.empty_state_label.text())
+            self.assertIn("图片、GIF、音频或字体", panel.empty_state_label.text())
             self.assertIn("剪贴板", panel.empty_state_label.text())
             self.assertFalse(panel.empty_state_label.isHidden())
             self.assertFalse(panel.paste_ingest_button.isHidden())
@@ -1361,7 +1361,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel.search_input.placeholderText(), "Search file, role, status")
             self.assertEqual(
                 panel.empty_state_label.text(),
-                "The nest is empty\nDrop an image, GIF, or audio file to start storing",
+                "The nest is empty\nDrop an image, GIF, audio file, or font to start storing",
             )
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
@@ -3125,7 +3125,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             worker.run()
 
             self.assertFalse(finished[-1][2])
-            self.assertEqual(finished[-1][1], "没有找到可收纳的图片或音频")
+            self.assertEqual(finished[-1][1], "没有找到可收纳的图片、音频或 TTF/OTF 字体")
         finally:
             app_gui_module.open_safe_remote = previous_opener
 

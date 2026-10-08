@@ -25,6 +25,9 @@ class BundlePayload(BaseModel):
     audio_metadata: dict[str, int] = Field(default_factory=dict)
     audio_tags: dict[str, str] = Field(default_factory=dict)
     audio_usage: str = "unknown"
+    font_usage: Literal["unknown", "heading", "body", "decorative"] = "unknown"
+    font_metadata: dict[str, Any] = Field(default_factory=dict)
+    font_annotation: dict[str, str] = Field(default_factory=dict)
 
 
 class IngestBatchPayload(BaseModel):

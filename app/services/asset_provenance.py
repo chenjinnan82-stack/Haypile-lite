@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -33,6 +34,7 @@ def sanitize_provenance(payload: dict[str, Any]) -> dict[str, Any]:
         "source_key": 512,
         "sha256": 64,
         "audio_usage": 32,
+        "font_usage": 32,
     }
     origin_url = public_origin_url(str(payload.get("origin_url") or ""))
     if origin_url:
@@ -41,6 +43,13 @@ def sanitize_provenance(payload: dict[str, Any]) -> dict[str, Any]:
         value = _bounded_public_string(payload.get(key), limit)
         if value:
             cleaned[key] = value
+    annotation = payload.get("font_annotation")
+    if isinstance(annotation, dict):
+        cleaned["font_annotation"] = {
+            key: re.sub(r"https?://\S+", lambda match: public_origin_url(match.group()), value)
+            for key, limit in {"source_note": 512, "license_note": 2048}.items()
+            if (value := _bounded_public_string(annotation.get(key), limit))
+        }
     suggestions = _sanitize_ai_suggestions(payload.get("ai_suggestions"))
     if suggestions:
         cleaned["ai_suggestions"] = suggestions

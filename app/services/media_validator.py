@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +12,8 @@ from defusedxml.common import DefusedXmlException
 from mutagen import File as MutagenFile, MutagenError
 from PIL import Image, UnidentifiedImageError
 
-from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
+from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_FONT_EXTENSIONS
+from app.services.font_service import read_font_metadata
 
 
 class MediaValidationError(ValueError):
@@ -28,6 +29,7 @@ class MediaValidation:
     duration_seconds: float | None = None
     frame_count: int | None = None
     loop_count: int | None = None
+    font_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 RASTER_FORMATS = {
@@ -68,6 +70,12 @@ def validate_media(path: Path) -> MediaValidation:
         return validate_svg(path)
     if suffix in SUPPORTED_AUDIO_EXTENSIONS:
         return validate_audio(path)
+    if suffix in SUPPORTED_FONT_EXTENSIONS:
+        try:
+            metadata = read_font_metadata(path)
+        except Exception as exc:
+            raise MediaValidationError("invalid_font") from exc
+        return MediaValidation("font", "font/ttf" if suffix == ".ttf" else "font/otf", font_metadata=metadata)
     raise MediaValidationError("unsupported_media")
 
 

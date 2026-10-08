@@ -15,8 +15,9 @@ from typing import Callable, Iterator, Mapping
 from urllib.parse import SplitResult, unquote, urlparse, urlsplit
 
 from app.services.asset_provenance import public_origin_url, write_asset_provenance
-from app.services.media_types import AUDIO_CONTENT_TYPE_EXTENSIONS
-from app.services.media_validator import MAX_GIF_BYTES
+from app.services.media_types import AUDIO_CONTENT_TYPE_EXTENSIONS, FONT_CONTENT_TYPE_EXTENSIONS, SUPPORTED_FONT_EXTENSIONS
+from app.services.font_service import MAX_FONT_BYTES
+from app.services.media_validator import MAX_GIF_BYTES, MediaValidationError, validate_media
 
 
 MAX_REMOTE_URLS = 20
@@ -27,6 +28,7 @@ REMOTE_CONTENT_TYPE_EXTENSIONS: dict[str, tuple[str, str]] = {
     "image/gif": ("image", ".gif"),
     "image/svg+xml": ("image", ".svg"),
     **{content_type: ("audio", extension) for content_type, extension in AUDIO_CONTENT_TYPE_EXTENSIONS.items()},
+    **{content_type: ("font", extension) for content_type, extension in FONT_CONTENT_TYPE_EXTENSIONS.items()},
 }
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,13 @@ def download_remote_media(
     destination: Path | None = None
     with (opener or open_safe_remote)(url, timeout=timeout) as response:
         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        if content_type not in REMOTE_CONTENT_TYPE_EXTENSIONS:
+        url_suffix = Path(unquote(urlsplit(url).path)).suffix.lower()
+        media_spec = REMOTE_CONTENT_TYPE_EXTENSIONS.get(content_type)
+        if content_type == "application/octet-stream" and url_suffix in SUPPORTED_FONT_EXTENSIONS:
+            media_spec = ("font", url_suffix)
+        elif content_type == "application/font-sfnt" and url_suffix in SUPPORTED_FONT_EXTENSIONS:
+            media_spec = ("font", url_suffix)
+        if media_spec is None:
             return None, "video_not_supported" if content_type.startswith("video/") else "unsupported"
         content_length = _content_length(response.headers.get("content-length"))
         byte_limit = max(0, int(max_bytes))
@@ -73,10 +81,13 @@ def download_remote_media(
         if content_type == "image/gif":
             byte_limit = min(byte_limit, MAX_GIF_BYTES)
             size_reason = "gif_too_large"
+        if media_spec[0] == "font":
+            byte_limit = min(byte_limit, MAX_FONT_BYTES)
+            size_reason = "font_too_large"
         if content_length > byte_limit:
             return None, size_reason
 
-        _kind, default_extension = REMOTE_CONTENT_TYPE_EXTENSIONS[content_type]
+        _kind, default_extension = media_spec
         destination = _destination_for(incoming_dir, url, content_type, default_extension, index)
         total = 0
         fd = os.open(str(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -107,6 +118,12 @@ def download_remote_media(
         if total <= 0:
             destination.unlink(missing_ok=True)
             return None, "empty"
+        if _kind == "font":
+            try:
+                content_type = validate_media(destination).mime_type
+            except MediaValidationError:
+                destination.unlink(missing_ok=True)
+                return None, "invalid_font"
         try:
             write_asset_provenance(
                 destination,
@@ -342,7 +359,7 @@ def open_safe_remote(
             target.request_target,
             headers={
                 "Host": target.host_header,
-                "Accept": "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,audio/*;q=0.9",
+                "Accept": "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,font/ttf,font/otf,application/octet-stream;q=0.8,audio/*;q=0.9",
                 "Connection": "close",
                 "User-Agent": "Haypile/0.3",
             },

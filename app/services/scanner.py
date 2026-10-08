@@ -13,7 +13,7 @@ from app.core.config import get_settings
 from app.core.file_lock import InterProcessFileLock
 from app.services.json_io import atomic_write_json
 from app.services.media_validator import MediaValidationError, validate_audio, validate_media
-from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS
+from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_FONT_EXTENSIONS
 from app.services.storage_runtime import StorageRuntimeDB
 
 
@@ -79,6 +79,7 @@ def read_manifest_readiness(manifest_path: Path) -> dict[str, str | int]:
 class AssetScanner:
     IMAGE_EXTENSIONS: set[str] = {".png", ".webp", ".svg", ".jpg", ".jpeg", ".gif"}
     AUDIO_EXTENSIONS: set[str] = set(SUPPORTED_AUDIO_EXTENSIONS)
+    FONT_EXTENSIONS: set[str] = set(SUPPORTED_FONT_EXTENSIONS)
 
     def __init__(
         self,
@@ -143,6 +144,16 @@ class AssetScanner:
                 audio_item = self._scan_audio(path)
                 if audio_item:
                     manifest[self._relative_key(path)] = audio_item
+
+            elif suffix in self.FONT_EXTENSIONS:
+                try:
+                    font = validate_media(path)
+                except MediaValidationError:
+                    continue
+                manifest[self._relative_key(path)] = {
+                    "type": "font", "content_type": font.mime_type,
+                    "font_metadata": font.font_metadata, "url_path": self._to_url_path(path),
+                }
 
         if stop_requested():
             raise InterruptedError("manifest_scan_interrupted")

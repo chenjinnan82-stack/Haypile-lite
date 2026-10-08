@@ -15,7 +15,7 @@ if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   exit 1
 fi
 
-RELEASE_VERSION="0.3.0-alpha.9"
+RELEASE_VERSION="0.3.0-alpha.10"
 PYTHON="${PYTHON:-python3.12}"
 VENV="$ROOT/.build-venv"
 BUILD_DIR="$ROOT/build"
@@ -26,7 +26,7 @@ ICONSET="$BUILD_DIR/Haypile.iconset"
 APP="$DIST_DIR/Haypile.app"
 BIN="$APP/Contents/MacOS/Haypile"
 ZIP="$DIST_DIR/Haypile-v$RELEASE_VERSION-macos-arm64.app.zip"
-MACOS_BUILD_VERSION="3009"
+MACOS_BUILD_VERSION="3010"
 SPEC="$ROOT/pysidedeploy.spec"
 ICON_SOURCE="$ROOT/assets/haypile-app-icon.png"
 SPEC_BACKUP=""
@@ -177,6 +177,8 @@ curl -fsS "http://127.0.0.1:$SMOKE_PORT/api/v1/bundles?status=ready" >/dev/null
 kill "$backend_pid"
 wait "$backend_pid" 2>/dev/null || true
 backend_pid=""
+
+"$VENV/bin/python3" scripts/check_font_package.py --binary "$BIN" --out "$SMOKE_ROOT/font-check"
 
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 (
