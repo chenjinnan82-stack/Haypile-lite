@@ -1463,12 +1463,14 @@ class MaterialPanelWindow(QWidget):
         self.font_text_input = QLineEdit(DEFAULT_FONT_TEXT, self.font_controls)
         self.font_text_input.setMaxLength(120)
         self.font_text_input.setMinimumHeight(26)
+        self.font_text_input.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.font_text_input.setStyleSheet(_LINE_EDIT_STYLE)
         self.font_size_input = QSpinBox(self.font_controls)
         self.font_size_input.setRange(12, 72)
         self.font_size_input.setValue(32)
         self.font_size_input.setSuffix(" px")
         self.font_size_input.setMinimumHeight(26)
+        self.font_size_input.setFixedWidth(72)
         self.font_text_input.textChanged.connect(self._on_font_preview_changed)
         self.font_size_input.valueChanged.connect(self._on_font_preview_changed)
         sample_row.addWidget(self.font_text_input, 1)
@@ -1490,7 +1492,7 @@ class MaterialPanelWindow(QWidget):
             self.font_usage_buttons[usage] = button
             usage_row.addWidget(button, index // 2, index % 2)
         font_layout.addLayout(usage_row)
-        action_row = QHBoxLayout()
+        action_row = QVBoxLayout()
         self.font_notes_button = QPushButton(self.font_controls)
         self.font_export_button = QPushButton(self.font_controls)
         for button in (self.font_notes_button, self.font_export_button):
@@ -1596,6 +1598,7 @@ class MaterialPanelWindow(QWidget):
         body_layout.setSpacing(12)
 
         list_pane = QWidget(body)
+        list_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         list_pane.setStyleSheet("QWidget { background: transparent; border: none; }")
         list_layout = QVBoxLayout(list_pane)
         list_layout.setContentsMargins(0, 0, 0, 0)
@@ -1608,6 +1611,7 @@ class MaterialPanelWindow(QWidget):
         list_layout.addStretch(1)
 
         detail_pane = QWidget(body)
+        detail_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         detail_pane.setStyleSheet("QWidget { background: transparent; border: none; }")
         detail_layout = QVBoxLayout(detail_pane)
         detail_layout.setContentsMargins(0, 0, 0, 0)
@@ -1615,6 +1619,7 @@ class MaterialPanelWindow(QWidget):
         self.preview_label.setFixedHeight(72)
         self.detail_label.setWordWrap(False)
         self.detail_label.setMinimumHeight(54)
+        self.detail_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         detail_layout.addWidget(self.empty_state_label, 1)
         detail_layout.addWidget(self.preview_label)
         detail_layout.addWidget(self.font_preview_scroll)
@@ -2231,8 +2236,8 @@ class MaterialPanelWindow(QWidget):
                            f"{self._bundle_status_label(str(bundle['status']))} · {self._font_usage_label(str(bundle.get('font_usage', 'unknown')))} · "
                            + ui_text("可变默认实例" if metadata.get("is_variable") else "静态字体",
                                      "Variable default" if metadata.get("is_variable") else "Static font")
-                           + "\n" + ui_text("已读取内嵌许可，请核实使用范围" if license_known else "许可未知，请核实后使用",
-                                           "Embedded license available; verify permitted use" if license_known else "License unknown; verify before use"))
+                           + "\n" + ui_text("内嵌许可：见来源与许可" if license_known else "许可未知，请核实后使用",
+                                           "Embedded license: view notes" if license_known else "License unknown; verify use"))
             self.detail_label.setTextFormat(Qt.TextFormat.PlainText)
             self.detail_label.setText(font_detail)
             self.detail_label.setToolTip(full_detail_text)

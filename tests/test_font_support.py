@@ -128,6 +128,12 @@ class FontSupportTests(unittest.TestCase):
         collection.close()
         with self.assertRaises(MediaValidationError):
             validate_media(invalid)
+        oversized_glyphs = self.root / "oversized-glyphs.ttf"
+        with TTFont(self.ttf) as font:
+            font["head"].unitsPerEm = 16
+            font.save(oversized_glyphs)
+        with self.assertRaises(MediaValidationError):
+            validate_media(oversized_glyphs)
         with TTFont(self.ttf) as font:
             font.flavor = "woff"
             font.save(invalid)
@@ -247,6 +253,13 @@ class FontSupportTests(unittest.TestCase):
         self.assertLess(long.height, 2000)
         self.assertEqual(long.width, 720)
         long.close()
+        excessive_metrics = self.root / "excessive-metrics.ttf"
+        with TTFont(self.ttf) as font:
+            font["hhea"].ascent = 32767
+            font["hhea"].descent = -32768
+            font.save(excessive_metrics)
+        with self.assertRaisesRegex(ValueError, "preview_size_limit"):
+            render_font_preview(excessive_metrics, "A" * 120, 72)
 
     def test_export_bytes_and_failed_replace_tamper_protected_destination(self) -> None:
         bundle, = self.store()
@@ -404,7 +417,16 @@ class FontSupportTests(unittest.TestCase):
             drain()
             self.assertEqual(panel.font_text_input.text(), "ABC")
             self.assertEqual(panel.font_size_input.value(), 40)
+            for language in ("zh", "en"):
+                app_gui.set_ui_language(language)
+                panel.retranslate()
+                panel.resize(428, 342)
+                application.processEvents()
+                scroll = panel.font_controls.parentWidget().parentWidget().parentWidget()
+                self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+                self.assertLessEqual(panel.font_controls.width(), scroll.viewport().width())
         finally:
+            app_gui.set_ui_language("auto")
             panel._font_preview_closing = True
             panel._cancel_font_preview()
             drain()

@@ -15,6 +15,12 @@ FONT_USAGES = frozenset({"unknown", "heading", "body", "decorative"})
 DEFAULT_FONT_TEXT = "冬藏 Haypile 0123456789"
 
 
+def _check_bitmap_bounds(decoder: ImageFont.FreeTypeFont, text: str) -> None:
+    left, top, right, bottom = decoder.getbbox(text)
+    if right - left > 2048 or bottom - top > 2048:
+        raise ValueError("font_bitmap_size_limit")
+
+
 def read_font_metadata(path: Path) -> dict[str, Any]:
     """Validate the actual SFNT file and decoder before exposing its metadata."""
     size = path.stat().st_size
@@ -67,6 +73,7 @@ def read_font_metadata(path: Path) -> dict[str, Any]:
             "license_url": name(14),
         }
     decoder = ImageFont.truetype(str(path), 32)
+    _check_bitmap_bounds(decoder, "Haypile 0123")
     decoder.getmask("Haypile 0123")
     return metadata
 
@@ -85,6 +92,10 @@ def render_font_preview(path: Path, text: str, size: int) -> tuple[Image.Image, 
             lines.append("")
         lines[-1] += char
     line_height = max(size + 12, sum(decoder.getmetrics()) + 8)
+    if line_height * len(lines) + 24 > 2048:
+        raise ValueError("font_preview_size_limit")
+    for line in lines:
+        _check_bitmap_bounds(decoder, line)
     canvas = Image.new("RGBA", (720, line_height * len(lines) + 24), "#F6F1E4")
     draw = ImageDraw.Draw(canvas)
     for index, line in enumerate(lines):
