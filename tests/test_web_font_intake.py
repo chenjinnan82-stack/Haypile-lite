@@ -11,8 +11,8 @@ import unittest
 from unittest.mock import patch
 
 from fontTools.ttLib import TTFont
-from PySide6.QtCore import QMimeData, QTimer, Qt
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtCore import QMimeData, QTimer
+from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 import app_gui
 from app.services.asset_provenance import read_asset_provenance
@@ -152,7 +152,7 @@ class WebFontIntakeTests(unittest.TestCase):
                     dialog = ball._font_selection_dialog
                     self.assertTrue(ball._ingest_busy())
                     if accept:
-                        dialog.font_list.item(0).setCheckState(Qt.CheckState.Checked)
+                        dialog.font_buttons[0].setChecked(True)
                         dialog.accept()
                     else:
                         dialog.reject()
@@ -211,12 +211,16 @@ class WebFontIntakeTests(unittest.TestCase):
         try:
             self.assertFalse(dialog.store_button.isEnabled())
             self.assertEqual(dialog.selected_paths(), [])
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.accessibleName().startswith(("预览 ", "Preview "))).click()
+            self.assertFalse(dialog.store_button.isEnabled())
+            self.assertFalse(dialog.selected_paths())
             self.assertIn("冬藏", dialog.details.toPlainText())
             self.assertFalse(dialog.preview.pixmap().isNull())
             QTimer.singleShot(0, dialog.reject)
             self.assertEqual(dialog.exec(), QDialog.DialogCode.Rejected)
             self.assertFalse(dialog.selected_paths())
-            dialog.font_list.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.font_buttons[0].setChecked(True)
             self.assertTrue(dialog.store_button.isEnabled())
             self.assertEqual(dialog.selected_paths(), results[0][0])
         finally:

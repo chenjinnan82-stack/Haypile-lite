@@ -182,8 +182,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -536,40 +534,61 @@ class WebFontSelectionDialog(QDialog):
         self.candidates = candidates
         self.setWindowTitle(ui_text("选择网页字体", "Choose web fonts"))
         self.resize(780, 640)
-        self.setStyleSheet("QDialog { background: #F6F1E4; color: #333333; }")
+        self.setStyleSheet("QDialog { background: #F6F1E4; } QLabel { color: #333333; }")
         layout = QVBoxLayout(self)
-        introduction = QLabel(ui_text("点击字体预览，勾选后收纳。网站可能使用多个字体或字符子集。", "Select a font to preview, then check it to store. Sites may use several fonts or character subsets."))
+        introduction = QLabel(ui_text("先预览字体，再选择要收纳的文件。网站可能使用多个字体或字符子集。", "Preview fonts, then choose which files to store. Sites may use several fonts or character subsets."))
         introduction.setWordWrap(True)
         layout.addWidget(introduction)
         if note:
             notice = QLabel(note)
             notice.setWordWrap(True)
             layout.addWidget(notice)
-        self.font_list = QListWidget()
-        self.font_list.setAccessibleName(ui_text("网页字体候选；空格勾选，方向键预览", "Web font candidates; Space to check, arrow keys to preview"))
-        self.font_list.setMinimumHeight(120)
-        self.font_list.setMaximumHeight(210)
-        self.font_list.setStyleSheet(
-            "QListWidget { background: #FFF9EA; color: #333333; border: 1px solid #DDD3BB; border-radius: 7px; }"
-            "QListWidget:focus { border: 2px solid #C8A24A; }"
-            "QListWidget::item { padding: 8px; }"
-            "QListWidget::item:selected { background: #EFE3C7; color: #333333; }"
-        )
-        for candidate in candidates:
+        font_rows = QWidget()
+        font_rows.setStyleSheet("background: #FFF9EA;")
+        rows = QVBoxLayout(font_rows)
+        rows.setContentsMargins(8, 8, 8, 8)
+        self.font_buttons: list[QPushButton] = []
+        self._font_labels: list[str] = []
+        for index, candidate in enumerate(candidates):
             metadata = candidate.metadata
             label = f"{metadata.get('family') or candidate.path.stem} · {metadata.get('style') or 'Regular'} · {candidate.path.suffix[1:].upper()}"
             if candidate.hint:
                 label += "\n" + candidate.hint[:96] + ("…" if len(candidate.hint) > 96 else "")
-            item = QListWidgetItem(label)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-            self.font_list.addItem(item)
-        layout.addWidget(self.font_list)
+            self._font_labels.append(label)
+            row = QHBoxLayout()
+            choose = _MaterialItemButton(ui_text("选择：", "Select: ") + label)
+            choose.setCheckable(True)
+            choose.setAutoDefault(False)
+            choose.setMinimumHeight(52)
+            choose.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            choose.setStyleSheet(_ITEM_BUTTON_STYLE)
+            choose.setAccessibleDescription(ui_text("勾选此字体；再次点击取消选择", "Check this font; click again to deselect"))
+            choose.toggled.connect(lambda checked, target=index: self._check_candidate(target, checked))
+            self.font_buttons.append(choose)
+            row.addWidget(choose, 1)
+            preview_button = QPushButton(ui_text("预览", "Preview"))
+            preview_button.setAccessibleName(ui_text("预览 ", "Preview ") + label)
+            preview_button.setAutoDefault(False)
+            preview_button.setMinimumHeight(34)
+            preview_button.setStyleSheet(_ACTION_BUTTON_STYLE)
+            preview_button.clicked.connect(lambda _checked=False, target=index: self._show_preview(target))
+            row.addWidget(preview_button)
+            rows.addLayout(row)
+        rows.addStretch()
+        font_scroll = QScrollArea()
+        font_scroll.setWidgetResizable(True)
+        font_scroll.setWidget(font_rows)
+        font_scroll.setMinimumHeight(120)
+        font_scroll.setMaximumHeight(210)
+        font_scroll.setStyleSheet("QScrollArea { border: 1px solid #DDD3BB; border-radius: 7px; }")
+        font_scroll.viewport().setStyleSheet("background: #FFF9EA;")
+        layout.addWidget(font_scroll)
         self.preview = QLabel()
         self.preview.setAccessibleName(ui_text("所选字体的原文件预览", "Preview rendered from the selected font file"))
         self.preview.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         scroll = QScrollArea()
         scroll.setWidget(self.preview)
+        scroll.viewport().setStyleSheet("background: #F6F1E4;")
         layout.addWidget(scroll, 1)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
@@ -586,15 +605,18 @@ class WebFontSelectionDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self.font_list.currentRowChanged.connect(self._show_preview)
-        self.font_list.itemChanged.connect(self._update_selection)
-        self.font_list.setCurrentRow(0)
-        self.font_list.setFocus()
+        self._show_preview(0)
+        if self.font_buttons:
+            self.font_buttons[0].setFocus()
         self._update_selection()
 
     def selected_paths(self) -> list[Path]:
-        return [candidate.path for index, candidate in enumerate(self.candidates)
-                if self.font_list.item(index).checkState() == Qt.CheckState.Checked]
+        return [candidate.path for candidate, button in zip(self.candidates, self.font_buttons) if button.isChecked()]
+
+    def _check_candidate(self, index: int, checked: bool) -> None:
+        self.font_buttons[index].setText(ui_text("已选：" if checked else "选择：", "Selected: " if checked else "Select: ") + self._font_labels[index])
+        self._show_preview(index)
+        self._update_selection()
 
     def _update_selection(self) -> None:
         count = len(self.selected_paths())
@@ -5739,8 +5761,8 @@ class HaypileFloatingBall(QWidget):
 
         self._show_intake_error(
             ui_text(
-                "剪贴板里没有可收纳的文件、图片或直链",
-                "No supported file, image, or direct URL found on the clipboard",
+                "剪贴板里没有可收纳的文件、图片或网页链接",
+                "No supported file, image, or web link found on the clipboard",
             )
         )
 
