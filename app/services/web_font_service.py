@@ -11,10 +11,11 @@ from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 
 import httpx
 from app.services.asset_provenance import provenance_path_for, public_origin_url, read_asset_provenance, write_asset_provenance
-from app.services.font_service import DEFAULT_FONT_TEXT, MAX_FONT_BYTES, read_font_metadata, render_font_preview
+from app.services.font_service import MAX_FONT_BYTES, read_font_metadata, render_font_preview
 from app.services.media_types import FONT_CONTENT_TYPE_EXTENSIONS, SUPPORTED_FONT_EXTENSIONS
 from app.services.safe_remote_fetcher import SafeFetchError, download_remote_media, open_safe_remote
 
+WEB_FONT_PREVIEW_TEXT = "冬藏 Aa0123"
 MAX_PAGE_BYTES = 2 * 1024 * 1024
 MAX_STYLESHEETS = 8
 MAX_WEB_FONTS = 20
@@ -299,7 +300,7 @@ def download_web_fonts(
                         successful_urls.add(url)
                         break
                     metadata = read_font_metadata(path)
-                    image, missing = render_font_preview(path, DEFAULT_FONT_TEXT, 32)
+                    image, missing = render_font_preview(path, WEB_FONT_PREVIEW_TEXT, 32, width=254)
                     try:
                         pixels, width, height = image.tobytes(), image.width, image.height
                     finally:

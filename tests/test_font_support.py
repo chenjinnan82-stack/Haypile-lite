@@ -689,10 +689,10 @@ class FontSupportTests(unittest.TestCase):
         panel.show()
         panel.refresh()
         entered, release = threading.Event(), threading.Event()
-        def blocked(*args):
+        def blocked(*args, **kwargs):
             entered.set()
             release.wait(5)
-            return render_font_preview(*args)
+            return render_font_preview(*args, **kwargs)
         try:
             with patch.object(app_gui, "render_font_preview", side_effect=blocked):
                 panel._select_recent_item(0)

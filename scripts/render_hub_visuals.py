@@ -67,15 +67,11 @@ def _render_state(
     painter.drawImage(menu.frameGeometry().topLeft(), menu.grab().toImage())
     painter.end()
 
-    drawer = menu._drawer_global_rect
+    drawer = menu.geometry()
     if not available.contains(drawer):
         raise RuntimeError(f"Drawer escaped the visual frame: {language}/{page}")
-    menu_origin = menu.frameGeometry().topLeft()
-    for action, _icon, _label in menu.actions:
-        slot = menu._slot_rect(action).toAlignedRect().translated(menu_origin)
-        label = menu._label_rect(action).toAlignedRect().translated(menu_origin)
-        if drawer.intersects(slot) or drawer.intersects(label):
-            raise RuntimeError(f"Drawer overlaps {action}: {language}/{page}")
+    if menu.drawer_shell.geometry() != menu.rect():
+        raise RuntimeError("Management window includes invisible attached space")
 
     ball.close()
     app.processEvents()

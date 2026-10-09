@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from pathlib import Path
 import socket
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -90,6 +91,7 @@ class WebFontIntakeTests(unittest.TestCase):
         self.assertEqual((len(candidates), limited, failed), (1, False, 1))
         self.assertEqual(candidates[0].path.read_bytes(), self.woff.read_bytes())
         self.assertEqual(candidates[0].missing, "冬藏")
+        self.assertEqual(candidates[0].width, 254)
         self.assertEqual(read_asset_provenance(candidates[0].path)["origin_url"], "https://public.example")
         self.assertEqual(self.calls.count("https://public.example/assets/main.css"), 1)
         self.assertFalse(any("fake" in url or "alternate" in url for url in self.calls))
@@ -148,20 +150,21 @@ class WebFontIntakeTests(unittest.TestCase):
                 ball.remote_worker = worker
                 received = []
                 ball._start_worker = lambda files: received.append(files)
-                def choose():
-                    dialog = ball._font_selection_dialog
-                    self.assertTrue(ball._ingest_busy())
-                    if accept:
-                        dialog.font_buttons[0].setChecked(True)
-                        dialog.accept()
-                    else:
-                        dialog.reject()
-                QTimer.singleShot(0, choose)
                 paths = [candidate.path for candidate in candidates]
                 ball._on_remote_download_finished(paths, "ok", True, [])
+                self.assertTrue(ball._ingest_busy())
+                self.assertEqual(received, [])
+                self.assertTrue(all(path.exists() for path in paths))
+                self.assertTrue(ball.intake_card.isVisible())
+                self.assertFalse(ball.intake_card.isModal())
+                if accept:
+                    ball.intake_card.store_button.click()
+                else:
+                    ball.intake_card.dismiss("close")
                 self.assertEqual(received, [[paths[0]]] if accept else [])
                 self.assertFalse(paths[1].exists())
                 self.assertEqual(ball._remote_ingest_paths, {paths[0]} if accept else set())
+                self.assertEqual(ball._web_font_candidates, [])
                 ball._cleanup_remote_ingest_paths()
                 self.assertFalse(list(self.incoming.iterdir()))
         finally:
@@ -207,25 +210,30 @@ class WebFontIntakeTests(unittest.TestCase):
         with patch.object(app_gui, "open_safe_remote", self.open): worker.run()
         self.assertTrue(results[0][2])
         self.assertEqual(len(worker.font_candidates), 1)
-        dialog = app_gui.WebFontSelectionDialog(worker.font_candidates)
+        from app.core.config import Settings
+        settings = Settings(STORAGE_DIR=self.root / "storage", VISION_CLASSIFIER_ENABLED=False)
+        with patch.object(app_gui, "get_settings", return_value=settings):
+            ball = app_gui.HaypileFloatingBall()
         try:
-            self.assertFalse(dialog.store_button.isEnabled())
-            self.assertEqual(dialog.selected_paths(), [])
-            next(button for button in dialog.findChildren(QPushButton)
-                 if button.accessibleName().startswith(("预览 ", "Preview "))).click()
-            self.assertFalse(dialog.store_button.isEnabled())
-            self.assertFalse(dialog.selected_paths())
-            self.assertIn("冬藏", dialog.details.toPlainText())
-            self.assertFalse(dialog.preview.pixmap().isNull())
-            QTimer.singleShot(0, dialog.reject)
-            self.assertEqual(dialog.exec(), QDialog.DialogCode.Rejected)
-            self.assertFalse(dialog.selected_paths())
-            dialog.font_buttons[0].setChecked(True)
-            self.assertTrue(dialog.store_button.isEnabled())
-            self.assertEqual(dialog.selected_paths(), results[0][0])
+            ball.remote_worker = worker
+            received = []
+            ball._start_worker = lambda files: received.append(files)
+            ball._on_remote_download_finished(results[0][0], "ok", True, [])
+            card = ball.intake_card
+            self.assertTrue(card.store_button.isEnabled())
+            self.assertFalse(received)
+            self.assertIn("冬藏", card.status.text())
+            self.assertFalse(card.preview.pixmap().isNull())
+            card.info_button.setChecked(True)
+            self.assertLessEqual(card.height(), 320)
+            self.assertIn('https://public.example', card.details.toPlainText())
+            card.dismiss("escape")
+            self.assertFalse(card.isVisible())
+            self.assertFalse(received)
+            self.assertFalse(list(self.incoming.iterdir()))
         finally:
-            dialog.close()
-            dialog.deleteLater()
+            ball.close()
+            self.app.processEvents()
         mime = QMimeData()
         mime.setHtml('<a href="https://public.example/site/">Personal site</a>')
         self.assertEqual(app_gui.HaypileFloatingBall._extract_remote_media_urls(mime), [self.page])
@@ -249,6 +257,176 @@ class WebFontIntakeTests(unittest.TestCase):
         self.assertFalse(leftover.exists())
         self.assertFalse(broken.font_candidates)
         self.assertTrue(self.original.exists())
+
+    def test_outside_click_delivers_action_and_discards_unconfirmed_font(self):
+        from app.core.config import Settings
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        self.add_page('<style>@font-face{src:url(font.woff2)}</style>')
+        self.resources[self.page + "font.woff2"] = ("font/woff2", self.woff.read_bytes())
+        candidates, _, _ = self.discover()
+        settings = Settings(STORAGE_DIR=self.root / "storage", VISION_CLASSIFIER_ENABLED=False)
+        with patch.object(app_gui, "get_settings", return_value=settings):
+            ball = app_gui.HaypileFloatingBall()
+        outside = QPushButton("Original page action")
+        clicked = []
+        outside.clicked.connect(lambda: clicked.append(True))
+        outside.show()
+        try:
+            ball._web_font_candidates = candidates
+            ball.intake_card.show_fonts(candidates)
+            self.assertTrue(ball.intake_card.isVisible())
+            QTest.mouseClick(outside, Qt.MouseButton.LeftButton)
+            self.assertEqual(clicked, [True])
+            self.assertFalse(ball.intake_card.isVisible())
+            self.assertFalse(ball._web_font_candidates)
+            self.assertFalse(list(self.incoming.iterdir()))
+        finally:
+            outside.close()
+            ball.close()
+            self.app.processEvents()
+
+    def test_counter_detects_completed_click_and_escape_cancels_loading(self):
+        from app.core.config import Settings
+        from PySide6.QtCore import QPoint
+        settings = Settings(STORAGE_DIR=self.root / "storage", VISION_CLASSIFIER_ENABLED=False)
+        with patch.object(app_gui, "get_settings", return_value=settings):
+            ball = app_gui.HaypileFloatingBall()
+        try:
+            card = ball.intake_card
+            card.show_message("Loading", "progress")
+            card._last_buttons = (1, 0, 0)
+            card._desktop_buttons = lambda: (2, 0, 0)
+            with patch.object(app_gui.QCursor, "pos", return_value=QPoint(-100, -100)):
+                card._poll_outside()
+            self.assertFalse(card.isVisible())
+            self.assertFalse(ball._remote_request_cancelled)
+            interrupted = []
+            class WaitingWorker(app_gui.RemoteDownloadWorker):
+                def requestInterruption(self): interrupted.append(True)
+            ball.remote_worker = WaitingWorker([], self.incoming)
+            card.show_message("Loading", "progress")
+            card._last_escape = False
+            card._desktop_escape = lambda: True
+            card._poll_outside()
+            self.assertEqual(interrupted, [True])
+            self.assertTrue(ball._remote_request_cancelled)
+            self.assertFalse(card.isVisible())
+            ball._on_remote_download_finished([], "late result", True, [])
+            self.assertFalse(card.isVisible())
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_recent_font_usage_survives_preview_and_failed_update(self):
+        from app.core.config import Settings
+        from app.services.ingest_service import IngestCandidate, IngestService
+        from PySide6.QtTest import QTest
+        settings = Settings(STORAGE_DIR=self.root / "storage", VISION_CLASSIFIER_ENABLED=False)
+        service = IngestService(storage_dir=settings.STORAGE_DIR, assets_dir=settings.ASSETS_DIR,
+                                index_dir=settings.INDEX_DIR, themes_dir=settings.THEMES_DIR,
+                                manifest_path=settings.MANIFEST_PATH, fallback_theme="generic")
+        self.assertTrue(service.ingest([IngestCandidate(self.original)]).success)
+        with patch.object(app_gui, "get_settings", return_value=settings):
+            ball = app_gui.HaypileFloatingBall()
+        try:
+            card = ball.intake_card
+            bundle = ball._bundle_service().list_bundles()[0]
+            card.show_bundle(bundle)
+            deadline = time.monotonic() + 2
+            while card.font_preview_worker is not None and time.monotonic() < deadline:
+                QTest.qWait(5)
+            self.assertIsNone(card.font_preview_worker)
+            self.assertFalse(card.preview.pixmap().isNull())
+            card.info_button.setChecked(True)
+            card.usage_buttons["body"].setChecked(True)
+            self.assertEqual(ball._bundle_service().get_bundle(bundle["id"])["font_usage"], "body")
+            with patch.object(app_gui.BundleService, "update_bundle_font", side_effect=TimeoutError):
+                card.usage_buttons["heading"].setChecked(True)
+            self.assertTrue(card.usage_buttons["body"].isChecked())
+            self.assertFalse(card.usage_buttons["heading"].isChecked())
+            self.assertIn("保存失败", card.status.text())
+            self.assertEqual(card.height(), 320)
+            self.assertTrue(card.rect().contains(card.store_button.geometry()))
+            card.dismiss("close")
+            self.assertTrue((settings.ASSETS_DIR / bundle["source_key"]).is_file())
+            app_gui.set_ui_language("en")
+            card.show_bundle(card.bundle)
+            self.assertEqual(card.close_button.text(), "Close")
+            self.assertEqual(card.usage_buttons["body"].text(), "Body")
+            card.dismiss("close")
+        finally:
+            app_gui.set_ui_language("auto")
+            ball.close()
+            self.app.processEvents()
+
+    def test_font_collection_keeps_explicit_storage_configuration(self):
+        from app.core.config import Settings
+        from PySide6.QtTest import QTest
+        settings = Settings(_env_file=None, STORAGE_DIR=self.root / "isolated", VISION_CLASSIFIER_ENABLED=False)
+        global_settings = Settings(_env_file=None, STORAGE_DIR=self.root / "other", VISION_CLASSIFIER_ENABLED=False)
+        ball = app_gui.HaypileFloatingBall(settings=settings)
+        try:
+            with patch.object(app_gui, "get_settings", return_value=global_settings):
+                ball._start_worker([self.original])
+                deadline = time.monotonic() + 3
+                while ball.worker is not None and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(.005)
+            self.assertIsNone(ball.worker)
+            bundles = ball._bundle_service().list_bundles()
+            self.assertEqual(len(bundles), 1)
+            self.assertEqual(bundles[0]["type"], "font")
+            self.assertTrue(settings.MANIFEST_PATH.is_file())
+            self.assertFalse(global_settings.STORAGE_DIR.exists())
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_result_arriving_before_thread_stop_keeps_shutdown_owner(self):
+        from app.core.config import Settings
+        for kind in ("remote", "ingest"):
+            with self.subTest(kind=kind):
+                emitted, release = threading.Event(), threading.Event()
+                settings = Settings(_env_file=None, STORAGE_DIR=self.root / kind, VISION_CLASSIFIER_ENABLED=False)
+                ball = app_gui.HaypileFloatingBall(settings=settings)
+                base = app_gui.RemoteDownloadWorker if kind == "remote" else app_gui.IngestWorker
+                class EarlyResultWorker(base):
+                    def run(self):
+                        if kind == "remote":
+                            self.finished_signal.emit([], "done", True)
+                        else:
+                            self.finished_signal.emit("done", True)
+                        emitted.set()
+                        release.wait(3)
+                worker = (EarlyResultWorker([], self.incoming) if kind == "remote"
+                          else EarlyResultWorker([], settings.ASSETS_DIR, settings=settings))
+                worker.setParent(ball)
+                attribute = "remote_worker" if kind == "remote" else "worker"
+                setattr(ball, attribute, worker)
+                if kind == "remote":
+                    worker.finished_signal.connect(lambda files, message, success: ball._on_remote_download_finished(files, message, success, []))
+                else:
+                    worker.finished_signal.connect(ball._on_ingest_finished)
+                try:
+                    worker.start()
+                    self.assertTrue(emitted.wait(2))
+                    self.app.processEvents()
+                    self.assertIs(getattr(ball, attribute), worker)
+                    ball.shutdown()
+                    self.assertFalse(ball._cleanup_done)
+                    release.set()
+                    deadline = time.monotonic() + 3
+                    while not ball._cleanup_done and time.monotonic() < deadline:
+                        self.app.processEvents()
+                        time.sleep(.005)
+                    self.assertTrue(ball._cleanup_done)
+                finally:
+                    release.set()
+                    if getattr(ball, attribute) is not None:
+                        worker.wait(3000)
+                    ball.close()
+                    self.app.processEvents()
 
 
 if __name__ == "__main__":

@@ -198,10 +198,11 @@ def read_font_metadata(path: Path) -> dict[str, Any]:
     return metadata
 
 
-def render_font_preview(path: Path, text: str, size: int) -> tuple[Image.Image, str]:
+def render_font_preview(path: Path, text: str, size: int, *, width: int = 720) -> tuple[Image.Image, str]:
     """Pillow uses this exact file; missing glyphs never invoke system fallback."""
     text = str(text)[:120].replace("\n", " ").replace("\r", " ")
     size = max(12, min(int(size), 72))
+    width = max(80, min(int(width), 720))
     preview_text = text
     payload = _validated_font_bytes(path)
     with TTFont(BytesIO(payload), lazy=True) as font:
@@ -213,7 +214,7 @@ def render_font_preview(path: Path, text: str, size: int) -> tuple[Image.Image, 
     decoder = ImageFont.truetype(BytesIO(payload), size, encoding=encoding)
     lines = [""]
     for char in preview_text:
-        if lines[-1] and decoder.getlength(lines[-1] + char) > 680:
+        if lines[-1] and decoder.getlength(lines[-1] + char) > width - 40:
             lines.append("")
         lines[-1] += char
     line_height = max(size + 12, sum(decoder.getmetrics()) + 8)
@@ -221,7 +222,7 @@ def render_font_preview(path: Path, text: str, size: int) -> tuple[Image.Image, 
         raise ValueError("font_preview_size_limit")
     for line in lines:
         _check_bitmap_bounds(decoder, line)
-    canvas = Image.new("RGBA", (720, line_height * len(lines) + 24), "#F6F1E4")
+    canvas = Image.new("RGBA", (width, line_height * len(lines) + 24), "#F6F1E4")
     draw = ImageDraw.Draw(canvas)
     for index, line in enumerate(lines):
         draw.text((20, 12 + index * line_height), line, font=decoder, fill="#333333", anchor="lt")

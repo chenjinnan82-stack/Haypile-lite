@@ -1882,98 +1882,30 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             panel.confirmation_preview.close()
             panel.close()
 
-    def test_quick_menu_exposes_actions(self) -> None:
+    def test_management_buttons_keep_agent_actions(self) -> None:
         menu = QuickMenuWindow()
-        actions: list[str] = []
+        actions = []
         menu.set_action_handler(actions.append)
         try:
-            self.assertEqual({action for action, _icon, _tooltip in menu.actions}, {"assets", "agent", "settings"})
-            self.assertEqual(menu.action_tooltips["assets"], app_gui_module.ui_text("素材", "Assets"))
-
-            point = menu._slot_rect("agent").center()
-            self.assertEqual(menu._action_at(point), "agent")
-            event = QMouseEvent(QEvent.Type.MouseButtonPress, point, point, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
-            menu.mousePressEvent(event)
-
-            self.assertEqual(actions, ["agent"])
+            menu._detail_buttons["http"].click()
+            menu._detail_buttons["mcp"].click()
+            self.assertEqual(actions, ["http", "mcp"])
+            self.assertFalse(menu.isVisible())
         finally:
             menu.close()
 
-    def test_quick_menu_hover_tracks_current_action(self) -> None:
+
+
+
+    def test_management_attention_clears_when_opened(self) -> None:
         menu = QuickMenuWindow()
-        try:
-            point = menu._slot_rect("assets").center()
-            event = QMouseEvent(QEvent.Type.MouseMove, point, point, Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
-
-            menu.mouseMoveEvent(event)
-
-            self.assertEqual(menu._hovered_action, "assets")
-            self.assertEqual(menu.toolTip(), app_gui_module.ui_text("素材", "Assets"))
-            menu.hide_menu()
-            self.assertEqual(menu._hovered_action, "")
-            self.assertEqual(menu.toolTip(), "")
-
-            menu.mouseMoveEvent(event)
-            menu.leaveEvent(QEvent(QEvent.Type.Leave))
-            self.assertEqual(menu._hovered_action, "")
-        finally:
-            menu.close()
-
-    def test_quick_menu_empty_click_keeps_attached_component_open(self) -> None:
-        menu = QuickMenuWindow()
-        actions: list[str] = []
+        actions = []
         menu.set_action_handler(actions.append)
         try:
-            menu.show_menu(0, 0)
-            point = menu.rect().center()
-            self.assertEqual(menu._action_at(point), "")
-            event = QMouseEvent(QEvent.Type.MouseButtonPress, point, point, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
-
-            menu.mousePressEvent(event)
-
-            self.assertEqual(actions, [])
-            self.assertTrue(menu.isVisible())
-        finally:
-            menu.close()
-
-    def test_quick_menu_first_show_keeps_track_center_aligned(self) -> None:
-        menu = QuickMenuWindow()
-        try:
-            menu.set_track_center(QPointF(96, 112))
-            finished = QSignalSpy(menu._slide_animation.finished)
-
-            menu.show_menu(10, 20)
-
-            self.assertNotEqual(menu._content_shift, QPointF(0, 0))
-            self.assertTrue(finished.wait(1_000))
-            self.app.processEvents()
-            self.assertEqual(menu._content_shift, QPointF(0, 0))
-            center, _radius = menu._track_geometry()
-            self.assertEqual(center, QPointF(120, 120))
-        finally:
-            menu.close()
-
-    def test_quick_menu_attention_action_clears_after_click(self) -> None:
-        menu = QuickMenuWindow()
-        actions: list[str] = []
-        menu.set_action_handler(actions.append)
-        try:
-            description = menu._ring_action_buttons["assets"].accessibleDescription()
             menu.set_attention_action("assets")
-            self.assertEqual(menu._attention_action, "assets")
-            self.assertIn(
-                "待确认",
-                menu._ring_action_buttons["assets"].accessibleDescription(),
-            )
-
             menu._emit_action("assets")
-
             self.assertEqual(actions, ["assets"])
             self.assertEqual(menu._attention_action, "")
-            self.assertEqual(
-                menu._ring_action_buttons["assets"].accessibleDescription(),
-                description,
-            )
         finally:
             menu.close()
 
@@ -2021,7 +1953,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
     def test_floating_ball_quick_menu_copies_http_url(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
         try:
-            ball._toggle_quick_menu()
+            ball._handle_quick_menu_action("agent")
             self.assertTrue(ball.quick_menu.isVisible())
 
             ball.quick_menu._emit_action("http")
@@ -2058,22 +1990,19 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
 
-    def test_floating_ball_quick_menu_first_open_aligns_to_ball_center(self) -> None:
+    def test_grass_click_opens_only_one_small_card(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 900, 700)
         try:
             ball.move(300, 220)
-
             ball._toggle_quick_menu()
             self.app.processEvents()
-
-            track_center, _radius = ball.quick_menu._track_geometry()
-            expected = ball.frameGeometry().center() - ball.quick_menu.frameGeometry().topLeft()
-            self.assertLessEqual(abs(track_center.x() - expected.x()), 1)
-            self.assertLessEqual(abs(track_center.y() - expected.y()), 1)
-            QTest.qWait(210)
-            self.app.processEvents()
-            self.assertEqual(ball.quick_menu._content_shift, QPointF(0, 0))
+            self.assertTrue(ball.intake_card.isVisible())
+            self.assertFalse(ball.quick_menu.isVisible())
+            self.assertEqual(ball.intake_card.size(), app_gui_module.QSize(280, 240))
+            self.assertFalse(ball.intake_card.geometry().intersects(ball.geometry()))
+            ball._toggle_quick_menu()
+            self.assertFalse(ball.intake_card.isVisible())
         finally:
             ball.close()
             self.app.processEvents()
@@ -2128,7 +2057,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball._handle_quick_menu_action("ai_toggle")
 
             self.assertFalse(ball.ai_enabled)
-            self.assertTrue(ball.quick_menu.is_drawer_open())
+            self.assertTrue(ball.quick_menu.isVisible())
             self.assertEqual(ball.quick_menu.current_page(), "ai")
             self.assertIn("模型未安装", ball.quick_menu.ai_status_label.text())
             self.assertIn(("先安装本地视觉模型", "pending"), toasts)
@@ -2208,7 +2137,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
 
-    def test_floating_ball_ingest_feedback_keeps_fixed_target_anchor(self) -> None:
+    def test_intake_feedback_keeps_target_anchor_without_showing_management(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 800, 600)
         try:
@@ -2218,72 +2147,21 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball._drop_open_animation.stop()
             ball._set_drop_open_progress(1.0)
             ball.show_toast("正在收纳", tone="progress")
-            ball.quick_menu.begin_progress(
-                ball._toast_anchor(),
-                ball._available_geometry(),
-                "正在收纳",
-            )
             self.app.processEvents()
-
-            feedback_x = []
+            positions = []
             fixed_anchor = ball._toast_anchor()
             for progress in (1.0, 0.5, 0.0):
                 ball._set_drop_open_progress(progress)
                 self.app.processEvents()
-                anchor = ball._toast_anchor()
-                self.assertEqual(anchor, fixed_anchor)
-                self.assertEqual(ball.quick_menu._anchor, anchor)
-                self.assertEqual(
-                    ball.quick_menu.drawer_shell.geometry(),
-                    app_gui_module.QRect(0, 0, 270, 64),
-                )
-                self.assertFalse(
-                    ball.quick_menu.feedback_label.geometry().intersects(
-                        ball.quick_menu.progress_bar.geometry()
-                    )
-                )
-                feedback_x.append(ball.quick_menu.x())
-
-            self.assertEqual(len(set(feedback_x)), 1)
-            long_message = (
-                "Blocked: only safe images/audio are supported, "
-                "or an asset exceeds its size limit"
-            )
-            ball.quick_menu.set_progress(50, long_message)
-            self.app.processEvents()
-            self.assertGreater(
-                ball.quick_menu.feedback_label.height(),
-                28,
-            )
-            self.assertEqual(
-                ball.quick_menu.drawer_shell.height(),
-                ball.quick_menu.feedback_label.height() + 36,
-            )
-            self.assertFalse(
-                ball.quick_menu.feedback_label.geometry().intersects(
-                    ball.quick_menu.progress_bar.geometry()
-                )
-            )
-            ball.quick_menu.complete_progress("success", "收纳完成")
-            self.assertEqual(
-                ball.quick_menu.drawer_shell.geometry(),
-                app_gui_module.QRect(0, 0, 270, 50),
-            )
-            ball.quick_menu.show_feedback(
-                long_message,
-                "error",
-                ball._toast_anchor(),
-                ball._available_geometry(),
-            )
-            self.app.processEvents()
-            self.assertGreater(
-                ball.quick_menu.feedback_label.height(),
-                28,
-            )
-            self.assertEqual(
-                ball.quick_menu.drawer_shell.height(),
-                ball.quick_menu.feedback_label.height() + 22,
-            )
+                self.assertEqual(ball._toast_anchor(), fixed_anchor)
+                self.assertTrue(ball.intake_card.isVisible())
+                self.assertFalse(ball.quick_menu.isVisible())
+                positions.append(ball.intake_card.pos())
+            self.assertEqual(positions[0], positions[1])
+            self.assertEqual(positions[1], positions[2])
+            ball.show_toast("收纳完成", tone="success")
+            self.assertEqual(ball.intake_card.width(), 280)
+            self.assertLessEqual(ball.intake_card.height(), 140)
         finally:
             ball.close()
             self.app.processEvents()
@@ -2320,13 +2198,13 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         try:
             ball.show()
             ball.show_toast("ok", tone="success")
-            before = ball.quick_menu.geometry()
+            before = ball.intake_card.geometry()
 
             ball.move(400, 300)
             self.app.processEvents()
 
             self.assertEqual(ball.quick_menu._anchor, ball._toast_anchor())
-            self.assertNotEqual(ball.quick_menu.geometry(), before)
+            self.assertNotEqual(ball.intake_card.geometry(), before)
         finally:
             ball.close()
             self.app.processEvents()
@@ -2353,16 +2231,17 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def test_floating_ball_pending_badge_highlights_assets_and_clears_when_resolved(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
-        pending = [{"id": "pending"}]
+        pending = [{"id": "pending", "source_key": "generic/pending.png"}]
         ball._bundle_service = lambda: SimpleNamespace(
-            list_bundles=lambda **_filters: list(pending)
+            list_bundles=lambda **_filters: list(pending), _asset_path=lambda key: None
         )
         try:
             ball._refresh_pending_badge()
             ball._toggle_quick_menu()
 
-            self.assertTrue(ball.quick_menu.isVisible())
-            self.assertEqual(ball.quick_menu._attention_action, "assets")
+            self.assertTrue(ball.intake_card.isVisible())
+            self.assertFalse(ball.quick_menu.isVisible())
+            self.assertTrue(ball._has_pending_assets)
 
             pending.clear()
             ball._refresh_pending_badge()
@@ -2373,41 +2252,20 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
 
-    def test_quick_menu_stays_anchored_when_ball_is_at_screen_edge(self) -> None:
+    def test_card_stays_on_screen_without_moving_grass(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
-        ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 360, 360)
-        positions = [
-            (0, 0),
-            (144, 0),
-            (288, 0),
-            (0, 144),
-            (288, 144),
-            (0, 288),
-            (144, 288),
-            (288, 288),
-        ]
+        available = app_gui_module.QRect(0, 0, 960, 640)
+        ball._available_geometry = lambda: available
         try:
-            for x, y in positions:
+            for x, y in [(0, 0), (444, 0), (888, 0), (0, 284), (888, 284), (0, 568), (444, 568), (888, 568)]:
                 with self.subTest(position=(x, y)):
                     ball.move(x, y)
                     ball_pos = ball.pos()
-
-                    ball.quick_menu.show_attached(ball._ball_anchor_rect(), ball._available_geometry())
-
+                    ball.intake_card.show_recent()
                     self.assertEqual(ball.pos(), ball_pos)
-                    self.assertGreaterEqual(ball.quick_menu.x(), 0)
-                    self.assertGreaterEqual(ball.quick_menu.y(), 0)
-                    self.assertLessEqual(ball.quick_menu.frameGeometry().right(), 359)
-                    self.assertLessEqual(ball.quick_menu.frameGeometry().bottom(), 359)
-                    track_center, _radius = ball.quick_menu._track_geometry()
-                    expected = ball.frameGeometry().center() - ball.quick_menu.frameGeometry().topLeft()
-                    self.assertLessEqual(abs(track_center.x() - expected.x()), 1)
-                    self.assertLessEqual(abs(track_center.y() - expected.y()), 1)
-                    for action, _icon, _tooltip in ball.quick_menu.actions:
-                        slot_rect = ball.quick_menu._slot_rect(action).toAlignedRect()
-                        self.assertTrue(ball.quick_menu.rect().intersects(slot_rect))
-                        label_rect = ball.quick_menu._label_rect(action).toAlignedRect()
-                        self.assertTrue(ball.quick_menu.rect().contains(label_rect))
+                    self.assertTrue(available.contains(ball.intake_card.geometry()))
+                    self.assertFalse(ball.geometry().intersects(ball.intake_card.geometry()))
+                    self.assertFalse(ball.quick_menu.isVisible())
         finally:
             ball.close()
             self.app.processEvents()

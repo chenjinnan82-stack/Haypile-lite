@@ -11,7 +11,7 @@ try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QEvent, QRect, Qt
     from PySide6.QtGui import QFont
-    from PySide6.QtTest import QSignalSpy, QTest
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
     import app_gui
@@ -31,7 +31,9 @@ class AttachedHubTests(unittest.TestCase):
 
     def setUp(self) -> None:
         app_gui.set_ui_language("auto")
-        self.ball = app_gui.HaypileFloatingBall()
+        self.temp = tempfile.TemporaryDirectory()
+        self.settings = app_gui.Settings(_env_file=None, STORAGE_DIR=Path(self.temp.name) / "storage", LOG_DIR=Path(self.temp.name) / "logs", VISION_CLASSIFIER_ENABLED=False)
+        self.ball = app_gui.HaypileFloatingBall(settings=self.settings)
         self.ball._available_geometry = lambda: QRect(0, 0, 1000, 760)
         self.ball.move(180, 260)
         self.app.processEvents()
@@ -39,46 +41,31 @@ class AttachedHubTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.ball.close()
         self.app.processEvents()
+        self.temp.cleanup()
         app_gui.set_ui_language("auto")
 
-    def test_three_layer_hub_keeps_grass_origin_and_fixed_drawer_shell(self) -> None:
+    def test_card_and_management_keep_grass_origin(self) -> None:
         origin = self.ball.pos()
         self.ball._toggle_quick_menu()
-        self.assertEqual(
-            {action for action, _icon, _label in self.ball.quick_menu.actions},
-            {"assets", "agent", "settings"},
-        )
-        self.assertFalse(self.ball.quick_menu._hide_timer.isActive())
-
-        geometries = []
+        self.assertTrue(self.ball.intake_card.isVisible())
+        self.assertEqual(self.ball.intake_card.width(), 280)
         for page in ("assets", "agent", "settings"):
             self.ball._handle_quick_menu_action(page)
             self.app.processEvents()
-            self.assertEqual(self.ball.quick_menu.current_page(), page)
-            self.assertTrue(self.ball.quick_menu.is_drawer_open())
-            geometries.append(self.ball.quick_menu.drawer_shell.size())
+            menu = self.ball.quick_menu
+            self.assertEqual(menu.current_page(), page)
+            self.assertTrue(menu.isVisible())
+            self.assertFalse(self.ball.intake_card.isVisible())
+            self.assertEqual(menu.size(), app_gui.QSize(620, 520))
             self.assertEqual(self.ball.pos(), origin)
-
-        self.assertTrue(all(size == geometries[0] for size in geometries))
-        self.assertEqual(geometries[0].height(), 392)
-        self.assertGreaterEqual(geometries[0].width(), 408)
         self.assertTrue(self.ball.material_panel._embedded)
         self.assertIsNone(self.ball.material_panel.confirmation_preview)
-        self.assertTrue(self.ball.material_panel.copy_ready_button.isHidden())
-        self.assertFalse(self.ball.material_panel.scope_buttons["latest"].isHidden())
 
-        self.ball.quick_menu.leaveEvent(QEvent(QEvent.Type.Leave))
-        QTest.qWait(50)
-        self.assertTrue(self.ball.quick_menu.isVisible())
-        self.assertFalse(self.ball.quick_menu._hide_timer.isActive())
-
-    def test_opening_ring_does_not_probe_local_ai(self) -> None:
+    def test_opening_card_does_not_probe_local_ai(self) -> None:
         self.ball.ai_enabled = True
-        self.ball._ai_model_state = lambda: self.fail("opening the ring must not probe Ollama")
-
+        self.ball._ai_model_state = lambda: self.fail("opening the card must not probe Ollama")
         self.ball._toggle_quick_menu()
-
-        self.assertTrue(self.ball.quick_menu.isVisible())
+        self.assertTrue(self.ball.intake_card.isVisible())
 
     def test_action_sounds_follow_ring_navigation_and_persist_the_toggle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -114,7 +101,7 @@ class AttachedHubTests(unittest.TestCase):
     def test_action_sound_preference_is_applied_before_first_frame(self) -> None:
         for stored_value in (False, "false"):
             restored = app_gui.HaypileFloatingBall(
-                initial_state={"sound_enabled": stored_value},
+                settings=self.settings, initial_state={"sound_enabled": stored_value},
             )
             try:
                 self.assertFalse(restored.sound_enabled)
@@ -124,87 +111,23 @@ class AttachedHubTests(unittest.TestCase):
                 restored.close()
                 self.app.processEvents()
 
-    def test_ring_and_assets_drawer_respond_before_deferred_refresh(self) -> None:
-        menu = self.ball.quick_menu
-        refresh_calls = []
-        menu.material_panel.refresh = lambda: refresh_calls.append("refresh")
-
-        self.ball._toggle_quick_menu()
-        self.assertEqual(menu._fade_animation.duration(), 125)
-        self.assertEqual(menu._fade_animation.startValue(), 0.45)
-
+    def test_management_refreshes_assets_once_when_opened(self) -> None:
+        calls = []
+        self.ball.material_panel.refresh = lambda: calls.append(True)
         self.ball._handle_quick_menu_action("assets")
-        self.assertTrue(menu.drawer_shell.isVisible())
-        self.assertEqual(refresh_calls, [])
-        gap = menu._drawer_global_rect.left() - self.ball._ball_anchor_rect().right()
-        self.assertGreater(gap, 0)
-        self.assertLessEqual(gap, menu.CONNECTOR_REACH)
+        self.assertTrue(self.ball.quick_menu.isVisible())
+        self.assertEqual(calls, [True])
 
-        self.app.processEvents()
-        self.assertEqual(refresh_calls, ["refresh"])
-
-    def test_edge_layout_mirrors_drawer_without_moving_grass(self) -> None:
+    def test_management_fits_screen_without_moving_grass(self) -> None:
         self.ball.move(918, 280)
         origin = self.ball.pos()
         self.ball._handle_quick_menu_action("settings")
         self.app.processEvents()
-
         self.assertEqual(self.ball.pos(), origin)
-        self.assertEqual(self.ball.quick_menu._drawer_side, "left")
-        drawer = self.ball.quick_menu._drawer_global_rect
-        self.assertGreaterEqual(drawer.left(), 0)
-        self.assertLessEqual(drawer.right(), 999)
-        self.assertGreaterEqual(drawer.width(), 408)
-        track_global = self.ball.quick_menu.frameGeometry().topLeft() + self.ball.quick_menu._track_center.toPoint()
-        self.assertLessEqual((track_global - self.ball._ball_anchor_rect().center()).manhattanLength(), 1)
-        menu_origin = self.ball.quick_menu.frameGeometry().topLeft()
-        for action, _icon, _label in self.ball.quick_menu.actions:
-            slot = self.ball.quick_menu._slot_rect(action).toAlignedRect().translated(menu_origin)
-            label = self.ball.quick_menu._label_rect(action).toAlignedRect().translated(menu_origin)
-            self.assertFalse(drawer.intersects(slot), action)
-            self.assertFalse(drawer.intersects(label), action)
+        self.assertTrue(self.ball._available_geometry().contains(self.ball.quick_menu.frameGeometry()))
+        self.assertEqual(self.ball.quick_menu.drawer_shell.geometry(), self.ball.quick_menu.rect())
 
-    def test_selected_page_rotates_to_drawer_connector(self) -> None:
-        self.ball.move(918, 280)
-        menu = self.ball.quick_menu
-        menu.show_attached(self.ball._ball_anchor_rect(), self.ball._available_geometry())
 
-        positions = {}
-        for page in ("agent", "settings", "assets"):
-            menu.open_drawer(page)
-            self.app.processEvents()
-            selected = menu._slot_rect(page).center()
-            positions[page] = selected
-            self.assertLess(selected.x(), menu._track_center.x())
-            self.assertLessEqual(abs(selected.y() - menu._track_center.y()), 1)
-
-        self.assertEqual(len({(point.x(), point.y()) for point in positions.values()}), 1)
-
-    def test_ring_rotation_animates_and_low_power_snaps(self) -> None:
-        self.ball.move(918, 280)
-        menu = self.ball.quick_menu
-        menu.show_attached(self.ball._ball_anchor_rect(), self.ball._available_geometry())
-        menu.open_drawer("agent")
-
-        with patch.object(menu, "_animations_enabled", return_value=True):
-            finished = QSignalSpy(menu._ring_rotation.finished)
-            menu.open_drawer("settings")
-            self.assertEqual(
-                menu._ring_rotation.state(),
-                app_gui.QVariantAnimation.State.Running,
-            )
-            self.assertTrue(finished.wait(1000))
-            selected = menu._slot_rect("settings").center()
-            self.assertLessEqual(abs(selected.y() - menu._track_center.y()), 1)
-
-            menu._low_power_enabled = True
-            menu.open_drawer("assets")
-            self.assertEqual(
-                menu._ring_rotation.state(),
-                app_gui.QVariantAnimation.State.Stopped,
-            )
-            selected = menu._slot_rect("assets").center()
-            self.assertLessEqual(abs(selected.y() - menu._track_center.y()), 1)
 
     def test_language_and_low_power_persist_without_losing_ai_preference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -214,7 +137,7 @@ class AttachedHubTests(unittest.TestCase):
 
             self.ball._set_language_mode("en")
             self.assertEqual(self.ball.language_mode, "en")
-            self.assertEqual(self.ball.quick_menu.action_tooltips["assets"], "Assets")
+            self.assertEqual(self.ball.quick_menu.language_buttons["en"].text(), "English")
 
             self.ball._set_low_power_enabled(True)
             self.assertTrue(self.ball.low_power_enabled)
@@ -277,75 +200,23 @@ class AttachedHubTests(unittest.TestCase):
             menu.diagnostics_button.accessibleDescription(),
         )
 
-    def test_ring_actions_are_native_accessible_buttons_and_follow_rotation(self) -> None:
-        menu = self.ball.quick_menu
+    def test_card_buttons_support_keyboard_close(self) -> None:
+        self.ball._toggle_quick_menu()
+        card = self.ball.intake_card
+        self.app.processEvents()
+        self.assertEqual(card.close_button.focusPolicy(), Qt.FocusPolicy.StrongFocus)
+        self.assertTrue(card.close_button.hasFocus())
+        QTest.keyClick(card.close_button, Qt.Key.Key_Space)
+        self.assertFalse(card.isVisible())
+
+    def test_card_reopen_restores_keyboard_focus(self) -> None:
+        self.ball._toggle_quick_menu()
+        card = self.ball.intake_card
+        QTest.keyClick(card, Qt.Key.Key_Escape)
+        self.assertFalse(card.isVisible())
         self.ball._toggle_quick_menu()
         self.app.processEvents()
-
-        self.assertEqual(set(menu._ring_action_buttons), {"assets", "agent", "settings"})
-        self.assertFalse(
-            any(button.hasFocus() for button in menu._ring_action_buttons.values())
-        )
-        QTest.keyClick(menu, Qt.Key.Key_Tab)
-        self.assertTrue(menu._ring_action_buttons["assets"].hasFocus())
-        for action, button in menu._ring_action_buttons.items():
-            self.assertEqual(button.focusPolicy(), Qt.FocusPolicy.StrongFocus)
-            self.assertTrue(button.accessibleName())
-            self.assertTrue(button.accessibleDescription())
-            expected = (
-                menu._slot_rect(action)
-                .united(menu._label_rect(action))
-                .translated(menu._content_shift)
-                .toAlignedRect()
-            )
-            self.assertEqual(button.geometry(), expected)
-
-        triggered: list[str] = []
-        menu.set_action_handler(triggered.append)
-        menu._ring_action_buttons["settings"].setFocus()
-        QTest.keyClick(menu._ring_action_buttons["settings"], Qt.Key.Key_Return)
-        self.assertEqual(triggered, ["settings"])
-
-        menu.open_drawer("settings")
-        QTest.qWait(190)
-        self.app.processEvents()
-        expected = (
-            menu._slot_rect("settings")
-            .united(menu._label_rect("settings"))
-            .translated(menu._content_shift)
-            .toAlignedRect()
-        )
-        self.assertEqual(menu._ring_action_buttons["settings"].geometry(), expected)
-
-        menu.close_drawer()
-        QTest.qWait(170)
-        menu.show_feedback(
-            "Working",
-            "progress",
-            self.ball._ball_anchor_rect(),
-            self.ball._available_geometry(),
-        )
-        self.assertTrue(
-            all(button.isHidden() for button in menu._ring_action_buttons.values())
-        )
-
-    def test_ring_reopen_keeps_neutral_mouse_state(self) -> None:
-        menu = self.ball.quick_menu
-        self.ball._toggle_quick_menu()
-        self.app.processEvents()
-        QTest.keyClick(menu, Qt.Key.Key_Tab)
-        self.assertTrue(menu._ring_action_buttons["assets"].hasFocus())
-
-        QTest.keyClick(menu, Qt.Key.Key_Escape)
-        QTest.qWait(190)
-        self.app.processEvents()
-        self.assertFalse(menu.isVisible())
-
-        self.ball._toggle_quick_menu()
-        self.app.processEvents()
-        self.assertFalse(
-            any(button.hasFocus() for button in menu._ring_action_buttons.values())
-        )
+        self.assertTrue(card.close_button.hasFocus())
 
     def test_embedded_assets_tab_order_matches_visual_order(self) -> None:
         panel = self.ball.material_panel
@@ -452,8 +323,8 @@ class AttachedHubTests(unittest.TestCase):
 
         for tone in ("progress", "success", "pending", "duplicate", "error"):
             menu.show_feedback(tone, tone, anchor, available)
-            styles[tone] = menu.feedback_label.styleSheet()
-            self.assertEqual(menu.feedback_label.property("feedbackTone"), tone)
+            styles[tone] = self.ball.intake_card.status.styleSheet()
+            self.assertEqual(self.ball.intake_card.status.property("feedbackTone"), tone)
 
         self.assertEqual(len(set(styles.values())), 5)
         self.assertIn("#4E5F3D", styles["success"])
@@ -522,7 +393,7 @@ class AttachedHubTests(unittest.TestCase):
             )[1]
             for button in panel.role_buttons.values()
         }
-        self.assertLessEqual(max(columns), 1)
+        self.assertLessEqual(max(columns), 2)
 
     def test_api_key_never_enters_gui_state_when_credential_store_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -577,77 +448,23 @@ class AttachedHubTests(unittest.TestCase):
         self.assertEqual(payload["assets"][0]["id"], "hero")
         self.assertIn('batch_id="latest"', self.ball.material_panel._agent_recipe_text())
 
-    def test_grass_click_closes_drawer_and_ring_together(self) -> None:
+    def test_grass_click_closes_management(self) -> None:
         for page in ("assets", "agent", "settings"):
             with self.subTest(page=page):
-                self.ball._toggle_quick_menu()
                 self.ball._handle_quick_menu_action(page)
-                menu = self.ball.quick_menu
-                self.assertTrue(menu.is_drawer_open())
+                self.assertTrue(self.ball.quick_menu.isVisible())
+                self.ball._toggle_quick_menu()
+                self.assertFalse(self.ball.quick_menu.isVisible())
+                self.assertFalse(self.ball.intake_card.isVisible())
 
-                grass_pos = menu.mapFromGlobal(self.ball._ball_anchor_rect().center())
-                QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=grass_pos)
-                QTest.qWait(190)
-                self.app.processEvents()
 
-                self.assertFalse(menu.isVisible())
-                self.assertFalse(menu.drawer_shell.isVisible())
-
-    def test_drawer_and_rapid_page_motion_settle_before_close(self) -> None:
-        previous_platform = os.environ.get("QT_QPA_PLATFORM")
-        os.environ["QT_QPA_PLATFORM"] = "animation-test"
-        try:
-            menu = self.ball.quick_menu
-            drawer_opened = QSignalSpy(menu._drawer_motion.finished)
-            self.ball._handle_quick_menu_action("assets")
-            self.assertEqual(menu._drawer_motion.duration(), 150)
-            self.assertNotEqual(menu._drawer_motion.startValue(), menu._drawer_motion.endValue())
-            self.assertTrue(drawer_opened.wait(1000))
-            self.assertEqual(menu.drawer_shell.pos(), menu._drawer_motion.endValue())
-
-            page_settled = QSignalSpy(menu._page_slide.finished)
-            self.ball._handle_quick_menu_action("agent")
-            self.ball._handle_quick_menu_action("settings")
-            final_page_position = menu._page_slide.endValue()
-            self.assertTrue(page_settled.wait(1000))
-            self.assertEqual(menu.drawer_stack.pos(), final_page_position)
-
-            menu_closed = QSignalSpy(menu._fade_animation.finished)
-            self.ball._toggle_quick_menu()
-            self.assertEqual(menu._drawer_motion.duration(), 150)
-            self.assertTrue(menu_closed.wait(1000))
-            self.app.processEvents()
-            self.assertFalse(menu.isVisible())
-            self.assertFalse(menu.drawer_shell.isVisible())
-            self.assertFalse(menu._hide_finalize_timer.isActive())
-        finally:
-            if previous_platform is None:
-                os.environ.pop("QT_QPA_PLATFORM", None)
-            else:
-                os.environ["QT_QPA_PLATFORM"] = previous_platform
-
-    def test_reopening_during_close_invalidates_stale_hide_completion(self) -> None:
-        previous_platform = os.environ.get("QT_QPA_PLATFORM")
-        os.environ["QT_QPA_PLATFORM"] = "animation-test"
-        try:
-            self.ball._handle_quick_menu_action("assets")
-            menu = self.ball.quick_menu
-            self.ball._toggle_quick_menu()
-            self.assertTrue(menu._hide_finalize_timer.isActive())
-
-            self.ball._handle_quick_menu_action("agent")
-            QTest.qWait(210)
-
-            self.assertTrue(menu.isVisible())
-            self.assertTrue(menu.is_drawer_open())
-            self.assertEqual(menu.current_page(), "agent")
-            self.assertFalse(menu._hide_finalize_timer.isActive())
-            self.assertFalse(menu._hide_after_slide)
-        finally:
-            if previous_platform is None:
-                os.environ.pop("QT_QPA_PLATFORM", None)
-            else:
-                os.environ["QT_QPA_PLATFORM"] = previous_platform
+    def test_management_reopen_has_no_delayed_close(self) -> None:
+        self.ball._handle_quick_menu_action("assets")
+        self.ball._toggle_quick_menu()
+        self.ball._handle_quick_menu_action("agent")
+        QTest.qWait(210)
+        self.assertTrue(self.ball.quick_menu.isVisible())
+        self.assertEqual(self.ball.quick_menu.current_page(), "agent")
 
 
 if __name__ == "__main__":

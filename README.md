@@ -20,7 +20,7 @@ A local-first asset intake for AI creators and independent developers.
 
 ## Font intake in the Alpha.10 development candidate
 
-The current source accepts TTF / OTF / WOFF / WOFF2 files up to 50 MiB through file drops, clipboard file paths, or direct font URLs. Drop or paste a webpage link to find fonts in its download links and static stylesheets, preview the candidates, and choose which originals to store. Variable fonts use their default instance. The asset drawer adds a font filter, family search, custom sample text and size, and explicit missing-glyph feedback.
+The current source accepts TTF / OTF / WOFF / WOFF2 files up to 50 MiB. Drag a browser address, page link, or direct font link onto the pile. Webpages are scanned for fonts in download links and static stylesheets. One small card previews one candidate at a time; **Store this font** saves its original bytes. Variable fonts use their default instance. The full asset manager provides font filtering, family search, custom sample text and size, and explicit missing-glyph feedback.
 
 Confirm heading, body, or decorative usage before a font enters ready handoff. Read embedded license information, save source/license notes, and export the original bytes. Missing license information remains unknown; manual notes neither replace embedded metadata nor establish commercial rights. HTTP / MCP expose `type=font` and `font_usage`; see the [Agent HTTP contract](docs/AGENT_HTTP_CONTRACT.md).
 
@@ -70,8 +70,7 @@ repository's offscreen visual smoke commands.
 
 ![Haypile desktop workflow](docs/haypile-demo.gif)
 
-The pile stays fixed on the desktop. Click it for attached **Assets**, **Agent**,
-and **Settings** drawers; drag a file onto it for intake.
+The pile stays on the desktop. Click for a recent-assets card; right-click for **All assets**, **Agent**, **Settings**, or **Quit**. Drag a file or webpage link onto it for intake. The card is 280 points wide, with font details expanded inline. An outside click closes the card and still reaches the original page. Full management opens through its explicit entry. See [desktop intake design](docs/DESKTOP_INTAKE.md).
 The illustration uses repository-owned sample assets and does not read user material.
 
 ## Three Steps
@@ -120,11 +119,8 @@ See [Security Policy](SECURITY.md) or [report privately on GitHub](https://githu
 - The Assets drawer, pending badge, and service status share the same explicit
   storage configuration and manifest fail-close catalog. Experimental
   real-project workflows stay outside normal drawer startup.
-- C-ring navigation, material rows, choices, and Settings controls expose native
-  keyboard focus, checked state, and accessible descriptions; feedback colors
-  distinguish progress, pending confirmation, duplicates, success, and errors.
-- The selected Assets, Agent, or Settings action rotates to the drawer connector,
-  while the attached panel stays clear of the action ring at either screen edge.
+- Daily intake uses the pile and one nonmodal card. Font candidates no longer open a large picker, and management entries live in the native context menu.
+- Cards and management retain native keyboard focus, checked state, and accessible descriptions; there is no transparent connector area intercepting page input.
 - Settings lookup no longer prepares product storage or creates IPC secrets;
   release CI and both package builds use the same exact Python and dependency
   constraints.

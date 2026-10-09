@@ -131,9 +131,10 @@ from app.services.safe_remote_fetcher import (
 )
 from app.services.theme_registry import ThemeRegistry
 from app.services.font_service import DEFAULT_FONT_TEXT, export_font_original, render_font_preview
-from app.services.web_font_service import MAX_WEB_FONT_BYTES, MAX_WEB_FONTS, WebFontCandidate, download_web_fonts
+from app.services.web_font_service import MAX_WEB_FONT_BYTES, MAX_WEB_FONTS, WEB_FONT_PREVIEW_TEXT, WebFontCandidate, download_web_fonts
 from PySide6.QtCore import (
     QCoreApplication,
+    QSize,
     QEasingCurve,
     QEvent,
     QPoint,
@@ -167,6 +168,7 @@ from PySide6.QtGui import (
     QPen,
     QPolygonF,
     QPixmap,
+    QImageReader,
     QRadialGradient,
     QResizeEvent,
 )
@@ -174,6 +176,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QMenu,
     QFileDialog,
     QFormLayout,
     QButtonGroup,
@@ -528,121 +531,6 @@ class RemoteDownloadWorker(QThread):
         return dedupe_remote_urls([urldefrag(url.strip())[0] for url in urls], limit=RemoteDownloadWorker.MAX_URLS)
 
 
-class WebFontSelectionDialog(QDialog):
-    def __init__(self, candidates: list[WebFontCandidate], note: str = "", parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.candidates = candidates
-        self.setWindowTitle(ui_text("选择网页字体", "Choose web fonts"))
-        self.resize(780, 640)
-        self.setStyleSheet("QDialog { background: #F6F1E4; } QLabel { color: #333333; }")
-        layout = QVBoxLayout(self)
-        introduction = QLabel(ui_text("先预览字体，再选择要收纳的文件。网站可能使用多个字体或字符子集。", "Preview fonts, then choose which files to store. Sites may use several fonts or character subsets."))
-        introduction.setWordWrap(True)
-        layout.addWidget(introduction)
-        if note:
-            notice = QLabel(note)
-            notice.setWordWrap(True)
-            layout.addWidget(notice)
-        font_rows = QWidget()
-        font_rows.setStyleSheet("background: #FFF9EA;")
-        rows = QVBoxLayout(font_rows)
-        rows.setContentsMargins(8, 8, 8, 8)
-        self.font_buttons: list[QPushButton] = []
-        self._font_labels: list[str] = []
-        for index, candidate in enumerate(candidates):
-            metadata = candidate.metadata
-            label = f"{metadata.get('family') or candidate.path.stem} · {metadata.get('style') or 'Regular'} · {candidate.path.suffix[1:].upper()}"
-            if candidate.hint:
-                label += "\n" + candidate.hint[:96] + ("…" if len(candidate.hint) > 96 else "")
-            self._font_labels.append(label)
-            row = QHBoxLayout()
-            choose = _MaterialItemButton(ui_text("选择：", "Select: ") + label)
-            choose.setCheckable(True)
-            choose.setAutoDefault(False)
-            choose.setMinimumHeight(52)
-            choose.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            choose.setStyleSheet(_ITEM_BUTTON_STYLE)
-            choose.setAccessibleDescription(ui_text("勾选此字体；再次点击取消选择", "Check this font; click again to deselect"))
-            choose.toggled.connect(lambda checked, target=index: self._check_candidate(target, checked))
-            self.font_buttons.append(choose)
-            row.addWidget(choose, 1)
-            preview_button = QPushButton(ui_text("预览", "Preview"))
-            preview_button.setAccessibleName(ui_text("预览 ", "Preview ") + label)
-            preview_button.setAutoDefault(False)
-            preview_button.setMinimumHeight(34)
-            preview_button.setStyleSheet(_ACTION_BUTTON_STYLE)
-            preview_button.clicked.connect(lambda _checked=False, target=index: self._show_preview(target))
-            row.addWidget(preview_button)
-            rows.addLayout(row)
-        rows.addStretch()
-        font_scroll = QScrollArea()
-        font_scroll.setWidgetResizable(True)
-        font_scroll.setWidget(font_rows)
-        font_scroll.setMinimumHeight(120)
-        font_scroll.setMaximumHeight(210)
-        font_scroll.setStyleSheet("QScrollArea { border: 1px solid #DDD3BB; border-radius: 7px; }")
-        font_scroll.viewport().setStyleSheet("background: #FFF9EA;")
-        layout.addWidget(font_scroll)
-        self.preview = QLabel()
-        self.preview.setAccessibleName(ui_text("所选字体的原文件预览", "Preview rendered from the selected font file"))
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        scroll = QScrollArea()
-        scroll.setWidget(self.preview)
-        scroll.viewport().setStyleSheet("background: #F6F1E4;")
-        layout.addWidget(scroll, 1)
-        self.details = QTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setAccessibleName(ui_text("字体来源、缺字与许可信息", "Font source, missing characters and license information"))
-        self.details.setMaximumHeight(130)
-        self.details.setStyleSheet("QTextEdit { background: #FFF9EA; color: #333333; border: 1px solid #DDD3BB; }")
-        layout.addWidget(self.details)
-        buttons = QDialogButtonBox()
-        self.store_button = buttons.addButton(ui_text("收纳所选字体", "Store selected fonts"), QDialogButtonBox.ButtonRole.AcceptRole)
-        buttons.addButton(ui_text("取消字体收纳", "Cancel font intake"), QDialogButtonBox.ButtonRole.RejectRole)
-        for button in buttons.buttons():
-            button.setMinimumHeight(34)
-            button.setStyleSheet(_ACTION_BUTTON_STYLE + "QPushButton:disabled { color: #8A8374; background: #EEE8D9; }")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self._show_preview(0)
-        if self.font_buttons:
-            self.font_buttons[0].setFocus()
-        self._update_selection()
-
-    def selected_paths(self) -> list[Path]:
-        return [candidate.path for candidate, button in zip(self.candidates, self.font_buttons) if button.isChecked()]
-
-    def _check_candidate(self, index: int, checked: bool) -> None:
-        self.font_buttons[index].setText(ui_text("已选：" if checked else "选择：", "Selected: " if checked else "Select: ") + self._font_labels[index])
-        self._show_preview(index)
-        self._update_selection()
-
-    def _update_selection(self) -> None:
-        count = len(self.selected_paths())
-        self.store_button.setEnabled(bool(count))
-        self.store_button.setText(ui_text(f"收纳所选字体（{count}）", f"Store selected fonts ({count})"))
-
-    def _show_preview(self, index: int) -> None:
-        if not 0 <= index < len(self.candidates):
-            return
-        candidate = self.candidates[index]
-        image = QImage(candidate.pixels, candidate.width, candidate.height, QImage.Format.Format_RGBA8888).copy()
-        self.preview.setPixmap(QPixmap.fromImage(image))
-        self.preview.resize(candidate.width, candidate.height)
-        metadata = candidate.metadata
-        information = [ui_text(f"来源：{candidate.origin}", f"Source: {candidate.origin}")]
-        if candidate.hint:
-            information.append(ui_text(f"网页声明：{candidate.hint}", f"Page declaration: {candidate.hint}"))
-        if metadata.get("is_variable"):
-            information.append(ui_text("可变字体，预览使用默认实例", "Variable font; preview uses the default instance"))
-        if candidate.missing:
-            information.append(ui_text(f"此文件缺少字符：{candidate.missing}", f"Characters missing from this file: {candidate.missing}"))
-        license_text = str(metadata.get("license_description") or metadata.get("license_url") or "")
-        information.append(ui_text("内嵌许可：", "Embedded license: ") + (license_text[:1024] or ui_text("未知", "Unknown")))
-        self.details.setPlainText("\n".join(information))
-
-
 class IngestWorker(QThread):
     finished_signal = Signal(str, bool)
     progress_signal = Signal(int, str)
@@ -655,11 +543,11 @@ class IngestWorker(QThread):
     MIN_FREE_RESERVE_BYTES: int = IngestService.DEFAULT_RESERVE_BYTES
     HASH_CHUNK_SIZE: int = IngestService.DEFAULT_HASH_CHUNK_SIZE
 
-    def __init__(self, files: list[Path], assets_dir: Path) -> None:
+    def __init__(self, files: list[Path], assets_dir: Path, *, settings: Settings | None = None) -> None:
         super().__init__()
         self.files = files
         self.assets_dir = assets_dir
-        self.settings = get_settings()
+        self.settings = settings or get_settings()
         self.result: IngestResult | None = None
 
     def run(self) -> None:
@@ -1233,9 +1121,10 @@ class ConfirmationPreviewWindow(QWidget):
 
 
 class FontPreviewWorker(QThread):
-    def __init__(self, request: tuple, parent: QWidget) -> None:
+    def __init__(self, request: tuple, parent: QWidget, *, preview_width: int = 720) -> None:
         super().__init__(parent)
         self.request = request
+        self.preview_width = preview_width
         self.result: tuple[bytes, int, int, str] | None = None
         self.error = False
 
@@ -1246,7 +1135,7 @@ class FontPreviewWorker(QThread):
                 return
             if BundleService._sha256(path) != sha256:
                 raise ValueError("font_hash_mismatch")
-            canvas, missing = render_font_preview(path, text, size)
+            canvas, missing = render_font_preview(path, text, size, width=self.preview_width)
             with canvas:
                 if not self.isInterruptionRequested():
                     self.result = (canvas.tobytes(), canvas.width, canvas.height, missing)
@@ -1438,8 +1327,8 @@ class MaterialPanelWindow(QWidget):
         self.paste_ingest_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.paste_ingest_button.setAccessibleDescription(
             ui_text(
-                "收纳剪贴板中的图片、音频、GIF、字体或网页链接",
-                "Store an image, audio file, GIF, font, or page link from the clipboard",
+                "收纳剪贴板中的图片、音频、GIF 或字体素材",
+                "Store an image, audio file, GIF, or font from the clipboard",
             )
         )
         self.paste_ingest_button.setStyleSheet(_ACTION_BUTTON_STYLE)
@@ -3220,495 +3109,137 @@ class MaterialPanelWindow(QWidget):
         )
 
 
-class _LegacyQuickMenuWindow(QWidget):
-    def __init__(self) -> None:
-        super().__init__(None)
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-            | Qt.WindowType.NoDropShadowWindowHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setMouseTracking(True)
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-        self.setFixedSize(240, 240)
-        self._action_callback = None
-        self._hovered_action = ""
-        self._track_center = QPointF(120, 120)
-        self._content_shift = QPointF(0, 0)
-        self._attention_action = ""
-        self._ai_enabled = False
-        self._hide_after_slide = False
-        self.setWindowOpacity(0.0)
-        self._fade_animation = QPropertyAnimation(self, b"windowOpacity", self)
-        self._fade_animation.setDuration(170)
-        self._fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._fade_animation.finished.connect(self._on_fade_finished)
-        self._slide_animation = QVariantAnimation(self)
-        self._slide_animation.setDuration(170)
-        self._slide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._slide_animation.valueChanged.connect(self._set_content_shift)
-        self._hide_timer = QTimer(self)
-        self._hide_timer.setSingleShot(True)
-        self._hide_timer.setInterval(3600)
-        self._hide_timer.timeout.connect(self.hide_menu)
-
-        self.actions = [
-            ("mcp", "mcp", ui_text("复制 MCP 配置", "Copy MCP config")),
-            ("http", "http", ui_text("复制 HTTP 地址", "Copy HTTP URL")),
-            ("assets", "assets", "Haypile"),
-            ("status", "status", ui_text("服务状态", "Service status")),
-            ("ai", "ai", ui_text("AI 分拣", "AI sorting")),
-        ]
-        self.action_tooltips = {action: tooltip for action, _icon, tooltip in self.actions}
-        self.hide()
-
-    def set_action_handler(self, callback) -> None:
-        self._action_callback = callback
-
-    def set_track_center(self, center: QPointF) -> None:
-        self._track_center = QPointF(center)
-        self.update()
-
-    def set_attention_action(self, action: str) -> None:
-        self._attention_action = action
-        self.update()
-
-    def set_ai_enabled(self, enabled: bool, status_text: str = "") -> None:
-        self._ai_enabled = bool(enabled)
-        self.action_tooltips["ai"] = status_text or ui_text(
-            "AI 分拣：开" if self._ai_enabled else "AI 分拣：关",
-            "AI sorting: on" if self._ai_enabled else "AI sorting: off",
-        )
-        self.update()
-
-    def _get_content_shift(self) -> QPointF:
-        return QPointF(self._content_shift)
-
-    def _set_content_shift(self, shift: QPointF) -> None:
-        self._content_shift = QPointF(shift)
-        self.update()
-
-    def show_menu(self, x: int, y: int) -> None:
-        if self._fade_animation.state() == QPropertyAnimation.State.Running:
-            self._fade_animation.stop()
-        if self._slide_animation.state() == QPropertyAnimation.State.Running:
-            self._slide_animation.stop()
-        self._hovered_action = ""
-        self.setToolTip("")
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-        self._hide_after_slide = False
-        self.move(QPoint(x, y))
-        start_shift = QPointF(0, 0)
-        self._set_content_shift(start_shift)
-        self.setWindowOpacity(0.0)
-        self.show()
-        self.raise_()
-        self._fade_animation.setDuration(170)
-        self._fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._slide_animation.setDuration(170)
-        self._slide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._fade_animation.setStartValue(0.0)
-        self._fade_animation.setEndValue(1.0)
-        self._slide_animation.setStartValue(start_shift)
-        self._slide_animation.setEndValue(QPointF(0, 0))
-        self._fade_animation.start()
-        self._slide_animation.start()
-        self._hide_timer.start()
-
-    def hide_menu(self) -> None:
-        self._hide_timer.stop()
-        self._hovered_action = ""
-        self.setToolTip("")
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-        self.update()
-        if not self.isVisible():
-            return
-        if self._fade_animation.state() == QPropertyAnimation.State.Running:
-            self._fade_animation.stop()
-        if self._slide_animation.state() == QPropertyAnimation.State.Running:
-            self._slide_animation.stop()
-        self._hide_after_slide = True
-        self._fade_animation.setDuration(135)
-        self._fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self._slide_animation.setDuration(135)
-        self._slide_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self._fade_animation.setStartValue(self.windowOpacity())
-        self._fade_animation.setEndValue(0.0)
-        self._slide_animation.setStartValue(self._content_shift)
-        self._slide_animation.setEndValue(self._slide_offset())
-        self._fade_animation.start()
-        self._slide_animation.start()
-
-    def _on_fade_finished(self) -> None:
-        if self._hide_after_slide:
-            self._hide_after_slide = False
-            self._set_content_shift(QPointF(0, 0))
-            self.hide()
-
-    def _slide_offset(self) -> QPointF:
-        dx = self._track_center.x() - self.width() / 2
-        dy = self._track_center.y() - self.height() / 2
-        length = math.hypot(dx, dy)
-        if length < 1:
-            return QPointF(0, 22)
-        scale = 26 / length
-        return QPointF(dx * scale, dy * scale)
-
-    def enterEvent(self, event) -> None:
-        self._hide_timer.stop()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        self._hovered_action = ""
-        self.setToolTip("")
-        self.update()
-        self._hide_timer.start()
-        super().leaveEvent(event)
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        action = self._action_at(event.position())
-        if action != self._hovered_action:
-            self._hovered_action = action
-            self.setToolTip(self.action_tooltips.get(action, ""))
-            self.setCursor(Qt.CursorShape.PointingHandCursor if action else Qt.CursorShape.ArrowCursor)
-            self.update()
-        super().mouseMoveEvent(event)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            action = self._action_at(event.position())
-            if action:
-                self._emit_action(action)
-                event.accept()
-                return
-            self.hide_menu()
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        del event
-        if getattr(self, "_feedback_only", False):
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.translate(self._content_shift)
-
-        track_center, track_radius = self._track_geometry()
-        arc_rect = QRectF(
-            track_center.x() - track_radius,
-            track_center.y() - track_radius,
-            track_radius * 2,
-            track_radius * 2,
-        )
-        shadow_pen = QPen(QColor(0, 0, 0, 10), 14)
-        shadow_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        shadow_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(shadow_pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        start_angle, span_angle = self._arc_angles()
-        painter.drawArc(arc_rect.translated(2, 4), start_angle * 16, span_angle * 16)
-
-        lift_pen = QPen(QColor(255, 249, 225, 104), 16)
-        lift_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        lift_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(lift_pen)
-        painter.drawArc(arc_rect, start_angle * 16, span_angle * 16)
-
-        arc_pen = QPen(QColor(54, 69, 46, 108), 12)
-        arc_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        arc_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(arc_pen)
-        painter.drawArc(arc_rect, start_angle * 16, span_angle * 16)
-
-        highlight_pen = QPen(QColor(110, 148, 79, 52), 12)
-        highlight_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        highlight_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(highlight_pen)
-        painter.drawArc(arc_rect, (start_angle + span_angle // 2 - 34) * 16, min(68, span_angle) * 16)
-
-        self._paint_overlay(painter)
-        for action, icon_name, _tooltip in self.actions:
-            slot_rect = self._slot_rect(action)
-            hovered = action == self._hovered_action
-            attention = action == self._attention_action
-            selected = action == getattr(self, "_drawer_page", "")
-            ai_on = action == "ai" and self._ai_enabled
-            active = selected or ai_on
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(0, 0, 0, 30))
-            painter.drawEllipse(slot_rect.translated(1.0, 1.5))
-            if active and not hovered:
-                painter.setBrush(QColor(233, 182, 54, 96 if ai_on else 58))
-                painter.drawEllipse(slot_rect.adjusted(-6 if ai_on else -4, -6 if ai_on else -4, 6 if ai_on else 4, 6 if ai_on else 4))
-            painter.setPen(QPen(QColor(255, 249, 234, 150 if (hovered or active) else 84), 1.1))
-            painter.setBrush(
-                QColor(233, 182, 54, 214)
-                if hovered
-                else QColor(224, 167, 45, 246)
-                if ai_on
-                else QColor(65, 78, 42, 246)
-                if active
-                else QColor(47, 61, 39, 238)
-            )
-            painter.drawEllipse(slot_rect)
-            fg = QColor("#2E3A26") if (hovered or ai_on) else QColor("#FFF9EA")
-            self._draw_action_icon(painter, icon_name, slot_rect.center(), fg)
-            if attention and not selected:
-                badge_center = slot_rect.topRight() + QPointF(-2.0, 2.0)
-                painter.setPen(QPen(QColor("#FFF9EA"), 1.2))
-                painter.setBrush(QColor("#D5A73D"))
-                painter.drawEllipse(badge_center, 3.8, 3.8)
-        painter.end()
-
-    def _paint_overlay(self, painter: QPainter) -> None:
-        del painter
-
-    def _track_geometry(self) -> tuple[QPointF, int]:
-        return QPointF(self._track_center), 76
-
-    def _slot_rect(self, action: str) -> QRectF:
-        center, radius = self._track_geometry()
-        angles = dict(zip([action for action, _icon, _tooltip in self.actions], self._slot_angles()))
-        angle = math.radians(angles[action])
-        x = center.x() + radius * math.cos(angle)
-        y = center.y() + radius * math.sin(angle)
-        return QRectF(x - 14, y - 14, 28, 28)
-
-    def _slot_angles(self) -> list[int]:
-        center, _radius = self._track_geometry()
-        left = center.x() < 76
-        right = center.x() > self.width() - 76
-        top = center.y() < 76
-        bottom = center.y() > self.height() - 76
-        if left and top:
-            return self._spread_angles(10, 85)
-        if left and bottom:
-            return self._spread_angles(-85, -10)
-        if right and top:
-            return self._spread_angles(95, 170)
-        if right and bottom:
-            return self._spread_angles(-170, -95)
-        if left:
-            return self._spread_angles(-70, 70)
-        if right:
-            return self._spread_angles(110, 250)
-        if top:
-            return self._spread_angles(20, 160)
-        if bottom:
-            return self._spread_angles(-160, -20)
-        return [-55, -105, -155, 155, 105][: len(self.actions)]
-
-    def _spread_angles(self, start: int, end: int) -> list[int]:
-        count = len(self.actions)
-        if count <= 1:
-            return [start]
-        step = (end - start) / (count - 1)
-        return [round(start + step * index) for index in range(count)]
-
-    def _arc_angles(self) -> tuple[int, int]:
-        angles = self._slot_angles()
-        pad = 10
-        screen_start = min(angles) - pad
-        screen_end = max(angles) + pad
-        return -screen_end, screen_end - screen_start
-
-    def _action_at(self, point: QPointF) -> str:
-        point = QPointF(point) - self._content_shift
-        for action, _icon_name, _tooltip in self.actions:
-            if self._slot_rect(action).contains(point):
-                return action
-        return ""
-
-    def _draw_action_icon(self, painter: QPainter, icon_name: str, center: QPointF, color: QColor) -> None:
-        painter.save()
-        painter.translate(center)
-        painter.setPen(QPen(color, 2.1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        if icon_name == "assets":
-            path = QPainterPath()
-            path.moveTo(-8, -3)
-            path.lineTo(-3, -3)
-            path.lineTo(-1, -6)
-            path.lineTo(9, -6)
-            path.lineTo(9, 7)
-            path.lineTo(-8, 7)
-            path.closeSubpath()
-            painter.drawPath(path)
-        elif icon_name == "mcp":
-            painter.drawEllipse(QRectF(-9, -10, 6, 6))
-            painter.drawEllipse(QRectF(4, -10, 6, 6))
-            painter.drawEllipse(QRectF(-2.5, 4, 6, 6))
-            painter.drawLine(QPointF(-3, -7), QPointF(4, -7))
-            painter.drawLine(QPointF(0, -4), QPointF(0, 4))
-        elif icon_name == "http":
-            painter.drawArc(QRectF(-10, -5, 12, 10), 35 * 16, 230 * 16)
-            painter.drawArc(QRectF(-2, -5, 12, 10), -145 * 16, 230 * 16)
-            painter.drawLine(QPointF(-4, 0), QPointF(4, 0))
-        elif icon_name == "status":
-            painter.drawLine(QPointF(-7, 7), QPointF(-7, 1))
-            painter.drawLine(QPointF(0, 7), QPointF(0, -6))
-            painter.drawLine(QPointF(7, 7), QPointF(7, -2))
-        elif icon_name == "ai":
-            path = QPainterPath()
-            path.moveTo(0, -10)
-            path.lineTo(2.5, -2.5)
-            path.lineTo(10, 0)
-            path.lineTo(2.5, 2.5)
-            path.lineTo(0, 10)
-            path.lineTo(-2.5, 2.5)
-            path.lineTo(-10, 0)
-            path.lineTo(-2.5, -2.5)
-            path.closeSubpath()
-            painter.drawPath(path)
-        painter.restore()
-
-    def _emit_action(self, action: str) -> None:
-        if action == self._attention_action:
-            self._attention_action = ""
-        self.hide_menu()
-        if self._action_callback is not None:
-            self._action_callback(action)
-
-
-class QuickMenuWindow(_LegacyQuickMenuWindow):
-    RING_SIZE = 240
-    DRAWER_WIDTH = 456
-    DRAWER_MIN_WIDTH = 408
-    DRAWER_HEIGHT = 392
-    CONNECTOR_REACH = 112
-
+class QuickMenuWindow(QWidget):
+    """Explicitly opened management window; daily intake uses DesktopIntakeCard."""
     def __init__(self, settings: Settings | None = None) -> None:
-        self._ring_angles: dict[str, float] = {}
-        self._ring_angle_start: dict[str, float] = {}
-        self._ring_angle_end: dict[str, float] = {}
-        self.settings = settings or get_settings()
         super().__init__()
-        self._hide_timer.stop()
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.NoDropShadowWindowHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.setMinimumSize(0, 0)
-        self.setMaximumSize(16777215, 16777215)
-        self.resize(self.RING_SIZE, self.RING_SIZE)
-        self.actions = [
-            ("assets", "assets", ui_text("素材", "Assets")),
-            ("agent", "mcp", "Agent"),
-            ("settings", "status", ui_text("设置", "Settings")),
-        ]
-        self.action_tooltips = {action: label for action, _icon, label in self.actions}
+        self.settings = settings or get_settings()
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowTitle("Haypile")
+        self._action_callback = None
         self._close_callback = None
+        self._attention_action = ""
         self._drawer_page = ""
-        self._drawer_side = "right"
         self._anchor = QRect()
         self._available = QRect(0, 0, 1280, 720)
-        self._drawer_global_rect = QRect()
-        self._feedback_only = False
-        self._progress_active = False
-        self._page_shift_direction = 1
-        self._detail_buttons: dict[str, QPushButton] = {}
+        self._detail_buttons = {}
+        self._ai_enabled = False
         self._low_power_enabled = False
         self._sound_enabled = True
         self._ai_provider_mode = "off"
         self._language_mode = "auto"
-        self._drawer_transition_id = 0
-        self._hide_transition_id: int | None = None
-        self._ring_rotation = QVariantAnimation(self)
-        self._ring_rotation.setDuration(170)
-        self._ring_rotation.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self._ring_rotation.valueChanged.connect(self._set_ring_rotation_progress)
-        self._ring_rotation.finished.connect(self._finish_ring_rotation)
+        self._progress_active = False
+        self.feedback_card = None
         self._build_drawer()
-        self._hide_finalize_timer = QTimer(self)
-        self._hide_finalize_timer.setSingleShot(True)
-        self._hide_finalize_timer.setInterval(175)
-        self._hide_finalize_timer.timeout.connect(self._finalize_pending_hide)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(self.drawer_shell)
+        self.resize(620, 520)
         self._feedback_timer = QTimer(self)
         self._feedback_timer.setSingleShot(True)
-        self._feedback_timer.setInterval(1700)
-        self._feedback_timer.timeout.connect(self._hide_feedback)
+        self._feedback_timer.timeout.connect(self.feedback_label.hide)
         self._agent_timer = QTimer(self)
         self._agent_timer.setInterval(5000)
         self._agent_timer.timeout.connect(self.refresh_agent_status)
-        self._ring_action_buttons: dict[str, QPushButton] = {}
-        for action, _icon, label in self.actions:
-            button = QPushButton("", self)
-            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            button.setAutoDefault(True)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setToolTip(label)
-            button.setAccessibleName(label)
-            button.setStyleSheet(
-                "QPushButton { background: transparent; border: 1px solid transparent; "
-                "border-radius: 8px; }"
-                "QPushButton:hover { background: rgba(255, 249, 234, 32); "
-                "border-color: rgba(255, 249, 234, 120); }"
-                "QPushButton:focus { background: rgba(255, 249, 234, 46); "
-                "border: 2px solid #D5A73D; }"
-            )
-            button.clicked.connect(
-                lambda _checked=False, selected=action: self._emit_action(selected)
-            )
-            self._ring_action_buttons[action] = button
-        self._sync_ring_action_buttons()
-        self._retranslate_ring_action_buttons()
-        self.hide()
 
-    def set_track_center(self, center: QPointF) -> None:
-        super().set_track_center(center)
-        if hasattr(self, "_ring_action_buttons"):
-            self._sync_ring_action_buttons()
+    def set_action_handler(self, callback) -> None:
+        self._action_callback = callback
 
-    def _set_content_shift(self, shift: QPointF) -> None:
-        super()._set_content_shift(shift)
-        if hasattr(self, "_ring_action_buttons"):
-            self._sync_ring_action_buttons()
-
-    def _sync_ring_action_buttons(self) -> None:
-        for action, button in self._ring_action_buttons.items():
-            target = self._slot_rect(action).united(self._label_rect(action))
-            target.translate(self._content_shift)
-            button.setGeometry(target.toAlignedRect())
-            button.setVisible(not self._feedback_only)
-
-    def _retranslate_ring_action_buttons(self) -> None:
-        descriptions = {
-            "assets": ui_text(
-                "打开素材面板；有素材待确认"
-                if self._attention_action == "assets"
-                else "打开素材面板",
-                "Open Assets panel; assets need review"
-                if self._attention_action == "assets"
-                else "Open Assets panel",
-            ),
-            "agent": ui_text("打开 Agent 面板", "Open Agent panel"),
-            "settings": ui_text("打开设置面板", "Open Settings panel"),
-        }
-        for action, _icon, label in self.actions:
-            button = self._ring_action_buttons[action]
-            button.setToolTip(label)
-            button.setAccessibleName(label)
-            button.setAccessibleDescription(descriptions[action])
+    def set_close_handler(self, callback) -> None:
+        self._close_callback = callback
 
     def set_attention_action(self, action: str) -> None:
-        super().set_attention_action(action)
-        if hasattr(self, "_ring_action_buttons"):
-            self._retranslate_ring_action_buttons()
+        self._attention_action = action
 
-    def _focus_neutral_surface(self) -> None:
-        if not self.isVisible() or self._feedback_only:
+    def set_ai_enabled(self, enabled: bool, status_text: str = "") -> None:
+        self._ai_enabled = enabled
+
+    def _emit_action(self, action: str) -> None:
+        if action == self._attention_action:
+            self._attention_action = ""
+        if self._action_callback is not None:
+            self._action_callback(action)
+
+    def _switch_page(self, page: str, *, animate: bool = False) -> None:
+        self.drawer_stack.setCurrentWidget(self._pages[page])
+        self.drawer_title.setText({"assets": ui_text("全部素材", "All assets"), "agent": "Agent",
+                                   "settings": ui_text("设置", "Settings"), "ai": ui_text("AI 分拣", "AI sorting")}[page])
+
+    def open_drawer(self, page: str, anchor: QRect | None = None, available: QRect | None = None) -> None:
+        if page not in self._pages:
             return
+        if self.feedback_card is not None:
+            self.feedback_card.dismiss("management")
+        self._drawer_page = page
+        if anchor is not None:
+            self._anchor = QRect(anchor)
+        if available is not None:
+            self._available = QRect(available)
+        self._switch_page(page)
+        self.resize(min(620, self._available.width() - 20), min(520, self._available.height() - 40))
+        self.move(self._available.center() - self.rect().center())
+        self.feedback_label.hide()
+        self.progress_bar.hide()
+        self.show()
+        self.raise_()
         self.activateWindow()
-        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if page == "assets":
+            self.material_panel.refresh()
+        if page == "agent":
+            self.refresh_agent_status()
+            self._agent_timer.start()
+        else:
+            self._agent_timer.stop()
+
+    def hide_menu(self) -> None:
+        self._drawer_page = ""
+        self._agent_timer.stop()
+        self.hide()
+
+    def closeEvent(self, event) -> None:
+        self.hide_menu()
+        event.accept()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide_menu()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def current_page(self) -> str:
+        return self._drawer_page
+
+    def reposition(self, anchor: QRect, available: QRect, *, allow_flip: bool = True) -> None:
+        self._anchor, self._available = QRect(anchor), QRect(available)
+        if self.feedback_card is not None and self.feedback_card.isVisible():
+            self.feedback_card.reposition()
+
+    def show_feedback(self, message: str, tone: str, anchor: QRect, available: QRect) -> None:
+        self._anchor, self._available = QRect(anchor), QRect(available)
+        if self.isVisible():
+            self.feedback_label.setText(message)
+            foreground, background = _FEEDBACK_TONES.get(tone, _FEEDBACK_TONES["success"])
+            self.feedback_label.setStyleSheet(f"color: {foreground}; background: {background}; padding: 5px;")
+            self.feedback_label.setProperty("feedbackTone", tone)
+            self.feedback_label.show()
+            self._feedback_timer.start(4500 if tone == "error" else 1700)
+        elif self.feedback_card is not None:
+            self.feedback_card.show_message(message, tone)
+
+    def begin_progress(self, anchor: QRect, available: QRect, text: str) -> None:
+        self._progress_active = True
+        self.show_feedback(text, "progress", anchor, available)
+
+    def set_progress(self, percent: int, text: str) -> None:
+        if self.isVisible():
+            self.feedback_label.setText(text)
+        elif self.feedback_card is not None and self.feedback_card.mode == "message" and self.feedback_card.isVisible():
+            self.feedback_card.status.setText(text)
+
+    def complete_progress(self, tone: str, message: str) -> None:
+        self._progress_active = False
+        # Completion feedback was already sent by the owner; never reopen dismissed UI.
 
     def _build_drawer(self) -> None:
         self.drawer_shell = QWidget(self)
@@ -3768,15 +3299,6 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self.progress_bar.hide()
         drawer_layout.addWidget(self.progress_bar)
 
-        self._drawer_motion = QPropertyAnimation(self.drawer_shell, b"pos", self)
-        self._drawer_motion.setDuration(150)
-        self._drawer_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-        self._page_slide = QPropertyAnimation(self.drawer_stack, b"pos", self)
-        self._page_slide.setDuration(130)
-        self._page_slide.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.drawer_shell.hide()
-
     def _build_agent_page(self) -> QWidget:
         page = QWidget(self.drawer_stack)
         page.setStyleSheet("QWidget { background: transparent; border: none; }")
@@ -3800,6 +3322,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         layout.addWidget(self._action_button(ui_text("复制 Agent 配方", "Copy Agent recipe"), "agent_recipe", page))
         layout.addStretch(1)
         return page
+
 
     def _build_settings_page(self) -> QWidget:
         page = QWidget(self.drawer_stack)
@@ -3903,6 +3426,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         layout.addWidget(self.exit_button)
         return page
 
+
     def _build_ai_page(self) -> QWidget:
         page = QWidget(self.drawer_stack)
         page.setStyleSheet("QWidget { background: transparent; border: none; }")
@@ -3960,6 +3484,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         layout.addStretch(1)
         return page
 
+
     @staticmethod
     def _section_label(text: str, parent: QWidget) -> QLabel:
         label = QLabel(text, parent)
@@ -3967,6 +3492,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             "QLabel { color: #6F7F5A; font-size: 10px; font-weight: bold; padding-top: 3px; }"
         )
         return label
+
 
     def _action_button(self, text: str, action: str, parent: QWidget, *, danger: bool = False) -> QPushButton:
         button = QPushButton(text, parent)
@@ -3981,14 +3507,8 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self._detail_buttons[action] = button
         return button
 
+
     def retranslate(self) -> None:
-        self.actions = [
-            ("assets", "assets", ui_text("素材", "Assets")),
-            ("agent", "mcp", "Agent"),
-            ("settings", "status", ui_text("设置", "Settings")),
-        ]
-        self.action_tooltips = {action: label for action, _icon, label in self.actions}
-        self._retranslate_ring_action_buttons()
         button_labels = {
             "mcp": ui_text("复制 MCP 配置", "Copy MCP config"),
             "http": ui_text("复制 HTTP 地址", "Copy HTTP URL"),
@@ -4053,668 +3573,6 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         self.refresh_agent_status()
         self.update()
 
-    def set_close_handler(self, callback) -> None:
-        self._close_callback = callback
-
-    def show_menu(self, x: int, y: int) -> None:
-        self._reset_ring_rotation()
-        self._anchor = QRect(x + 84, y + 84, 72, 72)
-        self._available = QRect(x, y, self.RING_SIZE, self.RING_SIZE)
-        self._drawer_page = ""
-        self._feedback_only = False
-        self.drawer_shell.hide()
-        self.setGeometry(x, y, self.RING_SIZE, self.RING_SIZE)
-        self.set_track_center(QPointF(120, 120))
-        self._show_ring_animation()
-
-    def show_attached(self, anchor: QRect, available: QRect) -> None:
-        self._reset_ring_rotation()
-        self._anchor = QRect(anchor)
-        self._available = QRect(available)
-        self._drawer_page = ""
-        self._feedback_only = False
-        self.drawer_shell.hide()
-        self._apply_attached_geometry(drawer_open=False, allow_flip=True)
-        self._show_ring_animation()
-
-    def _show_ring_animation(self) -> None:
-        self._drawer_transition_id += 1
-        self._cancel_pending_hide()
-        self._hovered_action = ""
-        offset = self._slide_offset()
-        start_shift = QPointF(offset.x() * 0.55, offset.y() * 0.55)
-        self._set_content_shift(start_shift)
-        self.setWindowOpacity(0.45)
-        self.show()
-        self.raise_()
-        self._fade_animation.stop()
-        self._slide_animation.stop()
-        self._fade_animation.setDuration(125)
-        self._fade_animation.setStartValue(0.45)
-        self._fade_animation.setEndValue(1.0)
-        self._slide_animation.setDuration(125)
-        self._slide_animation.setStartValue(self._content_shift)
-        self._slide_animation.setEndValue(QPointF())
-        self._fade_animation.start()
-        self._slide_animation.start()
-
-    @staticmethod
-    def _animations_enabled() -> bool:
-        return os.environ.get("QT_QPA_PLATFORM", "").strip().lower() != "offscreen"
-
-    def _drawer_anchor_offset(self, distance: int) -> QPoint:
-        return QPoint(-distance if self._drawer_side == "right" else distance, 0)
-
-    def _start_drawer_motion(
-        self,
-        start: QPoint,
-        end: QPoint,
-        duration: int,
-        easing: QEasingCurve.Type,
-    ) -> None:
-        self._drawer_motion.stop()
-        self.drawer_shell.move(start)
-        self._drawer_motion.setDuration(duration)
-        self._drawer_motion.setEasingCurve(easing)
-        self._drawer_motion.setStartValue(start)
-        self._drawer_motion.setEndValue(end)
-        self._drawer_motion.start()
-
-    def hide_menu(self) -> None:
-        self._reset_ring_rotation()
-        self._drawer_transition_id += 1
-        transition_id = self._drawer_transition_id
-        self._hide_finalize_timer.stop()
-        self._hide_transition_id = None
-        self._feedback_timer.stop()
-        self._agent_timer.stop()
-        had_drawer = self.drawer_shell.isVisible() and not self._feedback_only
-        self._drawer_page = ""
-        self._progress_active = False
-        self._hovered_action = ""
-        self.setToolTip("")
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-        self.update()
-        if not self.isVisible():
-            self._hide_after_slide = False
-            self.drawer_shell.hide()
-            self.progress_bar.hide()
-            self.feedback_label.hide()
-            return
-        self._fade_animation.stop()
-        self._slide_animation.stop()
-        self._drawer_motion.stop()
-        if self._page_slide.state() == QPropertyAnimation.State.Running:
-            page_end = self._page_slide.endValue()
-            self._page_slide.stop()
-            if isinstance(page_end, QPoint):
-                self.drawer_stack.move(page_end)
-        if had_drawer and self._animations_enabled():
-            current = self.drawer_shell.pos()
-            self._start_drawer_motion(
-                current,
-                current + self._drawer_anchor_offset(14),
-                150,
-                QEasingCurve.Type.InOutCubic,
-            )
-        else:
-            self.drawer_shell.hide()
-        self._hide_transition_id = transition_id
-        self._hide_after_slide = True
-        self._fade_animation.setDuration(150)
-        self._fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self._fade_animation.setStartValue(self.windowOpacity())
-        self._fade_animation.setEndValue(0.0)
-        self._slide_animation.setDuration(150)
-        self._slide_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self._slide_animation.setStartValue(self._content_shift)
-        self._slide_animation.setEndValue(self._slide_offset())
-        self._fade_animation.start()
-        self._slide_animation.start()
-        self._hide_finalize_timer.start()
-
-    def _on_fade_finished(self) -> None:
-        if self._hide_after_slide:
-            self._finalize_pending_hide()
-            return
-        super()._on_fade_finished()
-
-    def _cancel_pending_hide(self) -> None:
-        self._hide_finalize_timer.stop()
-        self._hide_transition_id = None
-        self._hide_after_slide = False
-
-    def _finalize_pending_hide(self) -> None:
-        transition_id = self._hide_transition_id
-        if (
-            transition_id is None
-            or transition_id != self._drawer_transition_id
-            or not self._hide_after_slide
-        ):
-            return
-        self._hide_finalize_timer.stop()
-        self._hide_transition_id = None
-        self._hide_after_slide = False
-        self._fade_animation.stop()
-        self._slide_animation.stop()
-        self._drawer_motion.stop()
-        self._page_slide.stop()
-        self._set_content_shift(QPointF())
-        self.drawer_shell.hide()
-        self.progress_bar.hide()
-        self.feedback_label.hide()
-        self.hide()
-
-    def enterEvent(self, event) -> None:
-        super(_LegacyQuickMenuWindow, self).enterEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        self._hovered_action = ""
-        self.setToolTip("")
-        self.update()
-        super(_LegacyQuickMenuWindow, self).leaveEvent(event)
-
-    def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Escape:
-            if self._close_callback is not None:
-                self._close_callback()
-            else:
-                self.hide_menu()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            anchor_rect = QRect(self.mapFromGlobal(self._anchor.topLeft()), self._anchor.size())
-            if anchor_rect.contains(event.position().toPoint()):
-                if self._close_callback is not None:
-                    self._close_callback()
-                else:
-                    self.hide_menu()
-                event.accept()
-                return
-            action = self._action_at(event.position())
-            if action:
-                self._emit_action(action)
-                event.accept()
-                return
-        QWidget.mousePressEvent(self, event)
-
-    def _emit_action(self, action: str) -> None:
-        if action == self._attention_action:
-            self.set_attention_action("")
-        if self._action_callback is not None:
-            self._action_callback(action)
-
-    def open_drawer(self, page: str, anchor: QRect | None = None, available: QRect | None = None) -> None:
-        if page not in self._pages:
-            return
-        self._drawer_transition_id += 1
-        self._cancel_pending_hide()
-        if self._fade_animation.state() == QPropertyAnimation.State.Running:
-            self._fade_animation.stop()
-        if self._slide_animation.state() == QPropertyAnimation.State.Running:
-            self._slide_animation.stop()
-        self.setWindowOpacity(1.0)
-        self._set_content_shift(QPointF())
-        if anchor is not None:
-            self._anchor = QRect(anchor)
-        if available is not None:
-            self._available = QRect(available)
-        old_page = self._drawer_page
-        start_angles = self._ring_angle_map()
-        self._drawer_page = page
-        self._feedback_only = False
-        self.drawer_title.show()
-        self.drawer_stack.show()
-        self._apply_attached_geometry(drawer_open=True, allow_flip=True)
-        self._rotate_ring_to_page(page, start_angles=start_angles)
-        if page == "assets":
-            self.material_panel.show()
-        if page == "agent":
-            self.refresh_agent_status()
-            self._agent_timer.start()
-        else:
-            self._agent_timer.stop()
-        self._switch_page(page, animate=bool(old_page and old_page != page))
-        self.drawer_shell.show()
-        if not self.isVisible():
-            self.setWindowOpacity(1.0)
-            self.show()
-        self.raise_()
-        final_pos = self.drawer_shell.pos()
-        if not old_page and self._animations_enabled():
-            self._start_drawer_motion(
-                final_pos + self._drawer_anchor_offset(8),
-                final_pos,
-                150,
-                QEasingCurve.Type.OutCubic,
-            )
-        else:
-            self._drawer_motion.stop()
-            self.drawer_shell.move(final_pos)
-        if page == "assets":
-            QTimer.singleShot(0, self.material_panel.refresh)
-        self.update()
-
-    def _switch_page(self, page: str, *, animate: bool = True) -> None:
-        animate = animate and self._animations_enabled()
-        if self._page_slide.state() == QPropertyAnimation.State.Running:
-            end = self._page_slide.endValue()
-            self._page_slide.stop()
-            if isinstance(end, QPoint):
-                self.drawer_stack.move(end)
-        widget = self._pages[page]
-        self.drawer_stack.setCurrentWidget(widget)
-        self.drawer_title.setText(
-            {
-                "assets": ui_text("素材", "Assets"),
-                "agent": "Agent",
-                "settings": ui_text("设置", "Settings"),
-                "ai": ui_text("AI 分拣", "AI sorting"),
-            }[page]
-        )
-        if not animate:
-            return
-        base = self.drawer_stack.pos()
-        offset = QPoint(6 * self._page_shift_direction, 0)
-        self._page_shift_direction *= -1
-        self.drawer_stack.move(base + offset)
-        self._page_slide.stop()
-        self._page_slide.setStartValue(base + offset)
-        self._page_slide.setEndValue(base)
-        self._page_slide.start()
-
-    def close_drawer(self) -> None:
-        if not self._drawer_page:
-            return
-        self._drawer_transition_id += 1
-        transition_id = self._drawer_transition_id
-        self._drawer_page = ""
-        self._reset_ring_rotation()
-        self._agent_timer.stop()
-        if not self._animations_enabled():
-            self.drawer_shell.hide()
-            self._apply_attached_geometry(drawer_open=False, allow_flip=False)
-            self.update()
-            return
-        current = self.drawer_shell.pos()
-        self._start_drawer_motion(
-            current,
-            current + self._drawer_anchor_offset(8),
-            150,
-            QEasingCurve.Type.InOutCubic,
-        )
-
-        def finish() -> None:
-            if transition_id != self._drawer_transition_id or self._drawer_page:
-                return
-            self.drawer_shell.hide()
-            self._apply_attached_geometry(drawer_open=False, allow_flip=False)
-            self.update()
-
-        QTimer.singleShot(150, finish)
-
-    def is_drawer_open(self) -> bool:
-        return bool(self._drawer_page and self.drawer_shell.isVisible())
-
-    def current_page(self) -> str:
-        return self._drawer_page
-
-    def reposition(self, anchor: QRect, available: QRect, *, allow_flip: bool = True) -> None:
-        self._anchor = QRect(anchor)
-        self._available = QRect(available)
-        if not self.isVisible():
-            return
-        if self._feedback_only:
-            self._apply_feedback_geometry()
-            return
-        previous_side = self._drawer_side
-        desired_side = self._choose_drawer_side()
-        if self.is_drawer_open() and allow_flip and desired_side != previous_side:
-            if not self._animations_enabled():
-                self._drawer_side = desired_side
-                self._apply_attached_geometry(drawer_open=True, allow_flip=False)
-                self._rotate_ring_to_page(self._drawer_page, animate=False)
-                return
-            page = self._drawer_page
-            self._drawer_transition_id += 1
-            transition_id = self._drawer_transition_id
-            current = self.drawer_shell.pos()
-            self._start_drawer_motion(
-                current,
-                current + self._drawer_anchor_offset(12),
-                120,
-                QEasingCurve.Type.InOutCubic,
-            )
-
-            def mirror() -> None:
-                if transition_id != self._drawer_transition_id or self._drawer_page != page:
-                    return
-                self.drawer_shell.hide()
-                self._drawer_side = desired_side
-                self._apply_attached_geometry(drawer_open=True, allow_flip=False)
-                self._rotate_ring_to_page(page, animate=False)
-                self._switch_page(page, animate=False)
-                final_pos = self.drawer_shell.pos()
-                self._start_drawer_motion(
-                    final_pos + self._drawer_anchor_offset(12),
-                    final_pos,
-                    160,
-                    QEasingCurve.Type.OutCubic,
-                )
-                self.drawer_shell.show()
-
-            QTimer.singleShot(120, mirror)
-            return
-        if allow_flip:
-            self._drawer_side = desired_side
-        self._apply_attached_geometry(drawer_open=self.is_drawer_open(), allow_flip=False)
-        if self.is_drawer_open():
-            self._rotate_ring_to_page(self._drawer_page, animate=False)
-
-    def _choose_drawer_side(self) -> str:
-        center_x = self._anchor.center().x()
-        right_space = self._available.right() - (center_x + self.CONNECTOR_REACH)
-        left_space = (center_x - self.CONNECTOR_REACH) - self._available.left()
-        if right_space >= self.DRAWER_MIN_WIDTH:
-            return "right"
-        if left_space >= self.DRAWER_MIN_WIDTH:
-            return "left"
-        return "right" if right_space >= left_space else "left"
-
-    def _apply_attached_geometry(self, *, drawer_open: bool, allow_flip: bool) -> None:
-        if allow_flip:
-            self._drawer_side = self._choose_drawer_side()
-        center = self._anchor.center()
-        ring = QRect(
-            center.x() - self.RING_SIZE // 2,
-            center.y() - self.RING_SIZE // 2,
-            self.RING_SIZE,
-            self.RING_SIZE,
-        )
-        visible_ring = ring.intersected(self._available)
-        if visible_ring.isEmpty():
-            visible_ring = QRect(center.x(), center.y(), 1, 1)
-        union = QRect(visible_ring)
-        self._drawer_global_rect = QRect()
-        if drawer_open:
-            available_width = (
-                self._available.right() - (center.x() + self.CONNECTOR_REACH)
-                if self._drawer_side == "right"
-                else (center.x() - self.CONNECTOR_REACH) - self._available.left()
-            )
-            drawer_width = min(self.DRAWER_WIDTH, max(self.DRAWER_MIN_WIDTH, available_width - 8))
-            drawer_y = center.y() - self.DRAWER_HEIGHT // 2
-            drawer_y = max(
-                self._available.top() + 8,
-                min(drawer_y, self._available.bottom() - self.DRAWER_HEIGHT - 8),
-            )
-            if self._drawer_side == "right":
-                drawer_x = center.x() + self.CONNECTOR_REACH
-            else:
-                drawer_x = center.x() - self.CONNECTOR_REACH - drawer_width
-            drawer_x = max(
-                self._available.left() + 8,
-                min(drawer_x, self._available.right() - drawer_width - 8),
-            )
-            self._drawer_global_rect = QRect(drawer_x, drawer_y, drawer_width, self.DRAWER_HEIGHT)
-            union = union.united(self._drawer_global_rect)
-        self.setGeometry(union)
-        self.set_track_center(QPointF(center.x() - union.left(), center.y() - union.top()))
-        if drawer_open:
-            self.drawer_shell.setGeometry(
-                self._drawer_global_rect.translated(-union.left(), -union.top())
-            )
-        self.update()
-
-    def _slot_angles(self) -> list[float]:
-        defaults = self._drawer_slot_angles()
-        return [
-            self._ring_angles.get(action, defaults[index])
-            for index, (action, _icon, _label) in enumerate(self.actions)
-        ]
-
-    def _drawer_slot_angles(self) -> list[float]:
-        center = self._anchor.center()
-        top = center.y() - self._available.top() < 88
-        bottom = self._available.bottom() - center.y() < 88
-        if self._drawer_side == "right":
-            if top:
-                return [0.0, 32.0, 64.0]
-            if bottom:
-                return [0.0, -32.0, -64.0]
-            return [-64.0, 0.0, 64.0]
-        if top:
-            return [180.0, 148.0, 116.0]
-        if bottom:
-            return [180.0, 212.0, 244.0]
-        return [116.0, 180.0, 244.0]
-
-    def _ring_angle_map(self) -> dict[str, float]:
-        return {
-            action: angle
-            for (action, _icon, _label), angle in zip(self.actions, self._slot_angles())
-        }
-
-    def _ring_targets_for_page(self, page: str) -> dict[str, float]:
-        selected = "settings" if page == "ai" else page
-        action_names = [action for action, _icon, _label in self.actions]
-        if selected not in action_names:
-            return self._ring_angle_map()
-        slots = self._drawer_slot_angles()
-        connector_angle = 0.0 if self._drawer_side == "right" else 180.0
-        connector_index = min(
-            range(len(slots)),
-            key=lambda index: abs(slots[index] - connector_angle),
-        )
-        selected_index = action_names.index(selected)
-        offset = connector_index - selected_index
-        return {
-            action: slots[(index + offset) % len(slots)]
-            for index, action in enumerate(action_names)
-        }
-
-    def _rotate_ring_to_page(
-        self,
-        page: str,
-        *,
-        start_angles: dict[str, float] | None = None,
-        animate: bool | None = None,
-    ) -> None:
-        self._ring_rotation.stop()
-        self._ring_angle_start = dict(start_angles or self._ring_angle_map())
-        targets = self._ring_targets_for_page(page)
-        self._ring_angle_end = {
-            action: min(
-                (target - 360.0, target, target + 360.0),
-                key=lambda value: abs(value - self._ring_angle_start[action]),
-            )
-            for action, target in targets.items()
-        }
-        should_animate = (
-            self._animations_enabled() and not self._low_power_enabled
-            if animate is None
-            else bool(animate) and not self._low_power_enabled
-        )
-        if not should_animate or self._ring_angle_start == self._ring_angle_end:
-            self._ring_angles = dict(targets)
-            self._sync_ring_action_buttons()
-            self.update()
-            return
-        self._ring_rotation.setStartValue(0.0)
-        self._ring_rotation.setEndValue(1.0)
-        self._ring_rotation.start()
-
-    def _set_ring_rotation_progress(self, value: object) -> None:
-        progress = float(value)
-        self._ring_angles = {
-            action: start + (self._ring_angle_end[action] - start) * progress
-            for action, start in self._ring_angle_start.items()
-        }
-        self._sync_ring_action_buttons()
-        self.update()
-
-    def _finish_ring_rotation(self) -> None:
-        self._ring_angles = {
-            action: angle % 360.0
-            for action, angle in self._ring_angle_end.items()
-        }
-        self._sync_ring_action_buttons()
-        self.update()
-
-    def _reset_ring_rotation(self) -> None:
-        if hasattr(self, "_ring_rotation"):
-            self._ring_rotation.stop()
-        self._ring_angles.clear()
-        self._ring_angle_start.clear()
-        self._ring_angle_end.clear()
-        if hasattr(self, "_ring_action_buttons"):
-            self._sync_ring_action_buttons()
-
-    def _label_rect(self, action: str) -> QRectF:
-        slot = self._slot_rect(action)
-        center = slot.center()
-        width, height = 52.0, 16.0
-        x = max(2.0, min(center.x() - width / 2, self.width() - width - 2.0))
-        y = slot.bottom() + 2.0
-        if y + height > self.height() - 2.0:
-            y = slot.top() - height - 2.0
-        return QRectF(x, max(2.0, y), width, height)
-
-    def _action_at(self, point: QPointF) -> str:
-        point = QPointF(point) - self._content_shift
-        for action, _icon, _label in self.actions:
-            if self._slot_rect(action).contains(point) or self._label_rect(action).contains(point):
-                return action
-        return ""
-
-    def _paint_overlay(self, painter: QPainter) -> None:
-        if self.is_drawer_open():
-            drawer = QRectF(self.drawer_shell.geometry())
-            center = QPointF(self._track_center)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(0, 0, 0, 18))
-            painter.drawRoundedRect(drawer.translated(0, 3), 8, 8)
-            if self._drawer_side == "right":
-                neck_left = center.x() + 30
-                neck = QRectF(
-                    neck_left,
-                    center.y() - 9,
-                    max(8.0, drawer.left() + 8 - neck_left),
-                    18,
-                )
-            else:
-                neck_left = drawer.right() - 8
-                neck = QRectF(
-                    neck_left,
-                    center.y() - 9,
-                    max(8.0, center.x() - 30 - neck_left),
-                    18,
-                )
-            painter.setPen(QPen(QColor("#6F7F5A"), 1.0))
-            painter.setBrush(QColor("#FFFDF5"))
-            painter.drawRoundedRect(neck, 8, 8)
-        font = painter.font()
-        font.setPointSizeF(8.0)
-        painter.setFont(font)
-        for action, _icon, label in self.actions:
-            label_rect = self._label_rect(action)
-            alignment = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
-            painter.setPen(QColor(255, 253, 245, 205))
-            for offset in (QPointF(-1, 0), QPointF(1, 0), QPointF(0, -1), QPointF(0, 1)):
-                painter.drawText(label_rect.translated(offset), alignment, label)
-            painter.setPen(QColor("#4E5F3D"))
-            painter.drawText(label_rect, alignment, label)
-
-    def show_feedback(self, message: str, tone: str, anchor: QRect, available: QRect) -> None:
-        self._drawer_transition_id += 1
-        self._cancel_pending_hide()
-        self._feedback_timer.stop()
-        foreground, background = _FEEDBACK_TONES.get(
-            tone,
-            _FEEDBACK_TONES["error"],
-        )
-        self.feedback_label.setText(message)
-        self.feedback_label.setProperty("feedbackTone", tone)
-        self.feedback_label.setStyleSheet(
-            "QLabel { padding: 4px 8px; border-radius: 8px; font-size: 11px; font-weight: bold; "
-            f"color: {foreground}; background: {background}; }}"
-        )
-        self.feedback_label.show()
-        if self.is_drawer_open():
-            self._feedback_timer.start()
-            return
-        self._anchor = QRect(anchor)
-        self._available = QRect(available)
-        self._feedback_only = True
-        self._apply_feedback_geometry()
-        self._sync_ring_action_buttons()
-        self.drawer_title.hide()
-        self.drawer_stack.hide()
-        self.progress_bar.setVisible(self._progress_active)
-        self.drawer_shell.show()
-        self.setWindowOpacity(1.0)
-        self.show()
-        self.raise_()
-        self._feedback_timer.start()
-
-    def _apply_feedback_geometry(self) -> None:
-        width = 270
-        self.feedback_label.setMinimumHeight(0)
-        self.feedback_label.setMaximumHeight(16777215)
-        label_height = max(28, self.feedback_label.heightForWidth(width - 28))
-        self.feedback_label.setFixedHeight(label_height)
-        height = label_height + 22 + (14 if self._progress_active else 0)
-        right = self._anchor.right() + 10
-        left = self._anchor.left() - width - 10
-        if right + width <= self._available.right() - 8:
-            x = right
-        elif left >= self._available.left() + 8:
-            x = left
-        else:
-            x = self._anchor.center().x() - width // 2
-        x = max(self._available.left() + 8, min(x, self._available.right() - width - 8))
-        y = max(
-            self._available.top() + 8,
-            min(
-                self._anchor.center().y() - height // 2,
-                self._available.bottom() - height - 8,
-            ),
-        )
-        self.setGeometry(x, y, width, height)
-        self.drawer_shell.setGeometry(0, 0, width, height)
-
-    def _hide_feedback(self) -> None:
-        if self._progress_active:
-            return
-        self.feedback_label.hide()
-        if self._feedback_only:
-            self._feedback_only = False
-            self.drawer_shell.hide()
-            self.hide()
-
-    def begin_progress(self, anchor: QRect, available: QRect, text: str) -> None:
-        self._progress_active = True
-        self.progress_bar.setValue(3)
-        self.progress_bar.show()
-        self.show_feedback(text, "progress", anchor, available)
-
-    def set_progress(self, percent: int, text: str) -> None:
-        self.progress_bar.setValue(max(0, min(100, percent)))
-        self.feedback_label.setText(text)
-        if self._feedback_only and self.isVisible():
-            self._apply_feedback_geometry()
-
-    def complete_progress(self, tone: str, message: str) -> None:
-        self._progress_active = False
-        self.progress_bar.setValue(
-            100 if tone != "error" else max(15, self.progress_bar.value())
-        )
-        self.progress_bar.hide()
-        anchor = self._anchor if not self._anchor.isNull() else QRect(60, 60, 72, 72)
-        self.show_feedback(message, tone, anchor, self._available)
 
     def refresh_agent_status(self) -> None:
         try:
@@ -4733,6 +3591,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
             self.agent_status_label.setStyleSheet(
                 "QLabel { color: #A67624; font-size: 12px; font-weight: bold; padding: 4px 0; }"
             )
+
 
     def update_settings_state(
         self,
@@ -4760,8 +3619,6 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         )
         self.sound_button.setChecked(sound_enabled)
         self._sound_enabled = bool(sound_enabled)
-        if self._low_power_enabled and self._drawer_page:
-            self._rotate_ring_to_page(self._drawer_page, animate=False)
         self._language_mode = language
         self._ai_provider_mode = ai_provider
         self._update_ai_nav_state(
@@ -4794,6 +3651,7 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         for mode, button in self.language_buttons.items():
             button.setChecked(mode == language)
 
+
     def _update_ai_nav_state(
         self,
         *,
@@ -4825,7 +3683,443 @@ class QuickMenuWindow(_LegacyQuickMenuWindow):
         )
 
 
-AttachedHubWindow = QuickMenuWindow
+
+
+class DesktopIntakeCard(QWidget):
+    """One opaque native rectangle, independent of the grass pile."""
+    def __init__(self, ball) -> None:
+        super().__init__(ball)
+        self.ball = ball
+        self.mode = ""
+        self.candidates = []
+        self.index = 0
+        self.bundle = None
+        self.font_preview_worker = None
+        self._preview_generation = 0
+        self._preview_request = None
+        self._click_counter = None
+        self._escape_state = None
+        if sys.platform == "darwin" and os.environ.get("QT_QPA_PLATFORM") != "offscreen":
+            try:
+                framework = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+                self._click_counter = framework.CGEventSourceCounterForEventType
+                self._click_counter.argtypes = [ctypes.c_int32, ctypes.c_uint32]
+                self._click_counter.restype = ctypes.c_uint32
+                self._escape_state = framework.CGEventSourceKeyState
+                self._escape_state.argtypes = [ctypes.c_int32, ctypes.c_uint16]
+                self._escape_state.restype = ctypes.c_bool
+            except (AttributeError, OSError):
+                logger.debug("Desktop input state is unavailable")
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setWindowTitle(ui_text("Haypile 收纳", "Haypile intake"))
+        self.setObjectName("intakeCard")
+        self.setStyleSheet("QWidget#intakeCard { background: #FFF9EA; border: 1px solid #6F7F5A; }"
+                           "QLabel { color: #443F33; background: transparent; border: none; font-size: 13px; }"
+                           "QTextEdit { color: #443F33; background: #F6F1E4; border: none; font-size: 12px; }")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(5)
+        header = QHBoxLayout()
+        self.title = QLabel()
+        self.title.setTextFormat(Qt.TextFormat.PlainText)
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.title.setStyleSheet("font-size: 14px; font-weight: bold; color: #4E5F3D;")
+        header.addWidget(self.title, 1)
+        self.close_button = self._button(ui_text("关闭", "Close"), lambda: self.dismiss("close"))
+        self.close_button.setFixedWidth(48)
+        header.addWidget(self.close_button)
+        layout.addLayout(header)
+        self.preview = QLabel()
+        self.preview.setTextFormat(Qt.TextFormat.PlainText)
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setFixedHeight(64)
+        self.preview.setAccessibleName(ui_text("原文件样张", "Original file sample"))
+        layout.addWidget(self.preview)
+        self.recent_rows = QWidget()
+        self.recent_layout = QVBoxLayout(self.recent_rows)
+        self.recent_layout.setContentsMargins(0, 0, 0, 0)
+        self.recent_layout.setSpacing(6)
+        layout.addWidget(self.recent_rows)
+        self.status = QLabel()
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.status.setWordWrap(True)
+        self.status.setFixedHeight(32)
+        layout.addWidget(self.status)
+        navigation = QHBoxLayout()
+        self.previous_button = self._button(ui_text("上一款", "Previous"), lambda: self._navigate(-1))
+        self.next_button = self._button(ui_text("下一款", "Next"), lambda: self._navigate(1))
+        self.position = QLabel()
+        self.position.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.info_button = self._button(ui_text("信息", "Info"))
+        self.info_button.setCheckable(True)
+        self.info_button.toggled.connect(self._toggle_info)
+        navigation.addWidget(self.previous_button)
+        navigation.addWidget(self.position, 1)
+        navigation.addWidget(self.next_button)
+        navigation.addWidget(self.info_button)
+        layout.addLayout(navigation)
+        self.information = QWidget()
+        info_layout = QVBoxLayout(self.information)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(4)
+        self.details = QTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setFixedHeight(52)
+        self.details.setAccessibleName(ui_text("来源、缺字与许可", "Source, missing glyphs and license"))
+        info_layout.addWidget(self.details)
+        self.usage_row = QWidget()
+        usage_layout = QHBoxLayout(self.usage_row)
+        usage_layout.setContentsMargins(0, 0, 0, 0)
+        self.usage_buttons = {}
+        self.usage_button_group = QButtonGroup(self)
+        for usage, zh, en in [("heading", "标题", "Heading"), ("body", "正文", "Body"), ("decorative", "装饰", "Decorative")]:
+            button = self._button(ui_text(zh, en))
+            button.setCheckable(True)
+            self.usage_button_group.addButton(button)
+            button.toggled.connect(lambda checked, target=usage: self._set_usage(target) if checked else None)
+            button.setAccessibleName(ui_text("字体用途：", "Font usage: ") + ui_text(zh, en))
+            self.usage_buttons[usage] = button
+            usage_layout.addWidget(button)
+        info_layout.addWidget(self.usage_row)
+        layout.addWidget(self.information)
+        self.store_button = self._button(ui_text("收纳这款", "Store this font"), self._primary_action)
+        self.store_button.setFixedHeight(34)
+        self.store_button.setStyleSheet(_ACTION_BUTTON_STYLE.replace("background: #F6F1E4", "background: #E9E4D4"))
+        layout.addWidget(self.store_button)
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(lambda: self.dismiss("timeout"))
+        self._outside_timer = QTimer(self)
+        self._outside_timer.setInterval(50)
+        self._outside_timer.timeout.connect(self._poll_outside)
+        self._last_buttons = ()
+        self._last_escape = False
+        QApplication.instance().installEventFilter(self)
+        QApplication.instance().applicationStateChanged.connect(self._application_state_changed)
+        self._reset("", "")
+
+    def _button(self, text: str, callback=None) -> QPushButton:
+        button = _MaterialItemButton(text)
+        button.setMinimumHeight(28)
+        button.setStyleSheet(_CHOICE_BUTTON_STYLE)
+        if callback is not None:
+            button.clicked.connect(lambda _checked=False: callback())
+        return button
+
+    def _reset(self, mode: str, title: str) -> None:
+        self._hide_timer.stop()
+        self._cancel_preview()
+        self.mode = mode
+        self.setWindowTitle(ui_text("Haypile 收纳", "Haypile intake"))
+        self.close_button.setText(ui_text("关闭", "Close"))
+        self.next_button.setText(ui_text("下一款", "Next"))
+        self.info_button.setText(ui_text("信息", "Info"))
+        self.preview.setAccessibleName(ui_text("原文件样张", "Original file sample"))
+        self.details.setAccessibleName(ui_text("来源、缺字与许可", "Source, missing glyphs and license"))
+        for usage, button in self.usage_buttons.items():
+            label = MaterialPanelWindow._font_usage_label(usage)
+            button.setText(label)
+            button.setAccessibleName(ui_text("字体用途：", "Font usage: ") + label)
+        self.title.setText(title)
+        self.title.setToolTip(title)
+        self.preview.clear()
+        self.preview.setVisible(mode in {"fonts", "bundle"})
+        self.recent_rows.setVisible(mode == "recent")
+        self.previous_button.setVisible(mode in {"fonts", "bundle"})
+        self.next_button.setVisible(mode == "fonts")
+        self.position.setVisible(mode == "fonts")
+        self.info_button.setVisible(mode in {"fonts", "bundle"})
+        self.info_button.blockSignals(True)
+        self.info_button.setChecked(False)
+        self.info_button.blockSignals(False)
+        self.information.hide()
+        self.usage_row.hide()
+        self.status.clear()
+        self.status.setToolTip("")
+        self.status.setStyleSheet("")
+        self.status.show()
+        self.previous_button.setText(ui_text("上一款", "Previous"))
+        self.store_button.setEnabled(True)
+        self.store_button.show()
+
+    def _show(self) -> None:
+        height = 320 if self.information.isVisibleTo(self) else 240
+        if self.mode == "message":
+            height = 140 if self.store_button.isVisibleTo(self) else 100
+        self.setFixedSize(280, height)
+        self.reposition()
+        self._last_buttons = self._desktop_buttons()
+        self._last_escape = self._desktop_escape()
+        self.show()
+        self.raise_()
+        self._outside_timer.start()
+
+    def reposition(self) -> None:
+        anchor = self.ball._ball_anchor_rect()
+        available = self.ball._available_geometry().adjusted(8, 8, -8, -8)
+        width, height = self.width(), self.height()
+        options = [QPoint(anchor.right() + 12, anchor.center().y() - height // 2),
+                   QPoint(anchor.left() - width - 12, anchor.center().y() - height // 2),
+                   QPoint(anchor.center().x() - width // 2, anchor.top() - height - 12),
+                   QPoint(anchor.center().x() - width // 2, anchor.bottom() + 12)]
+        for point in options:
+            rect = QRect(point, self.size())
+            if available.contains(rect):
+                self.move(point)
+                return
+        point = options[0] if anchor.center().x() < available.center().x() else options[1]
+        self.move(max(available.left(), min(point.x(), available.right() - width + 1)),
+                  max(available.top(), min(point.y(), available.bottom() - height + 1)))
+
+    def dismiss(self, reason: str) -> None:
+        if reason in {"close", "escape"} and self.mode == "message" and self.ball.remote_worker is not None:
+            self.ball._cancel_remote_download()
+        if self.mode == "fonts" and reason != "store":
+            self.ball._discard_web_fonts()
+        self.candidates = []
+        self._cancel_preview()
+        self.mode = ""
+        self.hide()
+        self._hide_timer.stop()
+        self._outside_timer.stop()
+
+    def closeEvent(self, event) -> None:
+        self.dismiss("close")
+        event.accept()
+
+    def show_message(self, message: str, tone: str) -> None:
+        if self.ball._closing:
+            return
+        if self.isVisible() and self.mode in {"fonts", "bundle", "recent"}:
+            return
+        self._reset("message", "Haypile")
+        self.status.setText(message)
+        self.status.setToolTip(message)
+        foreground, background = _FEEDBACK_TONES.get(tone, _FEEDBACK_TONES["success"])
+        self.status.setStyleSheet(f"color: {foreground}; background: {background};")
+        self.status.setProperty("feedbackTone", tone)
+        self.store_button.setVisible(tone == "progress" and self.ball.remote_worker is not None or tone == "error" and bool(self.ball._last_remote_urls))
+        self.store_button.setText(ui_text("取消查找", "Cancel search") if tone == "progress" else ui_text("重试", "Retry"))
+        self._show()
+        if tone != "progress":
+            self._hide_timer.start(4500 if tone == "error" else 1700)
+
+    def show_fonts(self, candidates: list[WebFontCandidate], note: str = "") -> None:
+        self._reset("fonts", "")
+        self.candidates = list(candidates)
+        self.index = 0
+        self._discovery_note = note
+        self._show_candidate()
+        self._show()
+
+    def _show_candidate(self) -> None:
+        if not self.candidates:
+            return
+        candidate = self.candidates[self.index]
+        metadata = candidate.metadata
+        name = f"{metadata.get('family') or candidate.path.stem} · {metadata.get('style') or 'Regular'}"
+        self.title.setText(self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 196))
+        self.title.setToolTip(name)
+        self.preview.setPixmap(QPixmap.fromImage(QImage(candidate.pixels, candidate.width, candidate.height, QImage.Format.Format_RGBA8888).copy()).scaled(254, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.position.setText(f"{self.index + 1} / {len(self.candidates)}")
+        self.previous_button.setEnabled(self.index > 0)
+        self.next_button.setEnabled(self.index + 1 < len(self.candidates))
+        self.store_button.setText(ui_text("收纳这款", "Store this font"))
+        self.store_button.setEnabled(self.ball.worker is None)
+        self._font_details(metadata, candidate.origin, candidate.path.suffix, candidate.missing, candidate.hint)
+
+    def _font_details(self, metadata, origin: str, suffix: str, missing: str = "", hint: str = "") -> None:
+        license_text = str(metadata.get("license_description") or metadata.get("license_url") or "")
+        status = ui_text("缺字：", "Missing: ") + missing if missing else ui_text("样张字符齐全", "Sample glyphs covered")
+        status += " · " + ui_text("内嵌许可已记录" if license_text else "许可未知", "Embedded license recorded" if license_text else "License unknown")
+        self.status.setText(status)
+        self.status.setToolTip(status)
+        self.details.setPlainText(ui_text("来源：", "Source: ") + (origin or ui_text("未记录", "Unrecorded"))
+                                  + "\n" + suffix.lstrip('.').upper() + (" · " + hint if hint else "")
+                                  + "\n" + status
+                                  + "\n" + ui_text("内嵌许可：", "Embedded license: ") + (license_text[:8192] or ui_text("未知", "Unknown"))
+                                  + ("\n" + self._discovery_note if self.mode == "fonts" and self._discovery_note else ""))
+
+    def _navigate(self, step: int) -> None:
+        if self.mode == "bundle":
+            self.show_recent()
+        elif self.mode == "fonts":
+            self.index = max(0, min(self.index + step, len(self.candidates) - 1))
+            self._show_candidate()
+
+    def _toggle_info(self, checked: bool) -> None:
+        self.information.setVisible(checked)
+        self._show()
+
+    def _primary_action(self) -> None:
+        if self.mode == "fonts" and self.candidates:
+            self.ball._collect_web_font(self.candidates[self.index])
+        elif self.mode == "message":
+            if self.ball.remote_worker is not None:
+                self.ball._cancel_remote_download()
+            elif self.ball._last_remote_urls and not self.ball._ingest_busy():
+                self.ball._start_remote_download_worker(self.ball._last_remote_urls)
+        else:
+            self.ball._handle_quick_menu_action("assets")
+
+    def show_recent(self) -> None:
+        self._reset("recent", ui_text("最近收纳", "Recent assets"))
+        while self.recent_layout.count():
+            item = self.recent_layout.takeAt(0)
+            item.widget().deleteLater()
+        try:
+            service = self.ball._bundle_service()
+            bundles = service.list_bundles()
+            def modified(bundle):
+                path = service._asset_path(str(bundle["source_key"]))
+                try:
+                    return path.stat().st_mtime_ns if path is not None else 0
+                except OSError:
+                    return 0
+            bundles.sort(key=modified, reverse=True)
+            for bundle in bundles[:3]:
+                metadata = bundle.get("font_metadata") or {}
+                name = str(metadata.get("family") or Path(str(bundle["source_key"])).name)
+                label = self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 240)
+                button = self._button(label.replace("&", "&&"), lambda target=bundle: self.show_bundle(target))
+                button.setToolTip(name)
+                button.setMinimumHeight(38)
+                self.recent_layout.addWidget(button)
+            self.status.setVisible(not bundles)
+            self.status.setText("" if bundles else ui_text("拖入文件或网页链接开始收纳", "Drop a file or page link to start"))
+        except (ManifestReadinessError, OSError, ValueError):
+            self.status.setText(ui_text("素材目录待恢复，请稍后重试", "Catalog is recovering; try again shortly"))
+        self.store_button.setText(ui_text("全部素材", "All assets"))
+        self._show()
+
+    def show_bundle(self, bundle) -> None:
+        self._reset("bundle", "")
+        self.bundle = bundle
+        self.previous_button.setText(ui_text("返回", "Back"))
+        self.previous_button.setEnabled(True)
+        self.store_button.setText(ui_text("打开素材管理", "Open asset manager"))
+        path = self.ball._bundle_service()._asset_path(str(bundle["source_key"]))
+        metadata = bundle.get("font_metadata") or {}
+        name = str(metadata.get("family") or Path(str(bundle["source_key"])).name)
+        self.title.setText(self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 196))
+        self.title.setToolTip(name)
+        if bundle.get("type") == "font":
+            self._font_details(metadata, str(bundle.get("origin_url") or ""), path.suffix if path is not None else "")
+            self.status.setText(ui_text("正在检查样张…", "Checking sample…"))
+            self.status.setToolTip(self.status.text())
+            self._refresh_usage()
+            self.usage_row.show()
+            if path is not None and bundle.get("status") != "missing":
+                self._preview_request = (self._preview_generation, bundle["id"], path, WEB_FONT_PREVIEW_TEXT, 32, bundle["sha256"])
+                self.preview.setText(ui_text("正在预览…", "Rendering…"))
+                self._start_preview()
+        else:
+            self.status.setText(ui_text("待确认" if bundle.get("status") == "pending" else "已收纳", "Pending" if bundle.get("status") == "pending" else "Stored"))
+            self.details.setPlainText(str(bundle.get("origin_url") or ui_text("未记录来源", "Source unrecorded")))
+            if path is not None and bundle.get("type") == "image":
+                reader = QImageReader(str(path))
+                if reader.size().isValid():
+                    reader.setScaledSize(reader.size().scaled(QSize(254, 64), Qt.AspectRatioMode.KeepAspectRatio))
+                self.preview.setPixmap(QPixmap.fromImage(reader.read()))
+            else:
+                self.preview.setText(ui_text("音频素材", "Audio asset"))
+        if bundle.get("status") == "missing":
+            self.preview.setText(ui_text("素材副本缺失", "Asset copy missing"))
+            self.status.setText(ui_text("素材副本缺失", "Asset copy missing"))
+        self._show()
+
+    def _refresh_usage(self) -> None:
+        self.usage_button_group.setExclusive(False)
+        for button in self.usage_buttons.values():
+            button.blockSignals(True)
+        for usage, button in self.usage_buttons.items():
+            button.setChecked(self.bundle.get("font_usage") == usage)
+            button.setEnabled(self.bundle.get("status") != "missing")
+        for button in self.usage_buttons.values():
+            button.blockSignals(False)
+        self.usage_button_group.setExclusive(True)
+
+    def _set_usage(self, usage: str) -> None:
+        if self.mode != "bundle" or self.bundle.get("type") != "font":
+            return
+        try:
+            updated = self.ball._bundle_service().update_bundle_font(self.bundle["id"], font_usage=usage)
+        except (OSError, TimeoutError, ValueError, ManifestReadinessError):
+            updated = None
+        if updated is None:
+            self.status.setText(ui_text("用途保存失败，请重试", "Usage could not be saved; retry"))
+        else:
+            self.bundle = updated
+            self.status.setText(ui_text("用途已确认：", "Usage confirmed: ") + MaterialPanelWindow._font_usage_label(usage))
+            self.ball._refresh_pending_badge()
+        self.status.setToolTip(self.status.text())
+        self._refresh_usage()
+
+    def _cancel_preview(self) -> None:
+        self._preview_generation += 1
+        self._preview_request = None
+        if self.font_preview_worker is not None:
+            self.font_preview_worker.requestInterruption()
+
+    def _start_preview(self) -> None:
+        if self.font_preview_worker is not None or self._preview_request is None:
+            return
+        self.font_preview_worker = FontPreviewWorker(self._preview_request, self, preview_width=254)
+        self._preview_request = None
+        self.font_preview_worker.finished.connect(self._finish_preview)
+        self.font_preview_worker.start()
+
+    def _finish_preview(self) -> None:
+        worker = self.font_preview_worker
+        self.font_preview_worker = None
+        if worker.request[0] == self._preview_generation and self.mode == "bundle":
+            if worker.result is not None:
+                pixels, width, height, missing = worker.result
+                self.preview.setPixmap(QPixmap.fromImage(QImage(pixels, width, height, QImage.Format.Format_RGBA8888).copy()).scaled(254, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                self._font_details(self.bundle.get("font_metadata") or {}, str(self.bundle.get("origin_url") or ""), worker.request[2].suffix, missing)
+            elif worker.error:
+                self.preview.setText(ui_text("字体预览失败", "Font preview failed"))
+                self.status.setText(ui_text("无法检查样张字符", "Sample glyphs could not be checked"))
+                self.status.setToolTip(self.status.text())
+        worker.deleteLater()
+        self._start_preview()
+
+    def _desktop_buttons(self):
+        if self._click_counter is not None:
+            return tuple(self._click_counter(0, event_type) for event_type in (1, 3, 25))
+        if sys.platform.startswith("win"):
+            return tuple(ctypes.windll.user32.GetAsyncKeyState(key) for key in (1, 2, 4))
+        return ()
+
+    def _desktop_escape(self) -> bool:
+        return bool(self._escape_state and self._escape_state(0, 53))
+
+    def _poll_outside(self) -> None:
+        # ponytail: poll native counters only while visible; no event tap or input-capturing overlay.
+        buttons, escape = self._desktop_buttons(), self._desktop_escape()
+        outside = not self.frameGeometry().contains(QCursor.pos()) and not self.ball.frameGeometry().contains(QCursor.pos())
+        if escape and not self._last_escape:
+            self.dismiss("escape")
+        elif buttons != self._last_buttons and outside:
+            self.dismiss("outside")
+        self._last_buttons, self._last_escape = buttons, escape
+        if self.mode == "fonts":
+            self.store_button.setEnabled(self.ball.worker is None and not self.ball._closing)
+
+    def _application_state_changed(self, state) -> None:
+        if state == Qt.ApplicationState.ApplicationInactive and self.isVisible():
+            self.dismiss("outside")
+
+    def eventFilter(self, watched, event) -> bool:
+        if self.isVisible():
+            if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+                self.dismiss("escape")
+            elif event.type() == QEvent.Type.MouseButtonPress and isinstance(watched, QWidget):
+                if watched.window() not in {self, self.ball}:
+                    self.dismiss("outside")
+        return False
 
 
 class HaypileFloatingBall(QWidget):
@@ -4908,7 +4202,9 @@ class HaypileFloatingBall(QWidget):
 
         self.worker: IngestWorker | None = None
         self.remote_worker: RemoteDownloadWorker | None = None
-        self._font_selection_dialog: WebFontSelectionDialog | None = None
+        self._web_font_candidates: list[WebFontCandidate] = []
+        self._remote_request_cancelled = False
+        self._last_remote_urls: list[str] = []
         self._remote_ingest_paths: set[Path] = set()
         self.ai_batch_worker: AIBatchWorker | None = None
         self._ai_batch_queue: list[str] = []
@@ -5016,6 +4312,9 @@ class HaypileFloatingBall(QWidget):
         self._update_window_mask()
 
         self.quick_menu = QuickMenuWindow(self.settings)
+        self.quick_menu.setParent(self, self.quick_menu.windowFlags())
+        self.intake_card = DesktopIntakeCard(self)
+        self.quick_menu.feedback_card = self.intake_card
         self.material_panel = self.quick_menu.material_panel
         self.material_panel.set_toast_handler(self.show_toast)
         self.material_panel.set_low_power_enabled(self.low_power_enabled)
@@ -5245,15 +4544,8 @@ class HaypileFloatingBall(QWidget):
                 return
 
         if event.button() == Qt.MouseButton.RightButton:
-            self.quick_menu.hide_menu()
-            if self._exit_armed:
-                self.close()
-                return
-            self._exit_armed = True
-            self._exit_timer.start()
-            self._shake_window()
-            self._sync_visual_timer()
-            self.update()
+            self._show_context_menu(event.globalPosition().toPoint())
+            event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
             self._clear_exit_armed()
@@ -5320,9 +4612,6 @@ class HaypileFloatingBall(QWidget):
         self._shake_animation.start()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.RightButton:
-            self.close()
-            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._toggle_quick_menu()
             event.accept()
@@ -5840,7 +5129,7 @@ class HaypileFloatingBall(QWidget):
         return bool(
             self.worker is not None
             or self.remote_worker is not None
-            or self._font_selection_dialog is not None
+            or bool(self._web_font_candidates)
             or self._pending_ingest_finish is not None
         )
 
@@ -5867,7 +5156,11 @@ class HaypileFloatingBall(QWidget):
     ) -> None:
         if self._closing or not self._ensure_storage_ready():
             return
+        self._remote_request_cancelled = False
+        self._last_remote_urls = list(urls)
+        self.intake_card.dismiss("new_request")
         self.remote_worker = RemoteDownloadWorker(urls, self.settings.STORAGE_DIR / "incoming" / "browser")
+        self.remote_worker.setParent(self)
         self.remote_worker.progress_signal.connect(self._on_ingest_progress)
         self.remote_worker.finished_signal.connect(
             lambda downloaded, message, success: self._on_remote_download_finished(
@@ -5905,6 +5198,10 @@ class HaypileFloatingBall(QWidget):
         local_files: list[Path],
         fallback_file: Path | None = None,
     ) -> None:
+        # Keep the owner until QThread stops, even when its result signal arrives first.
+        if self.remote_worker is not None and self.remote_worker.isRunning():
+            QTimer.singleShot(10, self, lambda: self._on_remote_download_finished(downloaded_files, message, success, local_files, fallback_file))
+            return
         if self._closing:
             for path in downloaded_files:
                 self._delete_remote_temp(path)
@@ -5913,24 +5210,19 @@ class HaypileFloatingBall(QWidget):
         candidates = worker.font_candidates if worker is not None else []
         note = worker.font_discovery_note if worker is not None else ""
         if worker is not None:
-            worker.finished.connect(worker.deleteLater)
-            if not worker.isRunning():
-                worker.deleteLater()
+            worker.deleteLater()
         self.remote_worker = None
         self._remote_ingest_paths.update(downloaded_files)
+        if self._remote_request_cancelled:
+            self._cleanup_remote_ingest_paths()
+            self.quick_menu.complete_progress("pending", "")
+            return
         if candidates:
+            self._web_font_candidates = list(candidates)
             candidate_paths = {candidate.path for candidate in candidates}
-            dialog = WebFontSelectionDialog(candidates, note, self)
-            self._font_selection_dialog = dialog
-            try:
-                selected = set(dialog.selected_paths()) if dialog.exec() == QDialog.DialogCode.Accepted else set()
-            finally:
-                self._font_selection_dialog = None
-                dialog.deleteLater()
-            for path in candidate_paths - selected:
-                self._delete_remote_temp(path)
-                self._remote_ingest_paths.discard(path)
-            downloaded_files = [path for path in downloaded_files if path not in candidate_paths or path in selected]
+            self._remote_ingest_paths.difference_update(candidate_paths)
+            downloaded_files = [path for path in downloaded_files if path not in candidate_paths]
+            self.intake_card.show_fonts(candidates, note)
         if (downloaded_files or candidates) and fallback_file is not None:
             self._delete_remote_temp(fallback_file)
             self._remote_ingest_paths.discard(fallback_file)
@@ -5942,9 +5234,7 @@ class HaypileFloatingBall(QWidget):
             files.append(fallback_file)
         if not files:
             if candidates:
-                cancel_message = ui_text("已取消字体收纳", "Font intake cancelled")
-                self.show_toast(cancel_message, tone="pending")
-                self.quick_menu.complete_progress("pending", cancel_message)
+                self.quick_menu.complete_progress("pending", "")
                 return
             failure_message = (
                 message
@@ -5994,7 +5284,8 @@ class HaypileFloatingBall(QWidget):
                 visual_ms += self.GIF_OPEN_MS
             self._ingest_feedback_not_before = time.monotonic() + visual_ms / 1000.0
 
-        self.worker = IngestWorker(merged_files, self.assets_dir)
+        self.worker = IngestWorker(merged_files, self.assets_dir, settings=self.settings)
+        self.worker.setParent(self)
         self.worker.finished_signal.connect(self._on_ingest_finished)
         self.worker.progress_signal.connect(self._on_ingest_progress)
         self.worker.batch_signal.connect(self._on_ingest_batch)
@@ -6014,8 +5305,13 @@ class HaypileFloatingBall(QWidget):
             self._available_geometry(),
             initial_message,
         )
+        if self.intake_card.mode == "fonts":
+            self.intake_card.store_button.setEnabled(False)
 
     def _on_ingest_finished(self, message: str, success: bool) -> None:
+        if self.worker is not None and self.worker.isRunning():
+            QTimer.singleShot(10, self, lambda: self._on_ingest_finished(message, success))
+            return
         self._cleanup_remote_ingest_paths()
         if self._closing:
             return
@@ -6127,6 +5423,7 @@ class HaypileFloatingBall(QWidget):
             self._sound_feedback.play("duplicate")
         elif not success or has_rejections:
             self._sound_feedback.play("error")
+        self.intake_card.store_button.setEnabled(True)
         self.show_toast(message, tone=tone)
         self.quick_menu.complete_progress(tone, message)
         if self.quick_menu.current_page() == "assets":
@@ -6655,8 +5952,8 @@ class HaypileFloatingBall(QWidget):
         if self._cleanup_done or self._closing:
             return
         self._closing = True
-        if self._font_selection_dialog is not None:
-            self._font_selection_dialog.reject()
+        self.intake_card.dismiss("shutdown")
+        self.intake_card._cancel_preview()
         self._shutdown_started_at = time.monotonic()
         self._shutdown_wait_notice_shown = False
         self._collapse_timer.stop()
@@ -6701,6 +5998,7 @@ class HaypileFloatingBall(QWidget):
                 self.ai_batch_worker,
                 self.material_panel.ai_refresh_worker,
                 self.material_panel.font_preview_worker,
+                self.intake_card.font_preview_worker,
             )
         )
         if workers_done:
@@ -6730,8 +6028,11 @@ class HaypileFloatingBall(QWidget):
         self._cleanup_remote_ingest_paths()
         self._cleanup_done = True
         self._shutdown_timer.stop()
+        self.intake_card.hide()
+        self.intake_card.deleteLater()
         self.quick_menu.hide()
         self.quick_menu.close()
+        self.quick_menu.deleteLater()
         QTimer.singleShot(0, self.close)
 
     def _reposition_progress_window(self) -> None:
@@ -6749,22 +6050,56 @@ class HaypileFloatingBall(QWidget):
         self._reposition_quick_menu()
 
     def _close_attached_ui(self) -> None:
+        self.intake_card.dismiss("close")
         self.quick_menu.hide_menu()
         QTimer.singleShot(0, self._refresh_pending_badge)
 
     def _toggle_quick_menu(self) -> None:
-        if self.quick_menu.isVisible():
+        if self.quick_menu.isVisible() or self.intake_card.isVisible():
             self._close_attached_ui()
             return
-        if self._has_pending_assets and not self.quick_menu._attention_action:
-            self.quick_menu.set_attention_action("assets")
-        self.quick_menu.show_attached(self._ball_anchor_rect(), self._available_geometry())
+        if self.remote_worker is not None:
+            self.intake_card.show_message(ui_text("正在查找字体…", "Finding fonts…"), "progress")
+        else:
+            self.intake_card.show_recent()
+        self.intake_card.activateWindow()
+        self.intake_card.close_button.setFocus(Qt.FocusReason.MouseFocusReason)
         self._sound_feedback.play("nav")
-        QTimer.singleShot(0, self.quick_menu._focus_neutral_surface)
+
+    def _show_context_menu(self, point: QPoint) -> None:
+        self._close_attached_ui()
+        menu = QMenu(self)
+        for text, action in [(ui_text("全部素材", "All assets"), "assets"), ("Agent", "agent"),
+                             (ui_text("设置", "Settings"), "settings"), (ui_text("退出", "Quit"), "quit")]:
+            item = menu.addAction(text)
+            item.triggered.connect(lambda _checked=False, target=action: self.shutdown() if target == "quit" else self._handle_quick_menu_action(target))
+        menu.aboutToHide.connect(menu.deleteLater)
+        menu.popup(point)
+
+    def _discard_web_fonts(self) -> None:
+        for candidate in self._web_font_candidates:
+            self._delete_remote_temp(candidate.path)
+        self._web_font_candidates.clear()
+
+    def _collect_web_font(self, candidate: WebFontCandidate) -> None:
+        if self.worker is not None or self._closing or candidate not in self._web_font_candidates:
+            return
+        self._web_font_candidates.remove(candidate)
+        self._discard_web_fonts()
+        self._remote_ingest_paths.add(candidate.path)
+        self.intake_card.dismiss("store")
+        self._start_worker([candidate.path])
+
+    def _cancel_remote_download(self) -> None:
+        self._remote_request_cancelled = True
+        if self.remote_worker is not None:
+            self.remote_worker.requestInterruption()
+        self.intake_card.dismiss("cancel")
 
     def _reposition_quick_menu(self) -> None:
-        if self.quick_menu.isVisible():
-            self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=False)
+        if hasattr(self, "intake_card") and self.intake_card.isVisible():
+            self.intake_card.reposition()
+        self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=False)
 
     def _align_quick_menu_track_to_ball(self) -> None:
         self._reposition_quick_menu()
