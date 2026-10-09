@@ -40,7 +40,7 @@ def main() -> int:
         hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
         # Leave the synthetic URL raw to exercise sanitization in the compiled reader.
         provenance_path_for(path).write_text(json.dumps({"font_usage": "body", "font_annotation": {
-            "license_note": "Original MIT test outlines", "source_note": "https://reader(test):private@example.com/font.ttf?token=private",
+            "license_note": "Original MIT test outlines", "source_note": "https://reader(test):private@example.com/font.ttf?token=" + "!" * 24,
         }}), encoding="utf-8")
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))

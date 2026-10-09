@@ -495,7 +495,10 @@ class FontSupportTests(unittest.TestCase):
         self.assertEqual(sanitize_provenance(cleaned), cleaned)
         for note, expected in (
             ("See https://reader(test):PRIVATE_TOKEN@example.com/font.ttf", "See https://example.com"),
-            ("See https://example.com/font.ttf?token='PRIVATE_TOKEN'", "See https://example.com'"),
+            ("See https://example.com/font.ttf?token='PRIVATE_TOKEN'", "See https://example.com"),
+            ("https://example.com/font.ttf?token=" + "!" * 24, "https://example.com"),
+            ("https://example.com/font.ttf?token=" + ")" * 24, "https://example.com"),
+            ("See 'https://example.com/font.ttf?token=PRIVATE_TOKEN'", "See 'https://example.com'"),
             ("x" * 1990 + " https://" + "PRIVATE_TOKEN" * 20 + "@example.com/font.ttf",
              "x" * 1990 + " https://example.com"),
             ("See https://[2606:4700:4700::1111]", "See https://[2606:4700:4700::1111]"),

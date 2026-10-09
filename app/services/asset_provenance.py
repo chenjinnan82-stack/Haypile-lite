@@ -65,7 +65,14 @@ def _public_font_note(value: Any, limit: int) -> str:
         closing_brackets = min(max(0, url.count("]") - url.count("[")), len(url) - len(url.rstrip("]")))
         if closing_brackets:
             url = url[:-closing_brackets]
-        return public_origin_url(url) + match.group()[len(url):]
+        closer = {"(": ")", "[": "]", "{": "}", "'": "'", '"': '"'}.get(text[match.start() - 1:match.start()], "")
+        suffix = ""
+        if closer:
+            if match.group().endswith(closer + "."):
+                suffix = closer + "."
+            elif match.group().endswith(closer):
+                suffix = closer
+        return public_origin_url(url) + suffix
 
     text = re.sub(url_pattern, public_url, text, flags=re.IGNORECASE)
     without_urls = re.sub(url_pattern, "", text, flags=re.IGNORECASE)
