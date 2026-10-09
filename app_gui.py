@@ -2506,6 +2506,7 @@ class MaterialPanelWindow(QWidget):
         except (OSError, TimeoutError, ValueError, ManifestReadinessError):
             bundle = None
         if bundle is None:
+            self.refresh()
             self.detail_label.setText(ui_text("用途保存失败，请重试", "Usage could not be saved; retry"))
             return
         self.refresh()

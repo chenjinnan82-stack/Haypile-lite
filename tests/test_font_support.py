@@ -549,6 +549,11 @@ class FontSupportTests(unittest.TestCase):
             panel.font_size_input.setValue(40)
             drain()
             self.assertFalse("冬" in panel.font_missing_label.text())
+            with InterProcessFileLock(self.index / "ingest.transaction.lock"):
+                panel.font_usage_buttons["body"].click()
+                self.assertTrue(panel.font_usage_buttons["unknown"].isChecked())
+                self.assertFalse(panel.font_usage_buttons["body"].isChecked())
+            drain()
             panel._set_selected_font_usage("body")
             drain()
             self.assertEqual(self.bundles.get_bundle(bundle["id"])["status"], "ready")
