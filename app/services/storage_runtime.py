@@ -452,6 +452,25 @@ class StorageRuntimeDB:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
+    @staticmethod
+    def read_recent_asset_hashes(db_path: Path) -> list[str]:
+        """Read last completed intake order, including duplicate intakes."""
+        try:
+            with closing(sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=0.1)) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT a.sha256, MAX(b.completed_at) AS last_intake
+                    FROM ingest_batch_assets AS a
+                    JOIN ingest_batches AS b ON b.id = a.batch_id
+                    WHERE b.state = 'completed' AND b.completed_at IS NOT NULL
+                    GROUP BY a.sha256
+                    ORDER BY last_intake DESC, a.sha256
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [str(row[0]) for row in rows]
+
     def asset_hash_index(self, assets_dir: Path) -> dict[str, Path]:
         """Return verified hash entries for Haypile-owned asset copies."""
         self.ensure_ready()

@@ -161,6 +161,20 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(second_page[0]["id"], hashlib.sha256(b"hero").hexdigest())
             self.assertEqual(service.list_bundles(batch_id="missing"), [])
 
+    def test_recent_legacy_catalog_does_not_initialize_runtime_and_respects_dirty_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            service = _bundle_service(root)
+            service.runtime_db_path = root / "legacy-runtime.db"
+            recent = service.list_recent_bundles()
+            self.assertEqual(len(recent), 3)
+            self.assertFalse(service.runtime_db_path.exists())
+            self.assertEqual(service.list_recent_bundles(limit=0), [])
+            manifest_dirty_path(service.manifest_path).write_text("{}")
+            from app.services.scanner import ManifestReadinessError
+            with self.assertRaises(ManifestReadinessError):
+                service.list_recent_bundles()
+
     def test_bundles_api_lists_and_gets_bundles(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             service = _bundle_service(Path(raw))

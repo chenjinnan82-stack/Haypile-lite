@@ -2233,7 +2233,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         ball = app_gui_module.HaypileFloatingBall()
         pending = [{"id": "pending", "source_key": "generic/pending.png"}]
         ball._bundle_service = lambda: SimpleNamespace(
-            list_bundles=lambda **_filters: list(pending), _asset_path=lambda key: None
+            list_bundles=lambda **_filters: list(pending),
+            list_recent_bundles=lambda: list(pending), _asset_path=lambda key: None
         )
         try:
             ball._refresh_pending_badge()

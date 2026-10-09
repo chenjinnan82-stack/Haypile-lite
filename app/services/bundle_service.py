@@ -185,6 +185,26 @@ class BundleService:
             return ordered
         return ordered[: max(1, min(int(limit), MAX_BUNDLE_PAGE_SIZE))]
 
+    def list_recent_bundles(self, limit: int = 3) -> list[dict[str, Any]]:
+        bundles = self.list_bundles()
+        order = {digest: index for index, digest in enumerate(
+            StorageRuntimeDB.read_recent_asset_hashes(self.runtime_db_path)
+        )}
+
+        def recent_key(bundle):
+            digest = bundle["sha256"]
+            if digest in order:
+                return (0, order[digest], bundle["source_key"])
+            path = self._asset_path(bundle["source_key"])
+            try:
+                modified = path.stat().st_mtime_ns if path is not None else 0
+            except OSError:
+                modified = 0
+            return (1, -modified, bundle["source_key"])
+
+        bundles.sort(key=recent_key)
+        return bundles[:max(0, min(int(limit), MAX_BUNDLE_PAGE_SIZE))]
+
     def get_latest_batch(self) -> dict[str, object] | None:
         return StorageRuntimeDB(self.runtime_db_path).latest_batch()
 

@@ -139,6 +139,7 @@ from PySide6.QtCore import (
     QSize,
     QEasingCurve,
     QEvent,
+    QMimeData,
     QPoint,
     QPointF,
     QPropertyAnimation,
@@ -153,7 +154,9 @@ from PySide6.QtCore import (
     qVersion,
 )
 from PySide6.QtGui import (
+    QDrag,
     QImage,
+    QIcon,
     QColor,
     QCursor,
     QDesktopServices,
@@ -3742,6 +3745,8 @@ class DesktopIntakeCard(QWidget):
         self._candidate_positions = {}
         self.index = 0
         self.bundle = None
+        self._drag_origin = None
+        self._exporting = False
         self.font_preview_worker = None
         self._preview_generation = 0
         self._preview_request = None
@@ -3843,6 +3848,11 @@ class DesktopIntakeCard(QWidget):
         navigation.addWidget(self.position)
         navigation.addWidget(self.next_button)
         navigation.addStretch()
+        self.export_button = self._button(ui_text("导出", "Export"), self._export_bundle_font)
+        self.export_button.setFixedWidth(52)
+        self.export_button.setAccessibleName(ui_text("导出字体原文件", "Export original font"))
+        self.export_button.setToolTip(self.export_button.accessibleName())
+        navigation.addWidget(self.export_button)
         navigation.addWidget(self.info_button)
         layout.addLayout(navigation)
         self.information = QWidget()
@@ -3878,6 +3888,10 @@ class DesktopIntakeCard(QWidget):
         self.store_button.setObjectName("cardPrimary")
         self.store_button.setFixedHeight(34)
         layout.addWidget(self.store_button)
+        self._copy_feedback_timer = QTimer(self)
+        self._copy_feedback_timer.setSingleShot(True)
+        self._copy_feedback_timer.timeout.connect(lambda: self.store_button.setText(
+            ui_text("复制原文件", "Copy original file")) if self.mode == "bundle" else None)
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(lambda: self.dismiss("timeout"))
@@ -3898,9 +3912,11 @@ class DesktopIntakeCard(QWidget):
         return button
 
     def _reset(self, mode: str, title: str) -> None:
+        self._copy_feedback_timer.stop()
         self._hide_timer.stop()
         self._cancel_preview()
         self.mode = mode
+        self._drag_origin = None
         self._candidate_groups = {}
         self._candidate_positions = {}
         self.kind_button.hide()
@@ -3926,6 +3942,11 @@ class DesktopIntakeCard(QWidget):
         self.title.setToolTip(title)
         self.title.setAccessibleName(title)
         self.preview.clear()
+        self.preview.unsetCursor()
+        self.preview.setToolTip("")
+        self.preview.setAccessibleName(ui_text("原文件样张", "Original file sample"))
+        self.export_button.hide()
+        self.store_button.setToolTip("")
         self.preview.setFixedHeight(84)
         self.status.setFixedHeight(32)
         self.preview.setVisible(mode in {"fonts", "images", "bundle"})
@@ -3985,7 +4006,9 @@ class DesktopIntakeCard(QWidget):
         self._candidate_groups = {}
         self._candidate_positions = {}
         self._cancel_preview()
+        self._copy_feedback_timer.stop()
         self.mode = ""
+        self._drag_origin = None
         self.hide()
         self._hide_timer.stop()
         self._outside_timer.stop()
@@ -4121,7 +4144,9 @@ class DesktopIntakeCard(QWidget):
                 self.ball._cancel_remote_download()
             elif self.ball._last_remote_urls and not self.ball._ingest_busy():
                 self.ball._start_remote_download_worker(self.ball._last_remote_urls)
-        elif self.mode in {"recent", "bundle"}:
+        elif self.mode == "bundle":
+            self._copy_bundle_original()
+        elif self.mode == "recent":
             self.ball._handle_quick_menu_action("assets")
 
     def show_recent(self) -> None:
@@ -4131,19 +4156,26 @@ class DesktopIntakeCard(QWidget):
             item.widget().deleteLater()
         try:
             service = self.ball._bundle_service()
-            bundles = service.list_bundles()
-            def modified(bundle):
-                path = service._asset_path(str(bundle["source_key"]))
-                try:
-                    return path.stat().st_mtime_ns if path is not None else 0
-                except OSError:
-                    return 0
-            bundles.sort(key=modified, reverse=True)
+            bundles = service.list_recent_bundles()
             for bundle in bundles[:3]:
                 metadata = bundle.get("font_metadata") or {}
                 name = str(metadata.get("family") or Path(str(bundle["source_key"])).name)
+                if metadata.get("family") and metadata.get("style"):
+                    name += " · " + str(metadata["style"])
                 label = self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 240)
                 button = self._button(label.replace("&", "&&"), lambda target=bundle: self.show_bundle(target))
+                if bundle.get("type") == "image" and bundle.get("status") != "missing":
+                    path = service._asset_path(str(bundle["source_key"]))
+                    if path is not None:
+                        reader = QImageReader(str(path))
+                        if reader.size().isValid():
+                            reader.setScaledSize(reader.size().scaled(QSize(56, 56), Qt.AspectRatioMode.KeepAspectRatio))
+                        thumbnail = reader.read()
+                        if not thumbnail.isNull():
+                            button.setIcon(QIcon(QPixmap.fromImage(thumbnail)))
+                            button.setIconSize(QSize(28, 28))
+                            label = self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 202)
+                            button.setText(label.replace("&", "&&"))
                 button.setObjectName("recentAsset")
                 button.setToolTip(name)
                 button.setAccessibleName(name)
@@ -4165,7 +4197,8 @@ class DesktopIntakeCard(QWidget):
         self.previous_button.setAccessibleName(ui_text("返回最近收纳", "Back to recent assets"))
         self.previous_button.setToolTip(self.previous_button.accessibleName())
         self.previous_button.setEnabled(True)
-        self.store_button.setText(ui_text("打开素材管理", "Open asset manager"))
+        self.store_button.setText(ui_text("复制原文件", "Copy original file"))
+        self.store_button.setToolTip(ui_text("粘贴到支持文件的应用或文件夹", "Paste into an app or folder that accepts files"))
         path = self.ball._bundle_service()._asset_path(str(bundle["source_key"]))
         metadata = bundle.get("font_metadata") or {}
         name = str(metadata.get("family") or Path(str(bundle["source_key"])).name)
@@ -4173,6 +4206,10 @@ class DesktopIntakeCard(QWidget):
         self.title.setToolTip(name)
         self.title.setAccessibleName(name)
         if bundle.get("type") == "font":
+            self.export_button.setText(ui_text("导出", "Export"))
+            self.export_button.setAccessibleName(ui_text("导出字体原文件", "Export original font"))
+            self.export_button.setToolTip(self.export_button.accessibleName())
+            self.export_button.show()
             self._font_details(metadata, str(bundle.get("origin_url") or ""), path.suffix if path is not None else "")
             self.status.setText(ui_text("正在检查样张…", "Checking sample…"))
             self.status.setToolTip(self.status.text())
@@ -4195,7 +4232,81 @@ class DesktopIntakeCard(QWidget):
         if bundle.get("status") == "missing":
             self.preview.setText(ui_text("素材副本缺失", "Asset copy missing"))
             self.status.setText(ui_text("素材副本缺失", "Asset copy missing"))
+        available = path is not None and path.is_file() and bundle.get("status") != "missing"
+        self.store_button.setEnabled(available)
+        self.export_button.setEnabled(available)
+        if available:
+            self.preview.setCursor(Qt.CursorShape.OpenHandCursor)
+            hint = ui_text("拖出原文件，或点击下方复制", "Drag out the original file, or copy it below")
+            self.preview.setToolTip(hint)
+            self.preview.setAccessibleName(hint)
         self._show()
+
+    def _stored_bundle_source(self) -> Path | None:
+        if self.mode != "bundle" or self.ball._closing:
+            return None
+        try:
+            service = self.ball._bundle_service()
+            current = service.get_bundle(str(self.bundle["id"]))
+            path = service._asset_path(str(current["source_key"])) if current else None
+            if current is None or current["status"] == "missing" or path is None or not path.is_file():
+                raise ValueError("asset_unavailable")
+            return path
+        except (ManifestReadinessError, OSError, ValueError):
+            self.status.setText(ui_text("原文件不可用，请返回最近收纳后重试", "Original file unavailable; return to recent assets and retry"))
+            self.status.setToolTip(self.status.text())
+            return None
+
+    def _copy_bundle_original(self) -> None:
+        path = self._stored_bundle_source()
+        if path is None:
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(path))])
+        QApplication.clipboard().setMimeData(mime)
+        self.store_button.setText(ui_text("已复制原文件", "Original file copied"))
+        self._copy_feedback_timer.start(1400)
+
+    def _drag_bundle_original(self) -> None:
+        path = self._stored_bundle_source()
+        if path is None:
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(path))])
+        drag = QDrag(self.preview)
+        drag.setMimeData(mime)
+        pixmap = self.preview.pixmap()
+        if pixmap and not pixmap.isNull():
+            drag.setPixmap(pixmap.scaled(160, 100, Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation))
+        if drag.exec(Qt.DropAction.CopyAction) == Qt.DropAction.CopyAction:
+            self.dismiss("drag")
+
+    def _export_bundle_font(self) -> None:
+        if self.mode != "bundle" or self.bundle.get("type") != "font":
+            return
+        source = self._stored_bundle_source()
+        if source is None:
+            return
+        self._exporting = True
+        try:
+            target, _filter = QFileDialog.getSaveFileName(
+                self, ui_text("导出字体原文件", "Export original font"), source.name,
+                f"{source.suffix.upper()[1:]} (*{source.suffix})",
+            )
+            if not target:
+                return
+            settings = self.ball.settings
+            export_font_original(source, Path(target), sha256=str(self.bundle["sha256"]), storage_dir=settings.STORAGE_DIR,
+                                 protected_paths=(settings.ASSETS_DIR, settings.INDEX_DIR, settings.THEMES_DIR, settings.MANIFEST_PATH))
+        except (OSError, ValueError):
+            self.status.setText(ui_text("导出失败，目标原文件已保留；请选择素材库外的位置", "Export failed; destination retained. Choose a location outside the library."))
+        else:
+            self.status.setText(ui_text("已导出字体原文件", "Original font exported"))
+        finally:
+            self._exporting = False
+            self._last_buttons, self._last_escape = self._desktop_buttons(), self._desktop_escape()
+            self.status.setToolTip(self.status.text())
 
     def _refresh_usage(self) -> None:
         self.usage_button_group.setExclusive(False)
@@ -4264,6 +4375,8 @@ class DesktopIntakeCard(QWidget):
         return bool(self._escape_state and self._escape_state(0, 53))
 
     def _poll_outside(self) -> None:
+        if self._exporting:
+            return
         # ponytail: poll native counters only while visible; no event tap or input-capturing overlay.
         buttons, escape = self._desktop_buttons(), self._desktop_escape()
         outside = not self.frameGeometry().contains(QCursor.pos()) and not self.ball.frameGeometry().contains(QCursor.pos())
@@ -4276,11 +4389,21 @@ class DesktopIntakeCard(QWidget):
             self.store_button.setEnabled(self.ball.worker is None and not self.ball._closing)
 
     def _application_state_changed(self, state) -> None:
-        if state == Qt.ApplicationState.ApplicationInactive and self.isVisible():
+        if not self._exporting and state == Qt.ApplicationState.ApplicationInactive and self.isVisible():
             self.dismiss("outside")
 
     def eventFilter(self, watched, event) -> bool:
-        if self.isVisible():
+        if self.isVisible() and not self._exporting:
+            if watched is self.preview and self.mode == "bundle":
+                if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                    self._drag_origin = event.position().toPoint()
+                elif event.type() == QEvent.Type.MouseMove and self._drag_origin is not None:
+                    if event.buttons() & Qt.MouseButton.LeftButton and (event.position().toPoint() - self._drag_origin).manhattanLength() >= QApplication.startDragDistance():
+                        self._drag_origin = None
+                        self._drag_bundle_original()
+                        return True
+                elif event.type() == QEvent.Type.MouseButtonRelease:
+                    self._drag_origin = None
             if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
                 self.dismiss("escape")
             elif event.type() == QEvent.Type.MouseButtonPress and isinstance(watched, QWidget):
