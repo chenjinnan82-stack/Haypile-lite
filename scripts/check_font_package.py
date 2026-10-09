@@ -14,7 +14,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "tests")]
-from app.services.asset_provenance import write_asset_provenance
+from app.services.asset_provenance import provenance_path_for
 from test_font_support import write_test_font
 
 
@@ -29,16 +29,19 @@ def main() -> int:
     samples = output / "storage/assets/generic/fonts"
     samples.mkdir(parents=True)
     hashes = {}
-    for name, variable in (("static.ttf", False), ("outline.otf", False), ("variable.ttf", True), ("truetype.otf", False)):
+    for name, variable in (("static.ttf", False), ("outline.otf", False), ("variable.ttf", True), ("truetype.otf", False), ("symbol.ttf", False)):
         path = samples / name
         if name == "truetype.otf":
             original = output / "truetype.ttf"
             write_test_font(original, width=250)
             original.replace(path)
         else:
-            write_test_font(path, variable=variable)
+            write_test_font(path, variable=variable, symbol=name == "symbol.ttf")
         hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-        write_asset_provenance(path, {"font_usage": "body", "font_annotation": {"license_note": "Original MIT test outlines"}})
+        # Leave the synthetic URL raw to exercise sanitization in the compiled reader.
+        provenance_path_for(path).write_text(json.dumps({"font_usage": "body", "font_annotation": {
+            "license_note": "Original MIT test outlines", "source_note": "https://reader(test):private@example.com/font.ttf?token=private",
+        }}), encoding="utf-8")
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -90,10 +93,11 @@ def main() -> int:
             assert handoff["manifest_generation"] == ready["manifest_generation"]
             assert {asset["sha256"] for asset in handoff["assets"]} == set(hashes.values())
             assert all(asset["font_annotation"]["license_note"] == "Original MIT test outlines" for asset in handoff["assets"])
-            report = {"result": "passed", "formats": ["TTF", "CFF OTF", "variable TTF default", "TrueType OTF"], "hashes": hashes,
+            assert all(asset["font_annotation"]["source_note"] == "https://example.com" for asset in handoff["assets"])
+            report = {"result": "passed", "formats": ["TTF", "CFF OTF", "variable TTF default", "TrueType OTF", "symbol TTF"], "hashes": hashes,
                       "manifest_generation": ready["manifest_generation"], "mcp_handoff": handoff}
             (output / "font-package-results.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-            print("PASS: packaged TTF / CFF OTF / TrueType OTF / variable default, static hashes, HTTP and MCP handoff")
+            print("PASS: packaged TTF / CFF OTF / TrueType OTF / variable default / symbol TTF, static hashes, HTTP and MCP handoff")
         finally:
             backend.terminate()
             try:

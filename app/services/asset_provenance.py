@@ -57,14 +57,26 @@ def sanitize_provenance(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _public_font_note(value: Any, limit: int) -> str:
-    text = _bounded_public_string(value, limit)
-    url_pattern = r"https?://[^\s<>\"'()，。]+"
-    text = re.sub(url_pattern, lambda match: public_origin_url(match.group()), text, flags=re.IGNORECASE)
+    text = str(value or "").strip().replace("\x00", "")
+    url_pattern = r"https?://[^\s<>，。]+"
+
+    def public_url(match: re.Match[str]) -> str:
+        url = match.group().rstrip(".,;:!?)}\"'")
+        closing_brackets = min(max(0, url.count("]") - url.count("[")), len(url) - len(url.rstrip("]")))
+        if closing_brackets:
+            url = url[:-closing_brackets]
+        return public_origin_url(url) + match.group()[len(url):]
+
+    text = re.sub(url_pattern, public_url, text, flags=re.IGNORECASE)
     without_urls = re.sub(url_pattern, "", text, flags=re.IGNORECASE)
-    if re.search(r"file://|(?<![\w/])(?:/\S|[a-z]:[\\/]|\\\\)",
+    if re.search(r"file://|(?<![a-z0-9_/])(?:/\S|[a-z]:[\\/]|\\\\)",
                  without_urls, flags=re.IGNORECASE):
         return ""
-    return text
+    for match in re.finditer(url_pattern, text, flags=re.IGNORECASE):
+        if match.start() < limit < match.end():
+            text = text[:match.start()]
+            break
+    return _bounded_public_string(text, limit)
 
 
 def _bounded_public_string(value: Any, limit: int) -> str:

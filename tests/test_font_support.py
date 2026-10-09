@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import json
 import os
@@ -19,10 +20,12 @@ from fastapi.testclient import TestClient
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
-from fontTools.ttLib import TTCollection, TTFont
+from fontTools.ttLib import TTCollection, TTFont, newTable
+from fontTools.ttLib.tables.S_V_G_ import SVGDocument
 
 from app.api.v1.bundles import get_bundle_service, router
 from app.core.config import Settings
+from app.core.file_lock import InterProcessFileLock
 from app.services.asset_provenance import provenance_path_for, read_asset_provenance, sanitize_provenance
 from app.services.bundle_service import BundleService
 from app.services.font_service import MAX_FONT_BYTES, export_font_original, render_font_preview
@@ -34,7 +37,8 @@ from app.services.storage_runtime import StorageRuntimeDB
 import mcp_server
 
 
-def write_test_font(path: Path, *, width: int = 450, variable: bool = False, license: bool = True) -> None:
+def write_test_font(path: Path, *, width: int = 450, variable: bool = False, license: bool = True,
+                    symbol: bool = False) -> None:
     """Original deterministic outline fixtures; no third-party font is redistributed."""
     builder = FontBuilder(1000, isTTF=path.suffix == ".ttf")
     characters = " " + "".join(chr(number) for number in range(33, 127))
@@ -69,6 +73,11 @@ def write_test_font(path: Path, *, width: int = 450, variable: bool = False, lic
     if variable:
         builder.setupFvar([("wght", 100, 400, 900, "Weight")], [])
         builder.setupGvar({name: [] for name in names})
+    if symbol:
+        cmap = builder.font["cmap"].getcmap(3, 1)
+        cmap.platEncID = 0
+        cmap.cmap = {code + 0xF000: glyph for code, glyph in cmap.cmap.items()}
+        builder.font["cmap"].tables = [cmap]
     builder.font["head"].created = builder.font["head"].modified = 3800000000
     builder.save(path)
 
@@ -117,6 +126,44 @@ class FontSupportTests(unittest.TestCase):
                 image.close()
         self.assertTrue(validate_media(variable).font_metadata["is_variable"])
         self.assertFalse(validate_media(unknown).font_metadata["license_description"])
+
+    def test_symbol_charmap_intake_preview_and_missing_glyphs(self) -> None:
+        symbol = self.root / "symbol.ttf"
+        write_test_font(symbol, symbol=True)
+        self.assertEqual(validate_media(symbol).kind, "font")
+        bundle, = self.store(symbol)
+        self.assertEqual(bundle["status"], "pending")
+        explicit, _ = render_font_preview(symbol, "\uf042\uf043", 32)
+        preview, missing = render_font_preview(symbol, "BC", 32)
+        self.assertEqual(missing, "")
+        self.assertEqual(preview.tobytes(), explicit.tobytes())
+        explicit.close()
+        preview.close()
+        preview, missing = render_font_preview(symbol, "B\uf042冬", 32)
+        self.assertEqual(missing, "冬")
+        preview.close()
+
+    def test_embedded_svg_is_rejected_before_unbounded_decompression(self) -> None:
+        svg_font = self.root / "svg.ttf"
+        with TTFont(self.ttf) as font:
+            font["SVG "] = newTable("SVG ")
+            font["SVG "].docList = [SVGDocument('<svg xmlns="http://www.w3.org/2000/svg">' +
+                " " * 65536 + "</svg>", 2, 2, compressed=True)]
+            font.save(svg_font)
+        reads = []
+        original_read = gzip.GzipFile.read
+        def track_read(stream, size=-1):
+            reads.append(size)
+            return original_read(stream, size)
+        rejected = False
+        with patch.object(gzip.GzipFile, "read", track_read):
+            try:
+                validate_media(svg_font)
+            except MediaValidationError:
+                rejected = True
+        self.assertEqual(reads, [])
+        self.assertTrue(rejected)
+        self.assertLess(svg_font.stat().st_size, 10000)
 
     def test_invalid_truncated_disguised_and_size_limits(self) -> None:
         invalid = self.root / "invalid.ttf"
@@ -197,6 +244,20 @@ class FontSupportTests(unittest.TestCase):
         path.unlink()
         self.assertEqual(self.bundles.get_bundle(bundle["id"])["status"], "missing")
         self.assertIsNone(self.bundles.update_bundle_font(bundle["id"], font_usage="heading"))
+
+    def test_font_update_busy_keeps_notes_and_returns_promptly(self) -> None:
+        bundle, = self.store()
+        original = self.assets / bundle["source_key"]
+        self.bundles.update_bundle_font(bundle["id"], annotation={"license_note": "Previous note"})
+        previous = provenance_path_for(original).read_bytes()
+        with InterProcessFileLock(self.index / "ingest.transaction.lock"):
+            started = time.monotonic()
+            with self.assertRaises(TimeoutError):
+                self.bundles.update_bundle_font(bundle["id"], font_usage="body", annotation={"license_note": "New note"})
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual(provenance_path_for(original).read_bytes(), previous)
+        self.assertEqual(self.bundles.get_bundle(bundle["id"])["status"], "pending")
 
     def test_legacy_registration_and_new_projection(self) -> None:
         path = self.assets / "generic/fonts/legacy.ttf"
@@ -419,7 +480,8 @@ class FontSupportTests(unittest.TestCase):
         self.assertNotIn("command", cleaned["font_annotation"])
         for note in ("来源：/Users/private/font.ttf", r"Downloaded from C:\Users\private\font.ttf",
                      "file:///Users/private/font.ttf", r"Source: \\server\private\font.ttf",
-                     "Source `/Users/private/font.ttf`", "Source //server/private/font.ttf"):
+                     "Source `/Users/private/font.ttf`", "Source //server/private/font.ttf",
+                     "下载于/Users/private/font.ttf", r"下载于C:\Users\private\font.ttf"):
             with self.subTest(note=note):
                 cleaned = sanitize_provenance({"font_annotation": {"source_note": note, "license_note": note}})
                 self.assertEqual(cleaned["font_annotation"], {})
@@ -431,6 +493,25 @@ class FontSupportTests(unittest.TestCase):
             "license_note": "See (https://example.com). SIL/OFL 1.1",
         })
         self.assertEqual(sanitize_provenance(cleaned), cleaned)
+        for note, expected in (
+            ("See https://reader(test):PRIVATE_TOKEN@example.com/font.ttf", "See https://example.com"),
+            ("See https://example.com/font.ttf?token='PRIVATE_TOKEN'", "See https://example.com'"),
+            ("x" * 1990 + " https://" + "PRIVATE_TOKEN" * 20 + "@example.com/font.ttf",
+             "x" * 1990 + " https://example.com"),
+            ("See https://[2606:4700:4700::1111]", "See https://[2606:4700:4700::1111]"),
+            ("See [https://[2606:4700:4700::1111]]", "See [https://[2606:4700:4700::1111]]"),
+            ("See [https://example.com/font.ttf]", "See [https://example.com]"),
+            ("See https://example.com/font.ttf?token=PRIVATE_TOKEN[1]", "See https://example.com"),
+        ):
+            with self.subTest(url_boundary=note[:20]):
+                cleaned = sanitize_provenance({"font_annotation": {"license_note": note}})
+                self.assertEqual(cleaned["font_annotation"]["license_note"], expected)
+                self.assertEqual(sanitize_provenance(cleaned), cleaned)
+        for field, prefix in (("source_note", 500), ("license_note", 2030)):
+            note = "x" * prefix + " https://[2606:4700:4700::1111]/font.ttf?token=PRIVATE_TOKEN"
+            cleaned = sanitize_provenance({"font_annotation": {field: note}})
+            self.assertEqual(cleaned["font_annotation"][field], "x" * prefix)
+            self.assertEqual(sanitize_provenance(cleaned), cleaned)
 
     def test_gui_fonts_filter_all_201_items_async_preview_notes_export_cancel(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

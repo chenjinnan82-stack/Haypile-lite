@@ -15,6 +15,16 @@ FONT_USAGES = frozenset({"unknown", "heading", "body", "decorative"})
 DEFAULT_FONT_TEXT = "冬藏 Haypile 0123456789"
 
 
+def _font_cmap(font: TTFont) -> tuple[dict[int, str], str]:
+    cmap = font.getBestCmap()
+    if cmap is not None:
+        return cmap, ""
+    symbol = font["cmap"].getcmap(3, 0)
+    if symbol is None:
+        return {}, ""
+    return symbol.cmap, "symb"
+
+
 def _check_bitmap_bounds(decoder: ImageFont.FreeTypeFont, text: str) -> None:
     left, top, right, bottom = decoder.getbbox(text)
     if right - left > 2048 or bottom - top > 2048:
@@ -48,13 +58,19 @@ def read_font_metadata(path: Path) -> dict[str, Any]:
         ranges.sort()
         if any(left[1] > right[0] for left, right in zip(ranges, ranges[1:])):
             raise ValueError("invalid_font_directory")
-    with TTFont(path, lazy=False) as font:
+        # ponytail: SVG glyphs need bounded SVG decoding before we can support them.
+        if b"SVG " in tags:
+            raise ValueError("font_svg_not_supported")
+    with TTFont(path, lazy=True) as font:
         required = {"head", "hhea", "maxp", "hmtx", "name", "cmap"}
         outlines = ("CFF ", "CFF2") if signature == b"OTTO" else ("glyf",)
         if not required.issubset(font.keys()) or not any(tag in font for tag in outlines):
             raise ValueError("invalid_font_tables")
-        font.ensureDecompiled()
-        if not font.getBestCmap():
+        for tag in required | {"OS/2", "fvar"}:
+            if tag in font:
+                font[tag]
+        cmap, encoding = _font_cmap(font)
+        if not cmap:
             raise ValueError("invalid_font_cmap")
         names = font["name"]
 
@@ -73,9 +89,10 @@ def read_font_metadata(path: Path) -> dict[str, Any]:
             "license_description": name(13),
             "license_url": name(14),
         }
-    decoder = ImageFont.truetype(str(path), 32)
-    _check_bitmap_bounds(decoder, "Haypile 0123")
-    decoder.getmask("Haypile 0123")
+    decoder = ImageFont.truetype(str(path), 32, encoding=encoding)
+    sample = "Haypile 0123" if not encoding else "".join(chr(code) for code in sorted(cmap)[:12])
+    _check_bitmap_bounds(decoder, sample)
+    decoder.getmask(sample)
     return metadata
 
 
@@ -83,12 +100,16 @@ def render_font_preview(path: Path, text: str, size: int) -> tuple[Image.Image, 
     """Pillow uses this exact file; missing glyphs never invoke system fallback."""
     text = str(text)[:120].replace("\n", " ").replace("\r", " ")
     size = max(12, min(int(size), 72))
+    preview_text = text
     with TTFont(path, lazy=True) as font:
-        cmap = font.getBestCmap() or {}
-        missing = "".join(dict.fromkeys(char for char in text if ord(char) not in cmap))
-    decoder = ImageFont.truetype(str(path), size)
+        cmap, encoding = _font_cmap(font)
+        if encoding == "symb":
+            preview_text = text.translate({code: code + 0xF000 for code in range(256)
+                                           if code not in cmap and code + 0xF000 in cmap})
+        missing = "".join(dict.fromkeys(char for char, rendered in zip(text, preview_text) if ord(rendered) not in cmap))
+    decoder = ImageFont.truetype(str(path), size, encoding=encoding)
     lines = [""]
-    for char in text:
+    for char in preview_text:
         if lines[-1] and decoder.getlength(lines[-1] + char) > 680:
             lines.append("")
         lines[-1] += char

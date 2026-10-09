@@ -270,7 +270,10 @@ class BundleService:
         if annotation is not None and (set(annotation) - {"source_note", "license_note"} or
                                       any(not isinstance(value, str) for value in annotation.values())):
             raise ValueError("invalid font annotation")
-        with InterProcessFileLock(self.runtime_db_path.parent / "ingest.transaction.lock"):
+        lock = InterProcessFileLock(self.runtime_db_path.parent / "ingest.transaction.lock")
+        if not lock.acquire(timeout=0):
+            raise TimeoutError("font_update_busy")
+        try:
             bundle = self.get_bundle(bundle_id)
             if bundle is None or bundle["status"] == "missing" or bundle["type"] != "font":
                 return None
@@ -284,6 +287,8 @@ class BundleService:
                 provenance["font_annotation"] = annotation
             write_asset_provenance(asset_path, provenance)
             return self.get_bundle(bundle_id)
+        finally:
+            lock.release()
 
     def _theme_assets_by_url(self) -> dict[str, dict[str, Any]]:
         assets: dict[str, dict[str, Any]] = {}
