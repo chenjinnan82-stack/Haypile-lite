@@ -71,7 +71,7 @@ def download_remote_media(
         media_spec = REMOTE_CONTENT_TYPE_EXTENSIONS.get(content_type)
         if content_type == "application/octet-stream" and url_suffix in SUPPORTED_FONT_EXTENSIONS:
             media_spec = ("font", url_suffix)
-        elif content_type == "application/font-sfnt" and url_suffix in SUPPORTED_FONT_EXTENSIONS:
+        elif content_type in {"font/sfnt", "application/font-sfnt"} and url_suffix in SUPPORTED_FONT_EXTENSIONS:
             media_spec = ("font", url_suffix)
         if media_spec is None:
             return None, "video_not_supported" if content_type.startswith("video/") else "unsupported"
@@ -90,6 +90,7 @@ def download_remote_media(
         _kind, default_extension = media_spec
         destination = _destination_for(incoming_dir, url, content_type, default_extension, index)
         total = 0
+        rejection_reason = ""
         fd = os.open(str(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             try:
@@ -100,21 +101,25 @@ def download_remote_media(
             with target_file as target:
                 for chunk in response.iter_bytes():
                     if stop_requested():
-                        destination.unlink(missing_ok=True)
-                        return None, "interrupted"
+                        rejection_reason = "interrupted"
+                        break
                     if not chunk:
                         continue
                     total += len(chunk)
                     if total > byte_limit:
-                        destination.unlink(missing_ok=True)
-                        return None, size_reason
+                        rejection_reason = size_reason
+                        break
                     target.write(chunk)
-                target.flush()
-                os.fsync(target.fileno())
+                if not rejection_reason:
+                    target.flush()
+                    os.fsync(target.fileno())
         except Exception:
             destination.unlink(missing_ok=True)
             raise
 
+        if rejection_reason:
+            destination.unlink(missing_ok=True)
+            return None, rejection_reason
         if total <= 0:
             destination.unlink(missing_ok=True)
             return None, "empty"
@@ -359,7 +364,7 @@ def open_safe_remote(
             target.request_target,
             headers={
                 "Host": target.host_header,
-                "Accept": "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,font/ttf,font/otf,application/octet-stream;q=0.8,audio/*;q=0.9",
+                "Accept": "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,font/ttf,font/otf,font/sfnt,application/font-sfnt;q=0.9,application/octet-stream;q=0.8,audio/*;q=0.9",
                 "Connection": "close",
                 "User-Agent": "Haypile/0.3",
             },

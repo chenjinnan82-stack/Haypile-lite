@@ -315,11 +315,27 @@ class FontSupportTests(unittest.TestCase):
             self.assertEqual(read_asset_provenance(path)["origin_url"], "https://cdn.example.com")
             path.unlink()
             provenance_path_for(path).unlink()
+        otf = self.root / "remote.otf"
+        write_test_font(otf)
+        for mime in ("font/sfnt", "application/font-sfnt"):
+            for original in (self.ttf, otf):
+                for suffix in ("", original.suffix):
+                    with self.subTest(mime=mime, original=original.suffix, url_suffix=suffix):
+                        path, error = download_remote_media("https://cdn.example.com/download" + suffix,
+                            incoming, 1, max_bytes=MAX_FONT_BYTES, timeout=1,
+                            opener=lambda *_a, **_k: Response(mime, original.read_bytes()))
+                        self.assertEqual(error, "")
+                        self.assertEqual(path.suffix, suffix or ".otf")
+                        self.assertEqual(path.read_bytes(), original.read_bytes())
+                        self.assertEqual(read_asset_provenance(path)["content_type"], "font/" + path.suffix[1:])
+                        path.unlink()
+                        provenance_path_for(path).unlink()
         for mime, data, url, declared, expected in (
             ("text/css", self.ttf.read_bytes(), "test.ttf", None, "unsupported"),
             ("text/html", b"<html>", "test.ttf", None, "unsupported"),
             ("application/octet-stream", self.ttf.read_bytes(), "test.zip", None, "unsupported"),
             ("font/ttf", b"not-a-font", "test.ttf", None, "invalid_font"),
+            ("font/sfnt", b"not-a-font", "download", None, "invalid_font"),
             ("font/ttf", self.ttf.read_bytes(), "test.ttf", MAX_FONT_BYTES + 1, "font_too_large"),
         ):
             path, error = download_remote_media("https://cdn.example.com/" + url, incoming, 1,
@@ -332,6 +348,39 @@ class FontSupportTests(unittest.TestCase):
             opener=lambda *_a, **_k: Response("font/ttf", self.ttf.read_bytes()))
         self.assertEqual(error, "interrupted")
         self.assertFalse(list(incoming.iterdir()))
+
+    def test_remote_cleanup_closes_download_before_removal(self) -> None:
+        from app.services.safe_remote_fetcher import download_remote_media
+        class Response:
+            headers = {"content-type": "font/ttf", "content-length": "0"}
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def iter_bytes(self): yield self.ttf.read_bytes()
+        response = Response()
+        response.ttf = self.ttf
+        incoming = self.root / "incoming"
+        incoming.mkdir()
+        real_fdopen, real_unlink = os.fdopen, Path.unlink
+        opened = []
+        def track_fdopen(*args, **kwargs):
+            stream = real_fdopen(*args, **kwargs)
+            opened.append(stream)
+            return stream
+        def locked_unlink(path, *, missing_ok=False):
+            if any(not stream.closed for stream in opened):
+                raise PermissionError("Windows cannot remove an open download")
+            return real_unlink(path, missing_ok=missing_ok)
+        for cancelled, expected in ((True, "interrupted"), (False, "font_too_large")):
+            with self.subTest(cancelled=cancelled):
+                opened.clear()
+                with patch("app.services.safe_remote_fetcher.os.fdopen", side_effect=track_fdopen), \
+                     patch.object(Path, "unlink", locked_unlink):
+                    path, error = download_remote_media("https://cdn.example.com/test.ttf", incoming, 1,
+                        max_bytes=8, timeout=1, should_stop=lambda: cancelled,
+                        opener=lambda *_a, **_k: response)
+                self.assertIsNone(path)
+                self.assertEqual(error, expected)
+                self.assertFalse(list(incoming.iterdir()))
 
     def test_http_mcp_static_and_shared_handoff(self) -> None:
         bundle, = self.store()
