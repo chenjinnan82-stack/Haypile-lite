@@ -91,7 +91,7 @@ class WebFontIntakeTests(unittest.TestCase):
         self.assertEqual((len(candidates), limited, failed), (1, False, 1))
         self.assertEqual(candidates[0].path.read_bytes(), self.woff.read_bytes())
         self.assertEqual(candidates[0].missing, "冬藏")
-        self.assertEqual(candidates[0].width, 254)
+        self.assertEqual(candidates[0].width, 508)  # 2× pixels for a 254-point sample.
         self.assertEqual(read_asset_provenance(candidates[0].path)["origin_url"], "https://public.example")
         self.assertEqual(self.calls.count("https://public.example/assets/main.css"), 1)
         self.assertFalse(any("fake" in url or "alternate" in url for url in self.calls))
@@ -352,7 +352,7 @@ class WebFontIntakeTests(unittest.TestCase):
             self.assertTrue((settings.ASSETS_DIR / bundle["source_key"]).is_file())
             app_gui.set_ui_language("en")
             card.show_bundle(card.bundle)
-            self.assertEqual(card.close_button.text(), "Close")
+            self.assertEqual(card.close_button.accessibleName(), "Close")
             self.assertEqual(card.usage_buttons["body"].text(), "Body")
             card.dismiss("close")
         finally:

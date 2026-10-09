@@ -4,6 +4,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import hashlib
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 import socket
@@ -13,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from PIL import Image
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 
@@ -153,7 +154,7 @@ class WebImageIntakeTests(unittest.TestCase):
         self.assertTrue(result[2])
         self.assertEqual((len(worker.font_candidates), len(worker.image_candidates)), (1, 3))
         self.assertEqual(self.calls.count(self.page), 2)  # MIME probe + one shared HTML snapshot.
-        self.assertTrue(all(c.pixels and c.width <= 254 and c.height <= 80 for c in worker.image_candidates))
+        self.assertTrue(all(c.pixels and c.width <= 508 and c.height <= 200 for c in worker.image_candidates))
         settings = Settings(_env_file=None, STORAGE_DIR=self.root / "isolated", VISION_CLASSIFIER_ENABLED=False)
         ball = app_gui.HaypileFloatingBall(settings=settings)
         try:
@@ -169,6 +170,16 @@ class WebImageIntakeTests(unittest.TestCase):
             self.assertEqual(card.height(), 240)
             self.assertFalse(card.preview.pixmap().isNull())
             self.assertEqual(card.store_button.text(), "收纳这张")
+            self.assertEqual(card.title.accessibleName(), "网页封面")
+            self.assertEqual(card.next_button.accessibleName(), "下一张")
+            self.assertEqual(card.close_button.accessibleName(), "关闭")
+            with patch.object(card.preview, "setPixmap", wraps=card.preview.setPixmap) as set_pixmap:
+                card._show_candidate()
+            # Inspect the input to Qt; QLabel's getter can report offscreen density.
+            pixmap = set_pixmap.call_args.args[0]
+            self.assertEqual(pixmap.devicePixelRatio(), 2)
+            self.assertLessEqual(pixmap.deviceIndependentSize().width(), 254)
+            self.assertLessEqual(pixmap.deviceIndependentSize().height(), 100)
             card.info_button.setChecked(True)
             self.assertEqual(card.height(), 320)
             self.assertFalse(card.usage_row.isVisible())
@@ -226,6 +237,41 @@ class WebImageIntakeTests(unittest.TestCase):
             self.assertFalse(any(path.is_file() for path in ball.settings.ASSETS_DIR.rglob("*")))
         finally:
             outside.close()
+            ball.close()
+            self.app.processEvents()
+
+    def test_compact_card_keeps_long_names_accessible_and_icon_actions_keyboard_operable(self):
+        self.page_html('<base href="/assets/"><meta property="og:image" content="cover.png"><img src="photo.png">')
+        worker, _ = self.worker()
+        name = '<一张很长的网页图片说明> & Mountains and sea ' * 4
+        images = [replace(worker.image_candidates[0], label=name), worker.image_candidates[1]]
+        ball = app_gui.HaypileFloatingBall(settings=Settings(_env_file=None, STORAGE_DIR=self.root / "isolated", VISION_CLASSIFIER_ENABLED=False))
+        try:
+            card = ball.intake_card
+            for language, close, next_image in [("zh", "关闭", "下一张"), ("en", "Close", "Next image")]:
+                with self.subTest(language=language):
+                    app_gui.set_ui_language(language)
+                    card.show_candidates([], images)
+                    self.app.processEvents()
+                    self.assertEqual(card.title.accessibleName(), name)
+                    self.assertEqual(card.close_button.accessibleName(), close)
+                    self.assertEqual(card.next_button.accessibleName(), next_image)
+                    QTest.keyClick(card.info_button, Qt.Key.Key_Space)
+                    self.app.processEvents()
+                    self.assertTrue(card.information.isVisible())
+                    self.assertIn(name, card.details.toPlainText())
+                    self.assertEqual(card.details.horizontalScrollBar().maximum(), 0)
+                    for widget in (card.title, card.close_button, card.preview, card.status, card.previous_button,
+                                   card.next_button, card.info_button, card.details, card.store_button):
+                        rect = widget.rect().translated(widget.mapTo(card, QPoint()))
+                        self.assertTrue(card.rect().contains(rect), widget.objectName())
+                    QTest.keyClick(card.next_button, Qt.Key.Key_Return)
+                    self.assertEqual(card.index, 1)
+                    QTest.keyClick(card.close_button, Qt.Key.Key_Space)
+                    self.assertFalse(card.isVisible())
+            self.assertTrue(all(c.path.is_file() for c in images))  # Rendering never owns these files.
+        finally:
+            app_gui.set_ui_language("auto")
             ball.close()
             self.app.processEvents()
 

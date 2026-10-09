@@ -301,7 +301,8 @@ def download_web_fonts(
                         successful_urls.add(url)
                         break
                     metadata = read_font_metadata(path)
-                    image, missing = render_font_preview(path, WEB_FONT_PREVIEW_TEXT, 32, width=254)
+                    # 2× pixels; the desktop card sets the display density.
+                    image, missing = render_font_preview(path, WEB_FONT_PREVIEW_TEXT, 64, width=508)
                     try:
                         pixels, width, height = image.tobytes(), image.width, image.height
                     finally:

@@ -562,11 +562,11 @@ class RemoteDownloadWorker(QThread):
         size = reader.size()
         if not size.isValid():
             size = QSize(candidate.metadata["width"], candidate.metadata["height"])
-        reader.setScaledSize(size.scaled(QSize(254, 80), Qt.AspectRatioMode.KeepAspectRatio))
+        reader.setScaledSize(size.scaled(QSize(508, 200), Qt.AspectRatioMode.KeepAspectRatio))
         image = reader.read()
         if image.isNull():
             raise ValueError("image_preview_failed")
-        image = image.scaled(254, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        image = image.scaled(508, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         image = image.convertToFormat(QImage.Format.Format_RGBA8888)
         return replace(candidate, pixels=bytes(image.constBits()), width=image.width(), height=image.height())
 
@@ -3759,31 +3759,57 @@ class DesktopIntakeCard(QWidget):
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowTitle(ui_text("Haypile 收纳", "Haypile intake"))
         self.setObjectName("intakeCard")
-        self.setStyleSheet("QWidget#intakeCard { background: #FFF9EA; border: 1px solid #6F7F5A; }"
-                           "QLabel { color: #443F33; background: transparent; border: none; font-size: 13px; }"
-                           "QTextEdit { color: #443F33; background: #F6F1E4; border: none; font-size: 12px; }")
+        self.setStyleSheet(
+            "QWidget#intakeCard { background: #FFF9EA; border: 1px solid #C4CCB8; }"
+            "QLabel { color: #443F33; background: transparent; border: none; font-size: 12px; }"
+            "QPushButton { color: #4E5F3D; background: transparent; border: 1px solid transparent; "
+            "border-radius: 5px; padding: 0 4px; font-size: 12px; }"
+            "QPushButton:hover, QPushButton:checked { background: #E9ECDD; }"
+            "QPushButton:pressed { background: #DDE3D1; }"
+            "QPushButton:focus { border: 2px solid #A67624; }"
+            "QPushButton:disabled { color: #A9A08A; background: transparent; }"
+            "QPushButton#cardGlyph { font-size: 20px; padding: 0; }"
+            "QPushButton#cardPrimary { color: #FFF9EA; background: #4E5F3D; font-weight: 600; }"
+            "QPushButton#cardPrimary:hover { background: #405032; }"
+            "QPushButton#cardPrimary:pressed { background: #334128; }"
+            "QPushButton#cardPrimary:disabled { color: #6B6656; background: #E9E4D4; }"
+            "QPushButton#recentAsset { background: #F6F1E4; text-align: left; padding: 0 8px; }"
+            "QPushButton#recentAsset:hover { background: #E9ECDD; }"
+            "QTextEdit { color: #443F33; background: #F6F1E4; border: 1px solid transparent; "
+            "border-radius: 5px; font-size: 12px; }"
+            "QTextEdit:focus { border: 1px solid #A67624; }"
+            "QScrollBar:vertical { width: 5px; background: transparent; margin: 2px 0; }"
+            "QScrollBar::handle:vertical { background: #A9B49A; border-radius: 2px; min-height: 18px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
+        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(5)
         header = QHBoxLayout()
+        header.setSpacing(6)
         self.title = QLabel()
         self.title.setTextFormat(Qt.TextFormat.PlainText)
         self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.title.setFixedHeight(24)
         self.title.setStyleSheet("font-size: 14px; font-weight: bold; color: #4E5F3D;")
         header.addWidget(self.title, 1)
         self.kind_button = self._button("", self._switch_candidate_kind)
-        self.kind_button.setFixedWidth(64)
+        self.kind_button.setFixedSize(64, 24)
         header.addWidget(self.kind_button)
-        self.close_button = self._button(ui_text("关闭", "Close"), lambda: self.dismiss("close"))
-        self.close_button.setFixedWidth(48)
+        self.close_button = self._button("×", lambda: self.dismiss("close"))
+        self.close_button.setObjectName("cardGlyph")
+        self.close_button.setFixedSize(24, 24)
         header.addWidget(self.close_button)
         layout.addLayout(header)
         self.preview = QLabel()
         self.preview.setTextFormat(Qt.TextFormat.PlainText)
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setFixedHeight(64)
+        self.preview.setFixedHeight(84)
+        self.preview.setStyleSheet("background: #F6F1E4; border-radius: 5px;")
         self.preview.setAccessibleName(ui_text("原文件样张", "Original file sample"))
         layout.addWidget(self.preview)
         self.recent_rows = QWidget()
@@ -3797,16 +3823,24 @@ class DesktopIntakeCard(QWidget):
         self.status.setFixedHeight(32)
         layout.addWidget(self.status)
         navigation = QHBoxLayout()
-        self.previous_button = self._button(ui_text("上一款", "Previous"), lambda: self._navigate(-1))
-        self.next_button = self._button(ui_text("下一款", "Next"), lambda: self._navigate(1))
+        navigation.setSpacing(4)
+        self.previous_button = self._button("‹", lambda: self._navigate(-1))
+        self.next_button = self._button("›", lambda: self._navigate(1))
+        for button in (self.previous_button, self.next_button):
+            button.setObjectName("cardGlyph")
+            button.setFixedWidth(28)
         self.position = QLabel()
         self.position.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.position.setFixedWidth(44)
+        self.position.setStyleSheet("color: #6B6656;")
         self.info_button = self._button(ui_text("信息", "Info"))
+        self.info_button.setFixedWidth(44)
         self.info_button.setCheckable(True)
         self.info_button.toggled.connect(self._toggle_info)
         navigation.addWidget(self.previous_button)
-        navigation.addWidget(self.position, 1)
+        navigation.addWidget(self.position)
         navigation.addWidget(self.next_button)
+        navigation.addStretch()
         navigation.addWidget(self.info_button)
         layout.addLayout(navigation)
         self.information = QWidget()
@@ -3815,16 +3849,20 @@ class DesktopIntakeCard(QWidget):
         info_layout.setSpacing(4)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
-        self.details.setFixedHeight(52)
+        self.details.setFixedHeight(75)
+        self.details.document().setDocumentMargin(2)
+        self.details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.details.setAccessibleName(ui_text("来源、缺字与许可", "Source, missing glyphs and license"))
         info_layout.addWidget(self.details)
         self.usage_row = QWidget()
         usage_layout = QHBoxLayout(self.usage_row)
         usage_layout.setContentsMargins(0, 0, 0, 0)
+        usage_layout.setSpacing(4)
         self.usage_buttons = {}
         self.usage_button_group = QButtonGroup(self)
         for usage, zh, en in [("heading", "标题", "Heading"), ("body", "正文", "Body"), ("decorative", "装饰", "Decorative")]:
             button = self._button(ui_text(zh, en))
+            button.setFixedHeight(24)
             button.setCheckable(True)
             self.usage_button_group.addButton(button)
             button.toggled.connect(lambda checked, target=usage: self._set_usage(target) if checked else None)
@@ -3833,9 +3871,10 @@ class DesktopIntakeCard(QWidget):
             usage_layout.addWidget(button)
         info_layout.addWidget(self.usage_row)
         layout.addWidget(self.information)
+        layout.addStretch()
         self.store_button = self._button(ui_text("收纳这款", "Store this font"), self._primary_action)
+        self.store_button.setObjectName("cardPrimary")
         self.store_button.setFixedHeight(34)
-        self.store_button.setStyleSheet(_ACTION_BUTTON_STYLE.replace("background: #F6F1E4", "background: #E9E4D4"))
         layout.addWidget(self.store_button)
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
@@ -3851,8 +3890,7 @@ class DesktopIntakeCard(QWidget):
 
     def _button(self, text: str, callback=None) -> QPushButton:
         button = _MaterialItemButton(text)
-        button.setMinimumHeight(28)
-        button.setStyleSheet(_CHOICE_BUTTON_STYLE)
+        button.setFixedHeight(26)
         if callback is not None:
             button.clicked.connect(lambda _checked=False: callback())
         return button
@@ -3866,8 +3904,15 @@ class DesktopIntakeCard(QWidget):
         self.kind_button.hide()
         self.kind_button.setToolTip("")
         self.setWindowTitle(ui_text("Haypile 收纳", "Haypile intake"))
-        self.close_button.setText(ui_text("关闭", "Close"))
-        self.next_button.setText(ui_text("下一款", "Next"))
+        self.close_button.setAccessibleName(ui_text("关闭", "Close"))
+        self.close_button.setToolTip(ui_text("关闭 · Esc", "Close · Esc"))
+        self.previous_button.setText("‹")
+        self.previous_button.setStyleSheet("")
+        self.previous_button.setFixedWidth(28)
+        self.previous_button.setAccessibleName(ui_text("上一款", "Previous font"))
+        self.previous_button.setToolTip(self.previous_button.accessibleName())
+        self.next_button.setAccessibleName(ui_text("下一款", "Next font"))
+        self.next_button.setToolTip(self.next_button.accessibleName())
         self.info_button.setText(ui_text("信息", "Info"))
         self.preview.setAccessibleName(ui_text("原文件样张", "Original file sample"))
         self.details.setAccessibleName(ui_text("来源、缺字与许可", "Source, missing glyphs and license"))
@@ -3877,8 +3922,9 @@ class DesktopIntakeCard(QWidget):
             button.setAccessibleName(ui_text("字体用途：", "Font usage: ") + label)
         self.title.setText(title)
         self.title.setToolTip(title)
+        self.title.setAccessibleName(title)
         self.preview.clear()
-        self.preview.setFixedHeight(64)
+        self.preview.setFixedHeight(84)
         self.status.setFixedHeight(32)
         self.preview.setVisible(mode in {"fonts", "images", "bundle"})
         self.recent_rows.setVisible(mode == "recent")
@@ -3895,11 +3941,11 @@ class DesktopIntakeCard(QWidget):
         self.status.setToolTip("")
         self.status.setStyleSheet("")
         self.status.show()
-        self.previous_button.setText(ui_text("上一款", "Previous"))
         self.store_button.setEnabled(True)
         self.store_button.show()
 
     def _show(self) -> None:
+        self.details.setFixedHeight(47 if self.usage_row.isVisibleTo(self.information) else 75)
         height = 320 if self.information.isVisibleTo(self) else 240
         if self.mode == "message":
             height = 140 if self.store_button.isVisibleTo(self) else 100
@@ -3955,7 +4001,9 @@ class DesktopIntakeCard(QWidget):
         self.status.setText(message)
         self.status.setToolTip(message)
         foreground, background = _FEEDBACK_TONES.get(tone, _FEEDBACK_TONES["success"])
-        self.status.setStyleSheet(f"color: {foreground}; background: {background};")
+        if tone in {"progress", "pending"}:
+            foreground = "#7D581B"
+        self.status.setStyleSheet(f"color: {foreground}; background: {background}; border-radius: 5px; padding: 0 6px;")
         self.status.setProperty("feedbackTone", tone)
         self.store_button.setVisible(tone == "progress" and self.ball.remote_worker is not None or tone == "error" and bool(self.ball._last_remote_urls))
         self.store_button.setText(ui_text("取消查找", "Cancel search") if tone == "progress" else ui_text("重试", "Retry"))
@@ -3990,36 +4038,52 @@ class DesktopIntakeCard(QWidget):
         candidate = self.candidates[self.index]
         metadata = candidate.metadata
         is_image = self.mode == "images"
-        self.preview.setFixedHeight(80 if is_image else 64)
+        self.preview.setFixedHeight(100 if is_image else 84)
         self.status.setFixedHeight(16 if is_image else 32)
-        self.previous_button.setText(ui_text("上一张" if is_image else "上一款", "Previous"))
-        self.next_button.setText(ui_text("下一张" if is_image else "下一款", "Next"))
+        self.previous_button.setAccessibleName(ui_text("上一张" if is_image else "上一款", "Previous image" if is_image else "Previous font"))
+        self.next_button.setAccessibleName(ui_text("下一张" if is_image else "下一款", "Next image" if is_image else "Next font"))
+        self.previous_button.setToolTip(self.previous_button.accessibleName())
+        self.next_button.setToolTip(self.next_button.accessibleName())
         self.kind_button.setText(ui_text("字体" if is_image else "图片", "Fonts" if is_image else "Images"))
         count = len(self._candidate_groups.get("fonts" if is_image else "images", []))
         kind_hint = ui_text(f"查看网页中的{'字体' if is_image else '图片'}（{count}）", f"Show page {'fonts' if is_image else 'images'} ({count})")
         self.kind_button.setToolTip(kind_hint)
         self.kind_button.setAccessibleName(kind_hint)
         self.details.setAccessibleName(ui_text("图片来源与尺寸", "Image source and dimensions") if is_image else ui_text("来源、缺字与许可", "Source, missing glyphs and license"))
-        name = (candidate.label or candidate.path.stem) if is_image else f"{metadata.get('family') or candidate.path.stem} · {metadata.get('style') or 'Regular'}"
-        self.title.setText(self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 126 if self.kind_button.isVisibleTo(self) else 196))
+        if is_image:
+            name = candidate.label or {"cover": ui_text("网页封面", "Page cover"), "image": ui_text("网页图片", "Page image"), "icon": ui_text("站点图标", "Site icon")}[candidate.hint]
+        else:
+            name = f"{metadata.get('family') or candidate.path.stem} · {metadata.get('style') or 'Regular'}"
+        self.title.setText(self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 154 if self.kind_button.isVisibleTo(self) else 224))
         self.title.setToolTip(name)
-        self.preview.setPixmap(QPixmap.fromImage(QImage(candidate.pixels, candidate.width, candidate.height, QImage.Format.Format_RGBA8888).copy()).scaled(254, self.preview.height(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.title.setAccessibleName(name)
+        self._set_preview(QImage(candidate.pixels, candidate.width, candidate.height, QImage.Format.Format_RGBA8888).copy())
         self.position.setText(f"{self.index + 1} / {len(self.candidates)}")
+        self.position.setAccessibleName(ui_text(
+            f"第 {self.index + 1} 张，共 {len(self.candidates)} 张" if is_image else f"第 {self.index + 1} 款，共 {len(self.candidates)} 款",
+            f"{'Image' if is_image else 'Font'} {self.index + 1} of {len(self.candidates)}",
+        ))
         self.previous_button.setEnabled(self.index > 0)
         self.next_button.setEnabled(self.index + 1 < len(self.candidates))
         self.store_button.setText(ui_text("收纳这张", "Store this image") if is_image else ui_text("收纳这款", "Store this font"))
         self.store_button.setEnabled(self.ball.worker is None)
         if is_image:
-            hint = {"cover": ui_text("封面", "Cover"), "image": ui_text("页面图片", "Page image"), "icon": ui_text("站点图标", "Site icon")}[candidate.hint]
             dimensions = f"{metadata['width']} × {metadata['height']}"
-            self.status.setText(hint + " · " + dimensions)
+            self.status.setText(dimensions + " · " + metadata["mime_type"].split("/")[-1].replace("svg+xml", "svg").upper())
             self.status.setToolTip(self.status.text())
-            self.details.setPlainText(ui_text("来源：", "Source: ") + candidate.origin + "\n" + dimensions + " · " + metadata["mime_type"]
+            self.details.setPlainText(name + "\n" + ui_text("来源：", "Source: ") + candidate.origin + "\n" + dimensions + " · " + metadata["mime_type"]
                                       + "\n" + ui_text("许可未核实", "License unverified")
                                       + ("\n" + ui_text("GIF 仅预览首帧，收纳保留动图原文件", "GIF preview uses the first frame; the original animation is preserved") if metadata["mime_type"] == "image/gif" else "")
                                       + ("\n" + self._discovery_note if self._discovery_note else ""))
         else:
             self._font_details(metadata, candidate.origin, candidate.path.suffix, candidate.missing, candidate.hint)
+
+    def _set_preview(self, image: QImage) -> None:
+        # ponytail: retain 2× pixels across displays; raise density only for higher-DPI targets.
+        pixmap = QPixmap.fromImage(image).scaled(508, self.preview.height() * 2,
+                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        pixmap.setDevicePixelRatio(2)
+        self.preview.setPixmap(pixmap)
 
     def _font_details(self, metadata, origin: str, suffix: str, missing: str = "", hint: str = "") -> None:
         license_text = str(metadata.get("license_description") or metadata.get("license_url") or "")
@@ -4027,7 +4091,8 @@ class DesktopIntakeCard(QWidget):
         status += " · " + ui_text("内嵌许可已记录" if license_text else "许可未知", "Embedded license recorded" if license_text else "License unknown")
         self.status.setText(status)
         self.status.setToolTip(status)
-        self.details.setPlainText(ui_text("来源：", "Source: ") + (origin or ui_text("未记录", "Unrecorded"))
+        self.details.setPlainText(str(metadata.get("family") or "") + " · " + str(metadata.get("style") or "Regular")
+                                  + "\n" + ui_text("来源：", "Source: ") + (origin or ui_text("未记录", "Unrecorded"))
                                   + "\n" + suffix.lstrip('.').upper() + (" · " + hint if hint else "")
                                   + "\n" + status
                                   + "\n" + ui_text("内嵌许可：", "Embedded license: ") + (license_text[:8192] or ui_text("未知", "Unknown"))
@@ -4075,8 +4140,10 @@ class DesktopIntakeCard(QWidget):
                 name = str(metadata.get("family") or Path(str(bundle["source_key"])).name)
                 label = self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 240)
                 button = self._button(label.replace("&", "&&"), lambda target=bundle: self.show_bundle(target))
+                button.setObjectName("recentAsset")
                 button.setToolTip(name)
-                button.setMinimumHeight(38)
+                button.setAccessibleName(name)
+                button.setFixedHeight(38)
                 self.recent_layout.addWidget(button)
             self.status.setVisible(not bundles)
             self.status.setText("" if bundles else ui_text("拖入文件或网页链接开始收纳", "Drop a file or page link to start"))
@@ -4089,13 +4156,18 @@ class DesktopIntakeCard(QWidget):
         self._reset("bundle", "")
         self.bundle = bundle
         self.previous_button.setText(ui_text("返回", "Back"))
+        self.previous_button.setStyleSheet("font-size: 12px;")
+        self.previous_button.setFixedWidth(58)
+        self.previous_button.setAccessibleName(ui_text("返回最近收纳", "Back to recent assets"))
+        self.previous_button.setToolTip(self.previous_button.accessibleName())
         self.previous_button.setEnabled(True)
         self.store_button.setText(ui_text("打开素材管理", "Open asset manager"))
         path = self.ball._bundle_service()._asset_path(str(bundle["source_key"]))
         metadata = bundle.get("font_metadata") or {}
         name = str(metadata.get("family") or Path(str(bundle["source_key"])).name)
-        self.title.setText(self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 196))
+        self.title.setText(self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 224))
         self.title.setToolTip(name)
+        self.title.setAccessibleName(name)
         if bundle.get("type") == "font":
             self._font_details(metadata, str(bundle.get("origin_url") or ""), path.suffix if path is not None else "")
             self.status.setText(ui_text("正在检查样张…", "Checking sample…"))
@@ -4103,7 +4175,7 @@ class DesktopIntakeCard(QWidget):
             self._refresh_usage()
             self.usage_row.show()
             if path is not None and bundle.get("status") != "missing":
-                self._preview_request = (self._preview_generation, bundle["id"], path, WEB_FONT_PREVIEW_TEXT, 32, bundle["sha256"])
+                self._preview_request = (self._preview_generation, bundle["id"], path, WEB_FONT_PREVIEW_TEXT, 64, bundle["sha256"])
                 self.preview.setText(ui_text("正在预览…", "Rendering…"))
                 self._start_preview()
         else:
@@ -4112,8 +4184,8 @@ class DesktopIntakeCard(QWidget):
             if path is not None and bundle.get("type") == "image":
                 reader = QImageReader(str(path))
                 if reader.size().isValid():
-                    reader.setScaledSize(reader.size().scaled(QSize(254, 64), Qt.AspectRatioMode.KeepAspectRatio))
-                self.preview.setPixmap(QPixmap.fromImage(reader.read()))
+                    reader.setScaledSize(reader.size().scaled(QSize(508, 168), Qt.AspectRatioMode.KeepAspectRatio))
+                self._set_preview(reader.read())
             else:
                 self.preview.setText(ui_text("音频素材", "Audio asset"))
         if bundle.get("status") == "missing":
@@ -4157,7 +4229,7 @@ class DesktopIntakeCard(QWidget):
     def _start_preview(self) -> None:
         if self.font_preview_worker is not None or self._preview_request is None:
             return
-        self.font_preview_worker = FontPreviewWorker(self._preview_request, self, preview_width=254)
+        self.font_preview_worker = FontPreviewWorker(self._preview_request, self, preview_width=508)
         self._preview_request = None
         self.font_preview_worker.finished.connect(self._finish_preview)
         self.font_preview_worker.start()
@@ -4168,7 +4240,7 @@ class DesktopIntakeCard(QWidget):
         if worker.request[0] == self._preview_generation and self.mode == "bundle":
             if worker.result is not None:
                 pixels, width, height, missing = worker.result
-                self.preview.setPixmap(QPixmap.fromImage(QImage(pixels, width, height, QImage.Format.Format_RGBA8888).copy()).scaled(254, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                self._set_preview(QImage(pixels, width, height, QImage.Format.Format_RGBA8888).copy())
                 self._font_details(self.bundle.get("font_metadata") or {}, str(self.bundle.get("origin_url") or ""), worker.request[2].suffix, missing)
             elif worker.error:
                 self.preview.setText(ui_text("字体预览失败", "Font preview failed"))

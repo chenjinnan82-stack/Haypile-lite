@@ -328,7 +328,7 @@ class AttachedHubTests(unittest.TestCase):
 
         self.assertEqual(len(set(styles.values())), 5)
         self.assertIn("#4E5F3D", styles["success"])
-        self.assertIn("#A67624", styles["pending"])
+        self.assertIn("#7D581B", styles["pending"])
         self.assertIn("#625B4C", styles["duplicate"])
         self.assertIn("#9B4C37", styles["error"])
 
