@@ -63,6 +63,7 @@ def download_remote_media(
     opener: Callable[..., "SafeRemoteResponse"] | None = None,
     font_extension: str = "",
     font_only: bool = False,
+    image_only: bool = False,
     allow_web_page: bool = False,
 ) -> tuple[Path | None, str]:
     """Fetch one supported media asset into a private, durable local file."""
@@ -81,6 +82,8 @@ def download_remote_media(
                 return None, "web_page"
             return None, "video_not_supported" if content_type.startswith("video/") else "unsupported"
         if font_only and media_spec[0] != "font":
+            return None, "unsupported"
+        if image_only and media_spec[0] != "image":
             return None, "unsupported"
         content_length = _content_length(response.headers.get("content-length"))
         byte_limit = max(0, int(max_bytes))

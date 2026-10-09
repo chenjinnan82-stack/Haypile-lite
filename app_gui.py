@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+from dataclasses import replace
 from html.parser import HTMLParser
 import json
 import locale
@@ -131,7 +132,8 @@ from app.services.safe_remote_fetcher import (
 )
 from app.services.theme_registry import ThemeRegistry
 from app.services.font_service import DEFAULT_FONT_TEXT, export_font_original, render_font_preview
-from app.services.web_font_service import MAX_WEB_FONT_BYTES, MAX_WEB_FONTS, WEB_FONT_PREVIEW_TEXT, WebFontCandidate, download_web_fonts
+from app.services.web_font_service import MAX_WEB_FONT_BYTES, MAX_WEB_FONTS, WEB_FONT_PREVIEW_TEXT, WebFontCandidate, download_web_fonts, read_web_text
+from app.services.web_image_service import MAX_WEB_IMAGE_BYTES, MAX_WEB_IMAGES, WebImageCandidate, download_web_images
 from PySide6.QtCore import (
     QCoreApplication,
     QSize,
@@ -388,7 +390,8 @@ class RemoteDownloadWorker(QThread):
         self.urls = self._dedupe_urls(urls)
         self.incoming_dir = incoming_dir
         self.font_candidates: list[WebFontCandidate] = []
-        self.font_discovery_note = ""
+        self.image_candidates: list[WebImageCandidate] = []
+        self.discovery_note = ""
 
     def run(self) -> None:
         downloaded: list[Path] = []
@@ -398,11 +401,14 @@ class RemoteDownloadWorker(QThread):
         except Exception as exc:
             failed = True
             self.font_candidates.clear()
+            self.image_candidates.clear()
             logger.warning("网页素材获取异常 error_type=%s", type(exc).__name__)
             if not self.isInterruptionRequested():
                 self.finished_signal.emit([], ui_text("网页素材无法获取，请重试", "Web assets could not be fetched; retry"), False)
         finally:
             if failed or self.isInterruptionRequested():
+                self.font_candidates.clear()
+                self.image_candidates.clear()
                 for path in downloaded:
                     path.unlink(missing_ok=True)
                     provenance_path_for(path).unlink(missing_ok=True)
@@ -419,6 +425,7 @@ class RemoteDownloadWorker(QThread):
         video_not_supported = 0
         downloaded_bytes = 0
         web_font_bytes = 0
+        web_image_bytes = 0
         web_pages = 0
         total = max(len(self.urls), 1)
         for index, url in enumerate(self.urls, start=1):
@@ -433,34 +440,55 @@ class RemoteDownloadWorker(QThread):
                 path, reason = self._download_one(url, index, max_bytes=min(self.MAX_FILE_SIZE_BYTES, remaining))
                 if reason == "web_page":
                     web_pages += 1
-                    if len(self.font_candidates) >= MAX_WEB_FONTS or web_font_bytes >= MAX_WEB_FONT_BYTES:
-                        self.font_discovery_note = ui_text("已达到网页扫描上限，列表显示已找到的字体。", "Page scan limit reached; showing fonts found so far.")
-                        continue
-                    self.progress_signal.emit(40, ui_text("正在查找网页字体...", "Finding fonts on the page..."))
+                    self.progress_signal.emit(40, ui_text("正在查找网页字体和图片…", "Finding page fonts and images…"))
+                    document = read_web_text(url, opener=open_safe_remote, timeout=self.TIMEOUT_SECONDS,
+                                             should_stop=self.isInterruptionRequested)
                     candidates, truncated, web_failed = download_web_fonts(
-                        url, self.incoming_dir, timeout=self.TIMEOUT_SECONDS,
+                        url, self.incoming_dir, timeout=self.TIMEOUT_SECONDS, document=document,
                         should_stop=self.isInterruptionRequested, opener=open_safe_remote,
                         max_bytes=min(remaining, MAX_WEB_FONT_BYTES - web_font_bytes),
                         max_fonts=MAX_WEB_FONTS - len(self.font_candidates),
                     )
-                    # Keep one candidate per original byte sequence across multiple pages.
+                    downloaded.extend(candidate.path for candidate in candidates)
                     hashes = {candidate.sha256 for candidate in self.font_candidates}
                     for candidate in candidates:
-                        digest = candidate.sha256
-                        if digest in hashes:
-                            candidate.path.unlink(missing_ok=True)
-                            provenance_path_for(candidate.path).unlink(missing_ok=True)
-                            continue
-                        hashes.add(digest)
-                        self.font_candidates.append(candidate)
-                        downloaded.append(candidate.path)
                         size = candidate.path.stat().st_size
                         web_font_bytes += size
                         downloaded_bytes += size
-                    if truncated:
-                        self.font_discovery_note = ui_text("已达到网页扫描上限，列表显示已找到的字体。", "Page scan limit reached; showing fonts found so far.")
-                    elif web_failed and not self.font_discovery_note:
-                        self.font_discovery_note = ui_text("部分字体或样式表无法获取，列表显示成功获取的字体。", "Some fonts or stylesheets could not be fetched; showing available fonts.")
+                        if candidate.sha256 in hashes:
+                            candidate.path.unlink(missing_ok=True)
+                            provenance_path_for(candidate.path).unlink(missing_ok=True)
+                            downloaded.remove(candidate.path)
+                        else:
+                            hashes.add(candidate.sha256)
+                            self.font_candidates.append(candidate)
+                    images, image_truncated, image_failed = download_web_images(
+                        url, self.incoming_dir, timeout=self.TIMEOUT_SECONDS, document=document,
+                        should_stop=self.isInterruptionRequested, opener=open_safe_remote,
+                        max_bytes=min(self.MAX_TOTAL_DOWNLOAD_BYTES - downloaded_bytes, MAX_WEB_IMAGE_BYTES - web_image_bytes),
+                        max_images=MAX_WEB_IMAGES - len(self.image_candidates),
+                    )
+                    downloaded.extend(candidate.path for candidate in images)
+                    hashes = {candidate.sha256 for candidate in self.image_candidates}
+                    for candidate in images:
+                        size = candidate.path.stat().st_size
+                        web_image_bytes += size
+                        downloaded_bytes += size
+                        try:
+                            if candidate.sha256 not in hashes:
+                                preview = self._image_preview(candidate)
+                                self.image_candidates.append(preview)
+                                hashes.add(candidate.sha256)
+                                continue
+                        except (OSError, ValueError):
+                            image_failed += 1
+                        candidate.path.unlink(missing_ok=True)
+                        provenance_path_for(candidate.path).unlink(missing_ok=True)
+                        downloaded.remove(candidate.path)
+                    if truncated or image_truncated:
+                        self.discovery_note = ui_text("已达到网页扫描上限，显示已找到的素材。", "Page scan limit reached; showing assets found so far.")
+                    elif (web_failed or image_failed) and not self.discovery_note:
+                        self.discovery_note = ui_text("部分网页素材无法获取，显示成功获取的候选。", "Some page assets could not be fetched; showing available candidates.")
                     continue
             except (httpx.HTTPError, OSError, SafeFetchError, ValueError) as exc:
                 logger.warning(
@@ -489,7 +517,7 @@ class RemoteDownloadWorker(QThread):
 
         if not downloaded:
             if web_pages:
-                message = ui_text("网页中没有找到可获取的字体；可以尝试字体下载链接", "No downloadable fonts found on this page; try a font download link")
+                message = ui_text("网页中没有找到可获取的字体或图片；可以直接拖入素材链接", "No downloadable fonts or images found; try a direct asset link")
             elif video_not_supported and not failed and not too_large and not gif_too_large:
                 message = ui_text(
                     "不支持视频；请拖入真实 GIF 图片",
@@ -525,6 +553,22 @@ class RemoteDownloadWorker(QThread):
             opener=open_safe_remote,
             allow_web_page=True,
         )
+
+    @staticmethod
+    def _image_preview(candidate: WebImageCandidate) -> WebImageCandidate:
+        # QImage is safe in the worker; only the card creates the QPixmap.
+        reader = QImageReader(str(candidate.path))
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if not size.isValid():
+            size = QSize(candidate.metadata["width"], candidate.metadata["height"])
+        reader.setScaledSize(size.scaled(QSize(254, 80), Qt.AspectRatioMode.KeepAspectRatio))
+        image = reader.read()
+        if image.isNull():
+            raise ValueError("image_preview_failed")
+        image = image.scaled(254, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+        return replace(candidate, pixels=bytes(image.constBits()), width=image.width(), height=image.height())
 
     @staticmethod
     def _dedupe_urls(urls: list[str]) -> list[str]:
@@ -3692,6 +3736,8 @@ class DesktopIntakeCard(QWidget):
         self.ball = ball
         self.mode = ""
         self.candidates = []
+        self._candidate_groups = {}
+        self._candidate_positions = {}
         self.index = 0
         self.bundle = None
         self.font_preview_worker = None
@@ -3727,6 +3773,9 @@ class DesktopIntakeCard(QWidget):
         self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.title.setStyleSheet("font-size: 14px; font-weight: bold; color: #4E5F3D;")
         header.addWidget(self.title, 1)
+        self.kind_button = self._button("", self._switch_candidate_kind)
+        self.kind_button.setFixedWidth(64)
+        header.addWidget(self.kind_button)
         self.close_button = self._button(ui_text("关闭", "Close"), lambda: self.dismiss("close"))
         self.close_button.setFixedWidth(48)
         header.addWidget(self.close_button)
@@ -3812,6 +3861,10 @@ class DesktopIntakeCard(QWidget):
         self._hide_timer.stop()
         self._cancel_preview()
         self.mode = mode
+        self._candidate_groups = {}
+        self._candidate_positions = {}
+        self.kind_button.hide()
+        self.kind_button.setToolTip("")
         self.setWindowTitle(ui_text("Haypile 收纳", "Haypile intake"))
         self.close_button.setText(ui_text("关闭", "Close"))
         self.next_button.setText(ui_text("下一款", "Next"))
@@ -3825,12 +3878,14 @@ class DesktopIntakeCard(QWidget):
         self.title.setText(title)
         self.title.setToolTip(title)
         self.preview.clear()
-        self.preview.setVisible(mode in {"fonts", "bundle"})
+        self.preview.setFixedHeight(64)
+        self.status.setFixedHeight(32)
+        self.preview.setVisible(mode in {"fonts", "images", "bundle"})
         self.recent_rows.setVisible(mode == "recent")
-        self.previous_button.setVisible(mode in {"fonts", "bundle"})
-        self.next_button.setVisible(mode == "fonts")
-        self.position.setVisible(mode == "fonts")
-        self.info_button.setVisible(mode in {"fonts", "bundle"})
+        self.previous_button.setVisible(mode in {"fonts", "images", "bundle"})
+        self.next_button.setVisible(mode in {"fonts", "images"})
+        self.position.setVisible(mode in {"fonts", "images"})
+        self.info_button.setVisible(mode in {"fonts", "images", "bundle"})
         self.info_button.blockSignals(True)
         self.info_button.setChecked(False)
         self.info_button.blockSignals(False)
@@ -3876,9 +3931,11 @@ class DesktopIntakeCard(QWidget):
     def dismiss(self, reason: str) -> None:
         if reason in {"close", "escape"} and self.mode == "message" and self.ball.remote_worker is not None:
             self.ball._cancel_remote_download()
-        if self.mode == "fonts" and reason != "store":
-            self.ball._discard_web_fonts()
+        if self.mode in {"fonts", "images"} and reason != "store":
+            self.ball._discard_web_candidates()
         self.candidates = []
+        self._candidate_groups = {}
+        self._candidate_positions = {}
         self._cancel_preview()
         self.mode = ""
         self.hide()
@@ -3892,7 +3949,7 @@ class DesktopIntakeCard(QWidget):
     def show_message(self, message: str, tone: str) -> None:
         if self.ball._closing:
             return
-        if self.isVisible() and self.mode in {"fonts", "bundle", "recent"}:
+        if self.isVisible() and self.mode in {"fonts", "images", "bundle", "recent"}:
             return
         self._reset("message", "Haypile")
         self.status.setText(message)
@@ -3906,11 +3963,24 @@ class DesktopIntakeCard(QWidget):
         if tone != "progress":
             self._hide_timer.start(4500 if tone == "error" else 1700)
 
-    def show_fonts(self, candidates: list[WebFontCandidate], note: str = "") -> None:
-        self._reset("fonts", "")
-        self.candidates = list(candidates)
+    def show_candidates(self, fonts: list[WebFontCandidate], images: list[WebImageCandidate] | None = None, note: str = "") -> None:
+        self._reset("fonts" if fonts else "images", "")
+        self._candidate_groups = {"fonts": list(fonts), "images": list(images or ())}
+        self.candidates = self._candidate_groups[self.mode]
+        self.kind_button.setVisible(bool(fonts and images))
         self.index = 0
         self._discovery_note = note
+        self._show_candidate()
+        self._show()
+
+    def _switch_candidate_kind(self) -> None:
+        target = "images" if self.mode == "fonts" else "fonts"
+        if not self._candidate_groups.get(target):
+            return
+        self._candidate_positions[self.mode] = self.index
+        self.mode = target
+        self.candidates = self._candidate_groups[target]
+        self.index = self._candidate_positions.get(target, 0)
         self._show_candidate()
         self._show()
 
@@ -3919,16 +3989,37 @@ class DesktopIntakeCard(QWidget):
             return
         candidate = self.candidates[self.index]
         metadata = candidate.metadata
-        name = f"{metadata.get('family') or candidate.path.stem} · {metadata.get('style') or 'Regular'}"
-        self.title.setText(self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 196))
+        is_image = self.mode == "images"
+        self.preview.setFixedHeight(80 if is_image else 64)
+        self.status.setFixedHeight(16 if is_image else 32)
+        self.previous_button.setText(ui_text("上一张" if is_image else "上一款", "Previous"))
+        self.next_button.setText(ui_text("下一张" if is_image else "下一款", "Next"))
+        self.kind_button.setText(ui_text("字体" if is_image else "图片", "Fonts" if is_image else "Images"))
+        count = len(self._candidate_groups.get("fonts" if is_image else "images", []))
+        kind_hint = ui_text(f"查看网页中的{'字体' if is_image else '图片'}（{count}）", f"Show page {'fonts' if is_image else 'images'} ({count})")
+        self.kind_button.setToolTip(kind_hint)
+        self.kind_button.setAccessibleName(kind_hint)
+        self.details.setAccessibleName(ui_text("图片来源与尺寸", "Image source and dimensions") if is_image else ui_text("来源、缺字与许可", "Source, missing glyphs and license"))
+        name = (candidate.label or candidate.path.stem) if is_image else f"{metadata.get('family') or candidate.path.stem} · {metadata.get('style') or 'Regular'}"
+        self.title.setText(self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 126 if self.kind_button.isVisibleTo(self) else 196))
         self.title.setToolTip(name)
-        self.preview.setPixmap(QPixmap.fromImage(QImage(candidate.pixels, candidate.width, candidate.height, QImage.Format.Format_RGBA8888).copy()).scaled(254, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.preview.setPixmap(QPixmap.fromImage(QImage(candidate.pixels, candidate.width, candidate.height, QImage.Format.Format_RGBA8888).copy()).scaled(254, self.preview.height(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         self.position.setText(f"{self.index + 1} / {len(self.candidates)}")
         self.previous_button.setEnabled(self.index > 0)
         self.next_button.setEnabled(self.index + 1 < len(self.candidates))
-        self.store_button.setText(ui_text("收纳这款", "Store this font"))
+        self.store_button.setText(ui_text("收纳这张", "Store this image") if is_image else ui_text("收纳这款", "Store this font"))
         self.store_button.setEnabled(self.ball.worker is None)
-        self._font_details(metadata, candidate.origin, candidate.path.suffix, candidate.missing, candidate.hint)
+        if is_image:
+            hint = {"cover": ui_text("封面", "Cover"), "image": ui_text("页面图片", "Page image"), "icon": ui_text("站点图标", "Site icon")}[candidate.hint]
+            dimensions = f"{metadata['width']} × {metadata['height']}"
+            self.status.setText(hint + " · " + dimensions)
+            self.status.setToolTip(self.status.text())
+            self.details.setPlainText(ui_text("来源：", "Source: ") + candidate.origin + "\n" + dimensions + " · " + metadata["mime_type"]
+                                      + "\n" + ui_text("许可未核实", "License unverified")
+                                      + ("\n" + ui_text("GIF 仅预览首帧，收纳保留动图原文件", "GIF preview uses the first frame; the original animation is preserved") if metadata["mime_type"] == "image/gif" else "")
+                                      + ("\n" + self._discovery_note if self._discovery_note else ""))
+        else:
+            self._font_details(metadata, candidate.origin, candidate.path.suffix, candidate.missing, candidate.hint)
 
     def _font_details(self, metadata, origin: str, suffix: str, missing: str = "", hint: str = "") -> None:
         license_text = str(metadata.get("license_description") or metadata.get("license_url") or "")
@@ -3945,7 +4036,7 @@ class DesktopIntakeCard(QWidget):
     def _navigate(self, step: int) -> None:
         if self.mode == "bundle":
             self.show_recent()
-        elif self.mode == "fonts":
+        elif self.mode in {"fonts", "images"}:
             self.index = max(0, min(self.index + step, len(self.candidates) - 1))
             self._show_candidate()
 
@@ -3954,8 +4045,8 @@ class DesktopIntakeCard(QWidget):
         self._show()
 
     def _primary_action(self) -> None:
-        if self.mode == "fonts" and self.candidates:
-            self.ball._collect_web_font(self.candidates[self.index])
+        if self.mode in {"fonts", "images"} and self.candidates:
+            self.ball._collect_web_asset(self.candidates[self.index])
         elif self.mode == "message":
             if self.ball.remote_worker is not None:
                 self.ball._cancel_remote_download()
@@ -4105,7 +4196,7 @@ class DesktopIntakeCard(QWidget):
         elif buttons != self._last_buttons and outside:
             self.dismiss("outside")
         self._last_buttons, self._last_escape = buttons, escape
-        if self.mode == "fonts":
+        if self.mode in {"fonts", "images"}:
             self.store_button.setEnabled(self.ball.worker is None and not self.ball._closing)
 
     def _application_state_changed(self, state) -> None:
@@ -4202,7 +4293,7 @@ class HaypileFloatingBall(QWidget):
 
         self.worker: IngestWorker | None = None
         self.remote_worker: RemoteDownloadWorker | None = None
-        self._web_font_candidates: list[WebFontCandidate] = []
+        self._web_candidates: list[WebFontCandidate | WebImageCandidate] = []
         self._remote_request_cancelled = False
         self._last_remote_urls: list[str] = []
         self._remote_ingest_paths: set[Path] = set()
@@ -5129,7 +5220,7 @@ class HaypileFloatingBall(QWidget):
         return bool(
             self.worker is not None
             or self.remote_worker is not None
-            or bool(self._web_font_candidates)
+            or bool(self._web_candidates)
             or self._pending_ingest_finish is not None
         )
 
@@ -5207,8 +5298,10 @@ class HaypileFloatingBall(QWidget):
                 self._delete_remote_temp(path)
             return
         worker = self.remote_worker
-        candidates = worker.font_candidates if worker is not None else []
-        note = worker.font_discovery_note if worker is not None else ""
+        fonts = worker.font_candidates if worker is not None else []
+        images = worker.image_candidates if worker is not None else []
+        candidates = [*fonts, *images]
+        note = worker.discovery_note if worker is not None else ""
         if worker is not None:
             worker.deleteLater()
         self.remote_worker = None
@@ -5218,11 +5311,11 @@ class HaypileFloatingBall(QWidget):
             self.quick_menu.complete_progress("pending", "")
             return
         if candidates:
-            self._web_font_candidates = list(candidates)
+            self._web_candidates = list(candidates)
             candidate_paths = {candidate.path for candidate in candidates}
             self._remote_ingest_paths.difference_update(candidate_paths)
             downloaded_files = [path for path in downloaded_files if path not in candidate_paths]
-            self.intake_card.show_fonts(candidates, note)
+            self.intake_card.show_candidates(fonts, images, note)
         if (downloaded_files or candidates) and fallback_file is not None:
             self._delete_remote_temp(fallback_file)
             self._remote_ingest_paths.discard(fallback_file)
@@ -5305,7 +5398,7 @@ class HaypileFloatingBall(QWidget):
             self._available_geometry(),
             initial_message,
         )
-        if self.intake_card.mode == "fonts":
+        if self.intake_card.mode in {"fonts", "images"}:
             self.intake_card.store_button.setEnabled(False)
 
     def _on_ingest_finished(self, message: str, success: bool) -> None:
@@ -6059,7 +6152,7 @@ class HaypileFloatingBall(QWidget):
             self._close_attached_ui()
             return
         if self.remote_worker is not None:
-            self.intake_card.show_message(ui_text("正在查找字体…", "Finding fonts…"), "progress")
+            self.intake_card.show_message(ui_text("正在查找网页素材…", "Finding page assets…"), "progress")
         else:
             self.intake_card.show_recent()
         self.intake_card.activateWindow()
@@ -6076,16 +6169,16 @@ class HaypileFloatingBall(QWidget):
         menu.aboutToHide.connect(menu.deleteLater)
         menu.popup(point)
 
-    def _discard_web_fonts(self) -> None:
-        for candidate in self._web_font_candidates:
+    def _discard_web_candidates(self) -> None:
+        for candidate in self._web_candidates:
             self._delete_remote_temp(candidate.path)
-        self._web_font_candidates.clear()
+        self._web_candidates.clear()
 
-    def _collect_web_font(self, candidate: WebFontCandidate) -> None:
-        if self.worker is not None or self._closing or candidate not in self._web_font_candidates:
+    def _collect_web_asset(self, candidate: WebFontCandidate | WebImageCandidate) -> None:
+        if self.worker is not None or self._closing or candidate not in self._web_candidates:
             return
-        self._web_font_candidates.remove(candidate)
-        self._discard_web_fonts()
+        self._web_candidates.remove(candidate)
+        self._discard_web_candidates()
         self._remote_ingest_paths.add(candidate.path)
         self.intake_card.dismiss("store")
         self._start_worker([candidate.path])

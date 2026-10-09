@@ -78,7 +78,7 @@ class WebFontIntakeTests(unittest.TestCase):
             started = time.monotonic()
             self.assertEqual(css_font_references(malformed, self.page), ([], []))
             self.assertLess(time.monotonic() - started, 2)
-        self.add_page('<base href="/assets/"><link rel="stylesheet" href="main.css"><a href="copy.woff2">Font</a>')
+        self.add_page('<base target="_blank"><base href="/assets/"><link rel="stylesheet" href="main.css"><a href="copy.woff2">Font</a>')
         self.resources["https://public.example/assets/main.css"] = ("text/css", b'''@import "nested.css";
           /* @font-face{src:url(fake.woff2)} */ .x{content:"@font-face {url(fake2.woff2)}"}
           @media screen { @font-face { font-family: "Test"; font-weight: 400;
@@ -164,7 +164,7 @@ class WebFontIntakeTests(unittest.TestCase):
                 self.assertEqual(received, [[paths[0]]] if accept else [])
                 self.assertFalse(paths[1].exists())
                 self.assertEqual(ball._remote_ingest_paths, {paths[0]} if accept else set())
-                self.assertEqual(ball._web_font_candidates, [])
+                self.assertEqual(ball._web_candidates, [])
                 ball._cleanup_remote_ingest_paths()
                 self.assertFalse(list(self.incoming.iterdir()))
         finally:
@@ -273,13 +273,13 @@ class WebFontIntakeTests(unittest.TestCase):
         outside.clicked.connect(lambda: clicked.append(True))
         outside.show()
         try:
-            ball._web_font_candidates = candidates
-            ball.intake_card.show_fonts(candidates)
+            ball._web_candidates = candidates
+            ball.intake_card.show_candidates(candidates)
             self.assertTrue(ball.intake_card.isVisible())
             QTest.mouseClick(outside, Qt.MouseButton.LeftButton)
             self.assertEqual(clicked, [True])
             self.assertFalse(ball.intake_card.isVisible())
-            self.assertFalse(ball._web_font_candidates)
+            self.assertFalse(ball._web_candidates)
             self.assertFalse(list(self.incoming.iterdir()))
         finally:
             outside.close()

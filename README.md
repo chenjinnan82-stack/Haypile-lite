@@ -24,6 +24,8 @@ The current source accepts TTF / OTF / WOFF / WOFF2 files up to 50 MiB. Drag a b
 
 Confirm heading, body, or decorative usage before a font enters ready handoff. Read embedded license information, save source/license notes, and export the original bytes. Missing license information remains unknown; manual notes neither replace embedded metadata nor establish commercial rights. HTTP / MCP expose `type=font` and `font_usage`; see the [Agent HTTP contract](docs/AGENT_HTTP_CONTRACT.md).
 
+The current source also discovers webpage covers, images, and site icons in supported formats. Switch fonts and images within the same card, preview one candidate at a time, and choose **Store this image** to save only its original file. See [desktop intake](docs/DESKTOP_INTAKE.md) for limits and static-page scope.
+
 This is a local acceptance candidate. The historical Alpha.9 downloads below do not include fonts. TTC / OTC, fonts with embedded SVG glyphs, script-created styles, system installation, and variable-axis controls are outside this version. Selected text needs a page URL; system-only fonts cannot be downloaded from a page. See [font intake and its limits](docs/FONT_INTAKE.md).
 
 ## Desktop Downloads

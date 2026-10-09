@@ -158,7 +158,7 @@ class PageFontHTMLParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {key.lower(): value for key, value in attrs if value}
-        if tag == "base" and not self._base_seen:
+        if tag == "base" and not self._base_seen and any(key == "href" for key, _ in attrs):
             self.base = _url(self.base, values.get("href", "")) or self.base
             self._base_seen = True
         if tag == "style":
@@ -193,7 +193,7 @@ class PageFontHTMLParser(HTMLParser):
             self._style = False
 
 
-def _read_web_text(url: str, *, opener: Callable, timeout: float, should_stop: Callable) -> tuple[str, str]:
+def read_web_text(url: str, *, opener: Callable, timeout: float, should_stop: Callable) -> tuple[str, str]:
     with opener(url, timeout=timeout) as response:
         raw_type = response.headers.get("content-type", "")
         content_type = raw_type.split(";", 1)[0].strip().lower()
@@ -223,9 +223,10 @@ def download_web_fonts(
     should_stop: Callable[[], bool] = lambda: False, opener: Callable = open_safe_remote,
     max_bytes: int = MAX_WEB_FONT_BYTES,
     max_fonts: int = MAX_WEB_FONTS,
+    document: tuple[str, str] | None = None,
 ) -> tuple[list[WebFontCandidate], bool, int]:
     """Every page, stylesheet and font uses the same public-address-only fetcher."""
-    text, content_type = _read_web_text(page_url, opener=opener, timeout=timeout, should_stop=should_stop)
+    text, content_type = document if document is not None else read_web_text(page_url, opener=opener, timeout=timeout, should_stop=should_stop)
     if content_type == "text/css":
         references, stylesheets = css_font_references(text, page_url)
     else:
@@ -248,7 +249,7 @@ def download_web_fonts(
             break
         seen_stylesheets.add(url)
         try:
-            css, kind = _read_web_text(url, opener=opener, timeout=timeout, should_stop=should_stop)
+            css, kind = read_web_text(url, opener=opener, timeout=timeout, should_stop=should_stop)
             if kind != "text/css":
                 failed += 1
                 continue

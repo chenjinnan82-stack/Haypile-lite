@@ -2986,7 +2986,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             worker.run()
 
             self.assertFalse(finished[-1][2])
-            self.assertEqual(finished[-1][1], "网页中没有找到可获取的字体；可以尝试字体下载链接")
+            self.assertEqual(finished[-1][1], "网页中没有找到可获取的字体或图片；可以直接拖入素材链接")
         finally:
             app_gui_module.open_safe_remote = previous_opener
 
