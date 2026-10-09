@@ -110,7 +110,23 @@ class WebFontIntakeTests(unittest.TestCase):
         self.assertFalse(list(self.incoming.glob("*.png")))
         self.assertEqual(candidates[0].path.read_bytes(), self.woff.read_bytes())
 
+    def test_inert_templates_do_not_change_font_sources_or_the_page_base(self):
+        self.add_page('''<template><base href="https://wrong.example/">
+          <link rel="stylesheet" href="unused.css"><style>@font-face{src:url(unused.woff2)}</style>
+          <template><a href="nested.ttf">Unused</a></template></template>
+          <base href="/assets/"><style>@font-face{src:url(font.woff2)}</style>''')
+        self.resources["https://public.example/assets/font.woff2"] = ("font/woff2", self.woff.read_bytes())
+        candidates, limited, failed = self.discover()
+        self.assertEqual((len(candidates), limited, failed), (1, False, 0))
+        self.assertEqual(self.calls, [self.page, "https://public.example/assets/font.woff2"])
+        self.assertEqual(candidates[0].path.read_bytes(), self.woff.read_bytes())
+
     def test_page_stylesheet_font_budget_and_cancellation_cleanup(self):
+        for limits in ({"max_fonts": 0}, {"max_bytes": 0}):
+            self.calls.clear()
+            candidates, limited, failed = self.discover(**limits)
+            self.assertEqual((candidates, limited, failed), ([], True, 0))
+            self.assertFalse(self.calls)
         self.resources[self.page] = ("text/html", b"x" * (MAX_PAGE_BYTES + 1))
         with self.assertRaises(SafeFetchError): self.discover()
         self.add_page("".join(f'<link rel="stylesheet" href="{index}.css">' for index in range(10)))
@@ -314,6 +330,24 @@ class WebFontIntakeTests(unittest.TestCase):
             self.assertFalse(card.isVisible())
             ball._on_remote_download_finished([], "late result", True, [])
             self.assertFalse(card.isVisible())
+        finally:
+            ball.close()
+            self.app.processEvents()
+
+    def test_late_actions_on_dismissed_card_do_not_reopen_windows(self):
+        from app.core.config import Settings
+        settings = Settings(_env_file=None, STORAGE_DIR=self.root / "storage", VISION_CLASSIFIER_ENABLED=False)
+        ball = app_gui.HaypileFloatingBall(settings=settings)
+        try:
+            card = ball.intake_card
+            card.show_recent()
+            card.dismiss("outside")
+            with patch.object(ball, "_handle_quick_menu_action") as open_manager:
+                card.store_button.click()
+                card.info_button.click()
+                open_manager.assert_not_called()
+            self.assertFalse(card.isVisible())
+            self.assertFalse(ball.quick_menu.isVisible())
         finally:
             ball.close()
             self.app.processEvents()

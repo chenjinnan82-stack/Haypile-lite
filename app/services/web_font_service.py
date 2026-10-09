@@ -155,8 +155,13 @@ class PageFontHTMLParser(HTMLParser):
         self.styles: list[str] = []
         self._style = False
         self._base_seen = False
+        self._template_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "template":
+            self._template_depth += 1
+        if self._template_depth:
+            return
         values = {key.lower(): value for key, value in attrs if value}
         if tag == "base" and not self._base_seen and any(key == "href" for key, _ in attrs):
             self.base = _url(self.base, values.get("href", "")) or self.base
@@ -185,10 +190,12 @@ class PageFontHTMLParser(HTMLParser):
                 self.references.append(FontReference(((url, extension),)))
 
     def handle_data(self, data: str) -> None:
-        if self._style:
+        if self._style and not self._template_depth:
             self.styles.append(data)
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "template" and self._template_depth:
+            self._template_depth -= 1
         if tag == "style":
             self._style = False
 
@@ -226,6 +233,8 @@ def download_web_fonts(
     document: tuple[str, str] | None = None,
 ) -> tuple[list[WebFontCandidate], bool, int]:
     """Every page, stylesheet and font uses the same public-address-only fetcher."""
+    if max_fonts <= 0 or max_bytes <= 0:
+        return [], True, 0
     text, content_type = document if document is not None else read_web_text(page_url, opener=opener, timeout=timeout, should_stop=should_stop)
     if content_type == "text/css":
         references, stylesheets = css_font_references(text, page_url)

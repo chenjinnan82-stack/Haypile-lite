@@ -152,6 +152,8 @@ def download_web_images(
     max_bytes: int = MAX_WEB_IMAGE_BYTES, max_images: int = MAX_WEB_IMAGES,
     document: tuple[str, str] | None = None,
 ) -> tuple[list[WebImageCandidate], bool, int]:
+    if max_images <= 0 or max_bytes <= 0:
+        return [], True, 0
     text, content_type = document if document is not None else read_web_text(page_url, opener=opener, timeout=timeout, should_stop=should_stop)
     if content_type == "text/css":
         return [], False, 0
@@ -200,6 +202,8 @@ def download_web_images(
                     validation = validate_media(path)
                     if validation.kind != "image":
                         raise ValueError("unsupported_image")
+                    if validation.width <= 2 and validation.height <= 2:
+                        continue
                     digest = hashlib.sha256(path.read_bytes()).hexdigest()
                     successful.add(url)
                     if digest in hashes:

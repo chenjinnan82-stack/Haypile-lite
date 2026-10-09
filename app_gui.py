@@ -396,15 +396,15 @@ class RemoteDownloadWorker(QThread):
     def run(self) -> None:
         downloaded: list[Path] = []
         failed = False
+        result = ([], "", False)
         try:
-            self._run_downloads(downloaded)
+            result = self._run_downloads(downloaded) or result
         except Exception as exc:
             failed = True
             self.font_candidates.clear()
             self.image_candidates.clear()
             logger.warning("网页素材获取异常 error_type=%s", type(exc).__name__)
-            if not self.isInterruptionRequested():
-                self.finished_signal.emit([], ui_text("网页素材无法获取，请重试", "Web assets could not be fetched; retry"), False)
+            result = ([], ui_text("网页素材无法获取，请重试", "Web assets could not be fetched; retry"), False)
         finally:
             if failed or self.isInterruptionRequested():
                 self.font_candidates.clear()
@@ -412,8 +412,11 @@ class RemoteDownloadWorker(QThread):
                 for path in downloaded:
                     path.unlink(missing_ok=True)
                     provenance_path_for(path).unlink(missing_ok=True)
+            if self.isInterruptionRequested():
+                result = ([], "", False)
+        self.finished_signal.emit(*result)
 
-    def _run_downloads(self, downloaded: list[Path]) -> None:
+    def _run_downloads(self, downloaded: list[Path]) -> tuple[list[Path], str, bool] | None:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
             self.incoming_dir.chmod(0o700)
@@ -533,14 +536,13 @@ class RemoteDownloadWorker(QThread):
                 message = ui_text("网页素材超过 500MB", "Web asset is over 500MB")
             else:
                 message = ui_text("网页素材无法下载", "Web asset could not be downloaded")
-            self.finished_signal.emit([], message, False)
-            return
+            return [], message, False
         message = ui_text(f"已获取 {len(downloaded)} 个网页素材", f"Fetched {len(downloaded)} web assets")
         skipped = failed + too_large + gif_too_large + font_too_large + unsupported + video_not_supported
         if skipped:
             message += ui_text(f"，跳过 {skipped}", f", skipped {skipped}")
         self.progress_signal.emit(95, message)
-        self.finished_signal.emit(downloaded, message, True)
+        return downloaded, message, True
 
     def _download_one(self, url: str, index: int, *, max_bytes: int | None = None) -> tuple[Path | None, str]:
         return download_remote_media(
@@ -4106,6 +4108,8 @@ class DesktopIntakeCard(QWidget):
             self._show_candidate()
 
     def _toggle_info(self, checked: bool) -> None:
+        if self.mode not in {"fonts", "images", "bundle"}:
+            return
         self.information.setVisible(checked)
         self._show()
 
@@ -4117,7 +4121,7 @@ class DesktopIntakeCard(QWidget):
                 self.ball._cancel_remote_download()
             elif self.ball._last_remote_urls and not self.ball._ingest_busy():
                 self.ball._start_remote_download_worker(self.ball._last_remote_urls)
-        else:
+        elif self.mode in {"recent", "bundle"}:
             self.ball._handle_quick_menu_action("assets")
 
     def show_recent(self) -> None:

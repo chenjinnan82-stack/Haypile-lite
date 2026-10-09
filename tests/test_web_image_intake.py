@@ -9,6 +9,7 @@ from io import BytesIO
 from pathlib import Path
 import socket
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -118,7 +119,24 @@ class WebImageIntakeTests(unittest.TestCase):
         self.assertEqual(len(list(self.incoming.iterdir())), 4)
         self.assertTrue(all(response.closed for response in self.responses))
 
+    def test_actual_tracking_pixels_are_skipped_and_the_image_fallback_is_used(self):
+        with Image.new("RGB", (1, 1)) as image, BytesIO() as output:
+            image.save(output, "PNG")
+            self.resources["https://public.example/assets/pixel.png"] = ("image/png", output.getvalue())
+        self.page_html('''<base href="/assets/"><meta property="og:image" content="pixel.png">
+          <img srcset="pixel.png 2x" src="photo.png" alt="Real photograph">''')
+        candidates, limited, failed = self.discover()
+        self.assertEqual((len(candidates), limited, failed), (1, False, 0))
+        self.assertEqual(candidates[0].path.read_bytes(), self.originals["photo.png"])
+        self.assertEqual(candidates[0].label, "Real photograph")
+        self.assertFalse(list(self.incoming.glob("pixel*")))
+
     def test_count_bytes_attempt_limits_and_cancellation_clean_unconfirmed_files(self):
+        for limits in ({"max_images": 0}, {"max_bytes": 0}):
+            self.calls.clear()
+            candidates, limited, failed = self.discover(**limits)
+            self.assertEqual((candidates, limited, failed), ([], True, 0))
+            self.assertFalse(self.calls)
         for mode in ("count", "bytes", "attempts", "cancel"):
             with self.subTest(mode=mode):
                 for path in self.incoming.glob("*"):
@@ -290,6 +308,58 @@ class WebImageIntakeTests(unittest.TestCase):
         self.assertTrue(results[0][2])
         self.assertFalse(worker.image_candidates)
         self.assertEqual(results[0][0][0].read_bytes(), self.originals["cover.png"])
+
+    def test_cancel_between_pages_releases_busy_state_and_allows_a_new_lookup(self):
+        self.page_html('<base href="/assets/"><meta property="og:image" content="cover.png"><img src="photo.png">')
+        entered, release = threading.Event(), threading.Event()
+        base_open = self.open
+        def blocking_open(url, **kwargs):
+            response = base_open(url, **kwargs)
+            if url.endswith("cover.png"):
+                chunks = response.iter_bytes
+                def blocked_chunks():
+                    entered.set()
+                    release.wait(3)
+                    yield from chunks()
+                response.iter_bytes = blocked_chunks
+            return response
+        settings = Settings(_env_file=None, STORAGE_DIR=self.root / "isolated", VISION_CLASSIFIER_ENABLED=False)
+        ball = app_gui.HaypileFloatingBall(settings=settings)
+        try:
+            with patch.object(app_gui, "open_safe_remote", blocking_open):
+                ball._start_remote_download_worker([self.page, "https://public.example/second/"])
+                completions = []
+                ball.remote_worker.finished_signal.connect(lambda *args: completions.append(args))
+                self.assertTrue(entered.wait(2))
+                ball.intake_card.close_button.click()
+                release.set()
+                deadline = time.monotonic() + 2
+                while ball.remote_worker is not None and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(.005)
+                self.assertIsNone(ball.remote_worker)
+                self.assertEqual(completions, [([], "", False)])
+                self.assertFalse(ball._ingest_busy())
+                self.assertFalse(ball.intake_card.isVisible())
+                self.assertFalse(list((settings.STORAGE_DIR / "incoming/browser").iterdir()))
+                ball._start_remote_download_worker([self.page])
+                deadline = time.monotonic() + 2
+                while ball.remote_worker is not None and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(.005)
+                self.assertIsNone(ball.remote_worker)
+                self.assertEqual(ball.intake_card.mode, "images")
+                self.assertEqual(len(ball._web_candidates), 2)
+                self.assertFalse(any(p.is_file() for p in settings.ASSETS_DIR.rglob("*")))
+                ball.intake_card.dismiss("close")
+                self.assertFalse(list((settings.STORAGE_DIR / "incoming/browser").iterdir()))
+        finally:
+            release.set()
+            ball.close()
+            deadline = time.monotonic() + 3
+            while not ball._cleanup_done and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(.005)
 
 
 if __name__ == "__main__":

@@ -761,7 +761,7 @@ class GifGuiTests(unittest.TestCase):
                 "_download_one",
                 return_value=(None, "video_not_supported"),
             ):
-                worker._run_downloads([])
+                worker.run()
 
             self.assertFalse(finished[-1][2])
             self.assertTrue(
