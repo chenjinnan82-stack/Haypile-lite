@@ -28,6 +28,8 @@ The current source also discovers webpage covers, images, and site icons in supp
 
 Click the pile to find recent assets, including repeated intakes. Open an item to **Copy original file** or drag its preview into an app that accepts the file; font cards also offer **Export**. GIF, SVG, audio, and font files retain their original bytes. Taking a file does not confirm its usage or change its handoff status.
 
+Optional asset groups live in the existing **All assets** management page. Create a named group, select an asset and use **Add to group…** to check or uncheck membership, then choose the group to **Copy ready group assets**. Groups span intake batches, keep references without duplicating files, and persist locally. The copied handoff contains only ready members and reports how many were omitted; collecting an asset still takes the same steps. See [desktop intake](docs/DESKTOP_INTAKE.md) and [Agent recipes](docs/AGENT_RECIPES.md).
+
 This is a local acceptance candidate. The historical Alpha.9 downloads below do not include fonts. TTC / OTC, fonts with embedded SVG glyphs, script-created styles, system installation, and variable-axis controls are outside this version. Selected text needs a page URL; system-only fonts cannot be downloaded from a page. See [font intake and its limits](docs/FONT_INTAKE.md).
 
 ## Desktop Downloads

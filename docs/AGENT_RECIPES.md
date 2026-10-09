@@ -73,6 +73,16 @@ Flow:
 2. Download through the returned `url`, not from `storage/assets`.
 3. Write a small `asset-handoff.json` in the target project.
 
+For a cross-batch selection, the user can instead choose an asset group in
+desktop management and supply **Copy ready group assets** JSON. Use its `assets`
+directly instead of re-listing `batch_id: "latest"`, which could substitute a
+different selection. Check `collection.omitted_count`, verify each entry with
+`haypile_get_bundle` or `GET /api/v1/bundles/{id}`, download `resolved_url`, and
+compare the SHA-256 before writing the original bytes into the target project.
+Keep the group metadata and per-asset provenance in `asset-handoff.json`; do not
+fill omitted members with guessed files. A font's usage confirmation does not
+establish licensing permission.
+
 Handoff shape:
 
 ```json

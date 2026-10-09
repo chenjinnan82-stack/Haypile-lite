@@ -278,6 +278,29 @@ Set `HAYPILE_BASE_URL` when the backend is not using
 `complete` and continue with `next_cursor` until it is `null`; an unknown cursor
 is an error rather than an empty page.
 
+The desktop's **Copy ready group assets** action uses the same handoff version
+and per-asset fields, with optional root metadata:
+
+```json
+{
+  "collection": {
+    "id": "local-32-character-hex-id",
+    "name": "Personal website",
+    "member_count": 3,
+    "omitted_count": 1
+  }
+}
+```
+
+Only ready group members appear in `assets`; `omitted_count` counts pending,
+missing, or unlisted members. `asset_count`, `total_matching`, and `complete`
+describe the delivered ready subset, so `complete: true` does not mean every
+group member is ready. Group handoffs span batches and omit root `batch_id`.
+GUI search, filters, and pagination do not narrow this handoff. Collection
+membership is local desktop state; there is no collection HTTP or MCP endpoint.
+Use each delivered `id` with the existing bundle endpoint or MCP tool, and
+download the supplied `resolved_url` with SHA-256 verification.
+
 ## Agent Rules
 
 Agents should:

@@ -232,11 +232,15 @@ class AttachedHubTests(unittest.TestCase):
         )
         self.assertIs(
             panel.scope_buttons["all"].nextInFocusChain(),
-            panel.retry_batch_button,
+            panel.collection_picker,
+        )
+        self.assertIs(
+            panel.collection_picker.nextInFocusChain(),
+            panel.new_collection_button,
         )
         self.assertIs(
             panel.retry_batch_button.nextInFocusChain(),
-            panel.search_input,
+            panel.collection_name,
         )
         self.assertIs(
             panel.search_input.nextInFocusChain(),

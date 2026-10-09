@@ -12,13 +12,15 @@ import wave
 from unittest.mock import patch
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
 import app_gui
 from app.core.config import Settings
+from app.core.file_lock import InterProcessFileLock
+from app.services.asset_collections import read_collections, save_collection, set_collection_asset, collection_handoff
 from app.services.ingest_service import IngestCandidate, IngestService
 from app.services.scanner import manifest_dirty_path, mark_manifest_dirty
 from app.services.storage_runtime import StorageRuntimeDB
@@ -225,6 +227,163 @@ class DesktopAssetReuseTests(unittest.TestCase):
             self.assertEqual(self.card.store_button.text(), "Copy original file")
             self.assertLess(self.card.store_button.fontMetrics().horizontalAdvance(self.card.store_button.text()), self.card.store_button.width())
             self.assertFalse(self.card.export_button.isVisible())
+        finally:
+            app_gui.set_ui_language("auto")
+
+    def test_collection_storage_reopens_without_copying_or_confirming_assets(self):
+        path = self.settings.STORAGE_DIR / "collections.json"
+        self.assertEqual(read_collections(path), [])
+        self.assertFalse(path.exists())
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.settings.ASSETS_DIR.rglob("*") if p.is_file()}
+        font, image = self.bundle_for(self.font), self.bundle_for(self.png)
+        group = save_collection(path, "个人网站", asset_id=font["id"])
+        set_collection_asset(path, group["id"], image["id"], included=True)
+        set_collection_asset(path, group["id"], image["id"], included=True)
+        self.assertEqual(read_collections(path)[0]["asset_ids"], [font["id"], image["id"]])
+        set_collection_asset(path, group["id"], image["id"], included=False)
+        self.assertEqual(read_collections(path)[0]["asset_ids"], [font["id"]])
+        self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.settings.ASSETS_DIR.rglob("*") if p.is_file()})
+        self.assertEqual(self.service.get_bundle(font["id"])["status"], "pending")
+        self.ball.material_panel.refresh()
+        self.assertGreater(self.ball.material_panel.collection_picker.findData(group["id"]), 0)
+
+    def test_collection_storage_rejects_corruption_busy_and_failed_replace(self):
+        path = self.settings.STORAGE_DIR / "collections.json"
+        group = save_collection(path, "Keep", asset_id=self.bundle_for(self.png)["id"])
+        original = path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "name_exists"):
+            save_collection(path, "keep")
+        lock = InterProcessFileLock(path.with_suffix(".lock"))
+        self.assertTrue(lock.acquire(timeout=0))
+        try:
+            with self.assertRaises(TimeoutError):
+                save_collection(path, "busy")
+        finally:
+            lock.release()
+        with patch("app.services.json_io.os.replace", side_effect=OSError("unavailable")):
+            with self.assertRaises(OSError):
+                set_collection_asset(path, group["id"], self.bundle_for(self.gif)["id"], included=True)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(list(path.parent.glob(".collections.json.*.tmp")), [])
+        for invalid in ('{broken', '{"version":2,"collections":[]}',
+                        '{"version":1,"collections":[{"id":"' + group["id"] + '","name":"Keep","asset_ids":["../../outside"]}]}'):
+            path.write_text(invalid)
+            with self.assertRaises(ValueError):
+                save_collection(path, "new")
+            self.assertEqual(path.read_text(), invalid)
+        self.app.clipboard().setText("keep clipboard")
+        panel = self.ball.material_panel
+        panel._collection_id = group["id"]
+        panel.refresh()
+        self.assertFalse(panel.new_collection_button.isEnabled())
+        self.assertEqual(panel._all_recent_items, [])  # A broken group never expands to all assets.
+        panel._copy_collection()
+        self.assertEqual(self.app.clipboard().text(), "keep clipboard")
+
+    def test_collection_gui_creates_from_selected_asset_and_adds_later_intake(self):
+        panel = self.ball.material_panel
+        self.ball._handle_quick_menu_action("assets")
+        panel.set_batch_scope("all")
+        panel._set_filter_mode("font")
+        panel.item_labels[0].click()
+        def choose_menu(index):
+            menu = self.app.activePopupWidget()
+            menu.actions()[index].trigger()
+            menu.close()
+        QTimer.singleShot(0, lambda: choose_menu(-1))
+        panel.collection_member_button.click()
+        self.assertTrue(panel.collection_editor.isVisible())
+        panel.collection_name.setText("个人网站")
+        QTest.keyClick(panel.collection_name, Qt.Key.Key_Return)
+        group = read_collections(panel._collections_path())[0]
+        self.assertEqual(group["asset_ids"], [self.bundle_for(self.font)["id"]])
+        self.assertEqual(panel._collection_id, group["id"])
+        self.assertFalse(panel.collection_editor.isVisible())
+        self.assertTrue(self.ingest.ingest([IngestCandidate(self.png)]).duplicate_only)
+        panel.set_batch_scope("all")
+        panel._set_filter_mode("image")
+        panel.search_input.setText(Path(self.bundle_for(self.png)["source_key"]).stem)
+        panel.refresh()
+        panel.item_labels[0].click()
+        QTimer.singleShot(0, lambda: choose_menu(0))
+        panel.collection_member_button.click()
+        self.assertEqual(set(read_collections(panel._collections_path())[0]["asset_ids"]),
+                         {self.bundle_for(self.font)["id"], self.bundle_for(self.png)["id"]})
+        panel.search_input.clear()
+        panel._set_filter_mode("all")
+        panel.collection_picker.setCurrentIndex(panel.collection_picker.findData(group["id"]))
+        self.assertEqual(len(panel._all_recent_items), 2)
+        self.assertFalse(self.card.isVisible())
+        self.assertEqual(self.ball.quick_menu.size(), app_gui.QSize(620, 520))
+        # Missing members can still be removed; the menu cannot add them elsewhere.
+        image = self.bundle_for(self.png)
+        (self.settings.ASSETS_DIR / image["source_key"]).unlink()
+        panel.refresh()
+        panel._show_detail_for_bundle(self.service.get_bundle(image["id"]))
+        panel._selected_bundle_id = image["id"]
+        self.assertTrue(panel.collection_member_button.isEnabled())
+        QTimer.singleShot(0, lambda: choose_menu(0))
+        panel.collection_member_button.click()
+        self.assertEqual(read_collections(panel._collections_path())[0]["asset_ids"], [self.bundle_for(self.font)["id"]])
+
+    def test_collection_handoff_only_delivers_ready_members_and_preserves_clipboard_on_error(self):
+        panel = self.ball.material_panel
+        image, font, pending = (self.bundle_for(p) for p in (self.png, self.font, self.gif))
+        path = panel._collections_path()
+        group = save_collection(path, "My site", asset_id=image["id"])
+        for bundle in (font, pending):
+            set_collection_asset(path, group["id"], bundle["id"], included=True)
+        self.service.set_bundle_role(image["id"], "hero_image")
+        self.service.update_bundle_font(font["id"], font_usage="body")
+        self.service.set_bundle_role(self.bundle_for(self.svg)["id"], "icon")
+        payload = collection_handoff(path, group["id"], self.service, base_url="http://127.0.0.1:8010")
+        self.assertEqual({b["id"] for b in payload["assets"]}, {image["id"], font["id"]})
+        self.assertEqual(payload["collection"]["omitted_count"], 1)
+        self.assertNotIn("batch_id", payload)
+        self.assertTrue(payload["complete"])
+        (self.settings.ASSETS_DIR / font["source_key"]).unlink()
+        panel._collection_id = group["id"]
+        panel._copy_collection()
+        import json
+        copied = json.loads(self.app.clipboard().text())
+        self.assertEqual([b["id"] for b in copied["assets"]], [image["id"]])
+        self.assertEqual(copied["collection"]["omitted_count"], 2)
+        self.assertNotIn(str(self.settings.STORAGE_DIR), self.app.clipboard().text())
+        previous = self.app.clipboard().text()
+        mark_manifest_dirty(self.settings.MANIFEST_PATH)
+        panel._copy_collection()
+        self.assertEqual(self.app.clipboard().text(), previous)
+
+    def test_collection_editor_cancel_duplicate_and_english_keep_management_size(self):
+        panel = self.ball.material_panel
+        self.ball._handle_quick_menu_action("assets")
+        panel.new_collection_button.click()
+        QTest.keyClick(panel.collection_name, Qt.Key.Key_Escape)
+        self.assertFalse(panel.collection_editor.isVisible())
+        self.assertTrue(self.ball.quick_menu.isVisible())
+        panel.new_collection_button.click()
+        panel.collection_name.setText("My group")
+        panel.collection_save.click()
+        original = panel._collections_path().read_bytes()
+        panel.new_collection_button.click()
+        panel.collection_name.setText("My group")
+        panel.collection_save.click()
+        self.assertTrue(panel.collection_editor.isVisible())
+        self.assertEqual(panel.collection_name.text(), "My group")
+        self.assertEqual(panel._collections_path().read_bytes(), original)
+        panel.collection_cancel.click()
+        app_gui.set_ui_language("en")
+        try:
+            panel.retranslate()
+            self.app.processEvents()
+            self.assertEqual(self.ball.quick_menu.size(), app_gui.QSize(620, 520))
+            for widget in (panel.collection_picker, panel.new_collection_button, panel.collection_copy):
+                self.assertTrue(widget.isVisible())
+                self.assertTrue(panel.rect().contains(widget.rect().translated(widget.mapTo(panel, app_gui.QPoint()))))
+            self.assertEqual(panel.new_collection_button.text(), "New group")
+            for button in panel.filter_buttons.values():
+                if button.isVisible():
+                    self.assertGreaterEqual(button.width(), button.fontMetrics().horizontalAdvance(button.text()) + 8)
         finally:
             app_gui.set_ui_language("auto")
 

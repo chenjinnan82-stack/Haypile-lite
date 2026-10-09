@@ -76,6 +76,7 @@ from app.services.asset_provenance import (
     write_asset_provenance,
 )
 from app.services.handoff import build_asset_handoff, build_handoff_asset
+from app.services.asset_collections import read_collections, save_collection, set_collection_asset, collection_handoff
 from app.services.ai_provider import (
     AIProviderConfig,
     SystemCredentialStore,
@@ -179,6 +180,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QMenu,
@@ -1224,6 +1226,10 @@ class MaterialPanelWindow(QWidget):
         self._page_index = 0
         self._filter_mode = "all"
         self._batch_scope = "latest" if self._embedded else "all"
+        self._collection_id = ""
+        self._collections = []
+        self._collections_ready = True
+        self._collection_seed_id = ""
         self._selected_bundle_id = ""
         self._bundle_by_source_key: dict[str, dict[str, object]] = {}
         self._suggested_ai_role = ""
@@ -1331,6 +1337,67 @@ class MaterialPanelWindow(QWidget):
         scope_layout.addWidget(self.retry_batch_button)
         self.scope_row.setVisible(self._embedded)
         self._refresh_scope_buttons()
+
+        self.collection_picker = QComboBox(self.scope_row)
+        self.collection_picker.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.collection_picker.setMinimumHeight(26)
+        self.collection_picker.setMinimumWidth(100)
+        self.collection_picker.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.collection_picker.setStyleSheet(
+            "QComboBox { color: #4E5F3D; background: #FFF9EA; border: 1px solid #DDD3BB; "
+            "border-radius: 6px; padding: 2px 6px; font-size: 11px; }"
+            "QComboBox:focus { border: 2px solid #C8A24A; }"
+            "QComboBox QAbstractItemView { color: #443F33; background: #FFFDF5; "
+            "selection-color: #4E5F3D; selection-background-color: #E9ECDD; }"
+        )
+        self.collection_picker.setAccessibleName(ui_text("查看素材组合", "View asset group"))
+        self.collection_picker.currentIndexChanged.connect(self._select_collection)
+        self.new_collection_button = QPushButton(ui_text("新建组合", "New group"), self.scope_row)
+        self.new_collection_button.setMinimumHeight(26)
+        self.new_collection_button.clicked.connect(lambda: self._begin_collection())
+        scope_layout.insertWidget(2, self.collection_picker, 1)
+        scope_layout.insertWidget(3, self.new_collection_button)
+
+        self.collection_editor = QWidget(self.container)
+        editor_layout = QHBoxLayout(self.collection_editor)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        self.collection_name = QLineEdit(self.collection_editor)
+        self.collection_name.setMaxLength(64)
+        self.collection_name.setAccessibleName(ui_text("组合名称", "Group name"))
+        self.collection_name.setPlaceholderText(ui_text("例如：个人网站", "e.g. Personal website"))
+        self.collection_name.setStyleSheet(_LINE_EDIT_STYLE)
+        self.collection_name.returnPressed.connect(self._save_collection)
+        self.collection_name.installEventFilter(self)
+        self.collection_save = QPushButton(ui_text("创建", "Create"), self.collection_editor)
+        self.collection_save.clicked.connect(self._save_collection)
+        self.collection_cancel = QPushButton(ui_text("取消", "Cancel"), self.collection_editor)
+        self.collection_cancel.clicked.connect(self._cancel_collection)
+        editor_layout.addWidget(self.collection_name, 1)
+        editor_layout.addWidget(self.collection_save)
+        editor_layout.addWidget(self.collection_cancel)
+        self.collection_editor.hide()
+
+        self.collection_actions = QWidget(self.container)
+        actions_layout = QHBoxLayout(self.collection_actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        self.collection_summary = QLabel(self.collection_actions)
+        self.collection_summary.setTextFormat(Qt.TextFormat.PlainText)
+        self.collection_copy = QPushButton(ui_text("复制这组可用素材", "Copy ready group assets"), self.collection_actions)
+        self.collection_copy.setMinimumHeight(28)
+        self.collection_copy.clicked.connect(self._copy_collection)
+        actions_layout.addWidget(self.collection_summary, 1)
+        actions_layout.addWidget(self.collection_copy)
+        self.collection_actions.hide()
+        self.collection_member_button = QPushButton(ui_text("加入组合…", "Add to group…"), self.container)
+        self.collection_member_button.setMinimumHeight(28)
+        self.collection_member_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.collection_member_button.clicked.connect(self._collection_menu)
+        self.collection_member_button.setStyleSheet(_ACTION_BUTTON_STYLE)
+        self.collection_member_button.hide()
+        for button in (self.new_collection_button, self.collection_save, self.collection_cancel, self.collection_copy):
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            button.setMinimumHeight(26)
+            button.setStyleSheet(_ACTION_BUTTON_STYLE + "QPushButton { font-size: 11px; padding: 0 7px; }")
 
         self.filter_row = QWidget(self.container)
         self.filter_row.setStyleSheet("QWidget { background: transparent; border: none; }")
@@ -1575,6 +1642,7 @@ class MaterialPanelWindow(QWidget):
         self.font_size_input.setSuffix(" px")
         self.font_size_input.setMinimumHeight(26)
         self.font_size_input.setFixedWidth(72)
+        self.font_size_input.setStyleSheet(_LINE_EDIT_STYLE.replace("QLineEdit", "QSpinBox"))
         self.font_text_input.textChanged.connect(self._on_font_preview_changed)
         self.font_size_input.valueChanged.connect(self._on_font_preview_changed)
         sample_row.addWidget(self.font_text_input, 1)
@@ -1693,6 +1761,8 @@ class MaterialPanelWindow(QWidget):
         self.paste_ingest_button.show()
         layout.addWidget(self.paste_ingest_button)
         layout.addWidget(self.scope_row)
+        layout.addWidget(self.collection_editor)
+        layout.addWidget(self.collection_actions)
         layout.addWidget(toolbar)
 
         body = QWidget(self.container)
@@ -1734,6 +1804,7 @@ class MaterialPanelWindow(QWidget):
         detail_layout.addWidget(self.audio_usage_row)
         detail_layout.addWidget(self.font_controls)
         detail_layout.addWidget(self.retry_ai_button)
+        detail_layout.addWidget(self.collection_member_button)
         detail_layout.addWidget(self.copy_selected_button)
 
         body_layout.addWidget(list_pane, 42)
@@ -1748,7 +1819,13 @@ class MaterialPanelWindow(QWidget):
         focus_order = [
             self.paste_ingest_button,
             *self.scope_buttons.values(),
+            self.collection_picker,
+            self.new_collection_button,
             self.retry_batch_button,
+            self.collection_name,
+            self.collection_save,
+            self.collection_cancel,
+            self.collection_copy,
             self.search_input,
             *self.filter_buttons.values(),
             *self.item_labels,
@@ -1762,6 +1839,7 @@ class MaterialPanelWindow(QWidget):
             *self.font_usage_buttons.values(),
             self.font_notes_button, self.font_export_button,
             self.retry_ai_button,
+            self.collection_member_button,
             self.copy_selected_button,
         ]
         for current, following in zip(focus_order, focus_order[1:]):
@@ -1788,6 +1866,9 @@ class MaterialPanelWindow(QWidget):
         role_layout.activate()
 
     def eventFilter(self, watched, event) -> bool:
+        if watched is self.collection_name and event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            self._cancel_collection()
+            return True
         if (
             watched is self.role_row
             and event.type() in {QEvent.Type.Resize, QEvent.Type.Show}
@@ -1832,6 +1913,7 @@ class MaterialPanelWindow(QWidget):
         }
         for mode, button in self.filter_buttons.items():
             button.setText(labels[mode])
+        self._refresh_filter_buttons()
         self.search_input.setPlaceholderText(ui_text("搜索文件、用途、状态", "Search file, role, status"))
         self.search_input.setAccessibleName(ui_text("搜索素材", "Search assets"))
         self.paste_ingest_button.setText(ui_text("从剪贴板收纳", "Import from clipboard"))
@@ -1875,6 +1957,14 @@ class MaterialPanelWindow(QWidget):
         self.scope_buttons["latest"].setText(ui_text("最新批次", "Latest batch"))
         self.scope_buttons["all"].setText(ui_text("全部素材", "All assets"))
         self.retry_batch_button.setText(ui_text("重试整理", "Retry sorting"))
+        self.collection_picker.setAccessibleName(ui_text("查看素材组合", "View asset group"))
+        self.new_collection_button.setText(ui_text("新建组合", "New group"))
+        self.collection_name.setAccessibleName(ui_text("组合名称", "Group name"))
+        self.collection_name.setPlaceholderText(ui_text("例如：个人网站", "e.g. Personal website"))
+        self.collection_save.setText(ui_text("创建", "Create"))
+        self.collection_cancel.setText(ui_text("取消", "Cancel"))
+        self.collection_copy.setText(ui_text("复制这组可用素材", "Copy ready group assets"))
+        self.collection_member_button.setText(ui_text("加入组合…", "Add to group…"))
         QTimer.singleShot(0, self._layout_image_role_buttons)
         self.refresh()
 
@@ -1921,12 +2011,17 @@ class MaterialPanelWindow(QWidget):
 
     def refresh(self) -> None:
         self._stop_gif_preview(reset_to_first=True, discard=True)
+        self._refresh_collections()
         service = self._bundle_service()
         catalog_unavailable = False
         try:
             scoped_bundles = service.list_bundles(
                 batch_id="latest" if self._batch_scope == "latest" else None
             )
+            if self._collection_id:
+                collection = next((item for item in self._collections if item["id"] == self._collection_id), None)
+                members = set(collection["asset_ids"]) if collection else set()
+                scoped_bundles = [bundle for bundle in scoped_bundles if bundle["id"] in members]
         except ManifestReadinessError:
             scoped_bundles = []
             catalog_unavailable = True
@@ -1982,6 +2077,7 @@ class MaterialPanelWindow(QWidget):
         self.preview_label.hide()
         self.font_preview_scroll.hide()
         self.copy_selected_button.setEnabled(False)
+        self.collection_member_button.hide()
         self.copy_ready_button.setVisible(bool(scoped_items) and not self._embedded)
         if not scoped_items:
             empty_text = (
@@ -2001,6 +2097,12 @@ class MaterialPanelWindow(QWidget):
                 )
             )
             self.empty_state_label.setText(empty_text)
+            if self._collection_id and not catalog_unavailable:
+                self.empty_state_label.setText(ui_text(
+                    "这组还没有可展示的素材\n切换到全部素材，选择素材后加入组合",
+                    "No assets to display in this group\nSwitch to All assets, then add an item to the group",
+                ))
+                empty_text = self.empty_state_label.text()
             self.empty_state_label.setAccessibleName(
                 ui_text("素材目录状态", "Asset catalog status")
             )
@@ -2058,6 +2160,16 @@ class MaterialPanelWindow(QWidget):
                 f"{summary.total_count} bundles · Ready {summary.recognized_count} · Pending {summary.pending_count}",
             )
         self.summary_label.setText(summary_text)
+        self.collection_actions.setVisible(self._embedded and bool(self._collection_id))
+        self.collection_copy.setEnabled(self._collections_ready and not catalog_unavailable and recognized_count > 0)
+        if self._collection_id:
+            collection = next((item for item in self._collections if item["id"] == self._collection_id), None)
+            member_count = len(collection["asset_ids"]) if collection else 0
+            omitted = member_count - recognized_count
+            self.collection_summary.setText(ui_text(
+                f"{member_count} 项 · 可用 {recognized_count} · 未交付 {omitted}",
+                f"{member_count} items · Ready {recognized_count} · Omitted {omitted}",
+            ) if self._collections_ready and collection else ui_text("组合记录暂不可用", "Group record unavailable"))
         if summary.pending_count and not self._embedded:
             self.pending_label.setText(ui_text(f"{summary.pending_count} 个待确认用途", f"{summary.pending_count} roles need review"))
             self.pending_label.show()
@@ -2144,6 +2256,7 @@ class MaterialPanelWindow(QWidget):
         self.refresh()
 
     def set_batch_scope(self, scope: str) -> None:
+        self._collection_id = ""
         normalized = scope if scope in {"latest", "all"} else "latest"
         if normalized == self._batch_scope:
             self.refresh()
@@ -2153,6 +2266,144 @@ class MaterialPanelWindow(QWidget):
         self._page_index = 0
         self._refresh_scope_buttons()
         self.refresh()
+
+    def _collections_path(self) -> Path:
+        return self.settings.STORAGE_DIR / "collections.json"
+
+    def _refresh_collections(self) -> None:
+        try:
+            self._collections = read_collections(self._collections_path())
+            self._collections_ready = True
+        except (OSError, ValueError):
+            self._collections = []
+            self._collections_ready = False
+        blocked = self.collection_picker.blockSignals(True)
+        self.collection_picker.clear()
+        self.collection_picker.addItem(ui_text("素材组合", "Asset groups"), "")
+        for item in self._collections:
+            self.collection_picker.addItem(item["name"], item["id"])
+        index = self.collection_picker.findData(self._collection_id)
+        if index < 0:
+            self.collection_picker.addItem(ui_text("组合不可用", "Group unavailable"), self._collection_id)
+            index = self.collection_picker.count() - 1
+        self.collection_picker.setCurrentIndex(index)
+        self.collection_picker.setToolTip(self.collection_picker.currentText())
+        self.collection_picker.blockSignals(blocked)
+        self.collection_picker.setEnabled(self._collections_ready)
+        self.new_collection_button.setEnabled(self._collections_ready)
+        self.new_collection_button.setToolTip("" if self._collections_ready else ui_text("组合记录不可读，请恢复后重试", "Group records cannot be read; restore them and retry"))
+
+    def _select_collection(self, _index: int) -> None:
+        self._collection_id = str(self.collection_picker.currentData() or "")
+        self._batch_scope = "all"
+        self._selected_bundle_id = ""
+        self._page_index = 0
+        self._filter_mode = "all"
+        self.search_input.clear()
+        self._search_refresh_timer.stop()
+        self._refresh_filter_buttons()
+        self._refresh_scope_buttons()
+        self.refresh()
+
+    def _begin_collection(self, asset_id: str = "") -> None:
+        self._collection_seed_id = asset_id
+        self.collection_name.clear()
+        self.collection_editor.show()
+        self.collection_name.setFocus()
+
+    def _cancel_collection(self) -> None:
+        self.collection_editor.hide()
+        self.collection_name.clear()
+        self._collection_seed_id = ""
+        self.new_collection_button.setFocus()
+
+    def _collection_error(self, exc) -> None:
+        if str(exc) == "collection_name_exists":
+            text = ui_text("组合名称已存在，请换一个名称", "Group name already exists; choose another name")
+        elif str(exc) == "invalid_collection_name":
+            text = ui_text("请输入 1–64 字的组合名称", "Enter a group name of 1–64 characters")
+        elif str(exc) == "collection_has_no_ready_assets":
+            text = ui_text("这组暂无可用素材，请先确认用途", "This group has no ready assets; confirm usage first")
+        else:
+            text = ui_text("操作未完成，请确认素材与组合记录可用后重试", "Action not completed; check the assets and group records, then retry")
+        if self._toast_callback is not None:
+            self._toast_callback(text, tone="error")
+        else:
+            self.detail_label.setText(text)
+            self.detail_label.show()
+
+    def _save_collection(self) -> None:
+        try:
+            if self._collection_seed_id:
+                bundle = self._bundle_service().get_bundle(self._collection_seed_id)
+                if bundle is None or bundle["status"] == "missing":
+                    raise ValueError("collection_asset_unavailable")
+            collection = save_collection(self._collections_path(), self.collection_name.text(), asset_id=self._collection_seed_id)
+        except (OSError, ValueError, TimeoutError, ManifestReadinessError) as exc:
+            self._collection_error(exc)
+            self.collection_name.setFocus()
+            return
+        self._cancel_collection()
+        self._collection_id = collection["id"]
+        self._batch_scope = "all"
+        self._page_index = 0
+        self._filter_mode = "all"
+        self.search_input.clear()
+        self._search_refresh_timer.stop()
+        self._refresh_filter_buttons()
+        self._refresh_scope_buttons()
+        self.refresh()
+        self.collection_picker.setFocus()
+
+    def _collection_menu(self) -> None:
+        asset_id = self._selected_bundle_id
+        if not asset_id:
+            return
+        try:
+            collections = read_collections(self._collections_path())
+            bundle = self._bundle_service().get_bundle(asset_id)
+            if bundle is None:
+                raise ValueError("collection_asset_unavailable")
+        except (OSError, ValueError, ManifestReadinessError) as exc:
+            self._collection_error(exc)
+            return
+        menu = QMenu(self.collection_member_button)
+        for item in collections:
+            action = menu.addAction(item["name"].replace("&", "&&"))
+            action.setCheckable(True)
+            action.setChecked(asset_id in item["asset_ids"])
+            action.setEnabled(action.isChecked() or bundle["status"] != "missing")
+            action.triggered.connect(lambda included, target=item["id"]: self._set_collection_asset(target, asset_id, included))
+        if collections:
+            menu.addSeparator()
+        action = menu.addAction(ui_text("新建组合…", "New group…"))
+        action.setEnabled(bundle["status"] != "missing")
+        action.triggered.connect(lambda: self._begin_collection(asset_id))
+        menu.exec(self.collection_member_button.mapToGlobal(QPoint(0, self.collection_member_button.height())))
+        menu.deleteLater()
+
+    def _set_collection_asset(self, collection_id: str, asset_id: str, included: bool) -> None:
+        try:
+            if included:
+                bundle = self._bundle_service().get_bundle(asset_id)
+                if bundle is None or bundle["status"] == "missing":
+                    raise ValueError("collection_asset_unavailable")
+            set_collection_asset(self._collections_path(), collection_id, asset_id, included=included)
+        except (OSError, ValueError, TimeoutError, ManifestReadinessError) as exc:
+            self._collection_error(exc)
+            return
+        self.refresh()
+
+    def _copy_collection(self) -> None:
+        try:
+            payload = collection_handoff(self._collections_path(), self._collection_id, self._bundle_service(), base_url=self._base_url())
+        except (OSError, ValueError, ManifestReadinessError) as exc:
+            self._collection_error(exc)
+            return
+        QApplication.clipboard().setText(json.dumps(payload, ensure_ascii=False, indent=2))
+        if self._toast_callback is not None:
+            count, omitted = payload["asset_count"], payload["collection"]["omitted_count"]
+            self._toast_callback(ui_text(f"已复制 {count} 项可用素材 · {omitted} 项未交付", f"Copied {count} ready assets · {omitted} omitted"), tone="success")
 
     def _on_search_changed(self, _text: str) -> None:
         self._page_index = 0
@@ -2182,6 +2433,7 @@ class MaterialPanelWindow(QWidget):
 
     def _refresh_filter_buttons(self) -> None:
         for mode, button in self.filter_buttons.items():
+            button.setMinimumWidth(button.fontMetrics().horizontalAdvance(button.text()) + 12)
             button.setChecked(mode == self._filter_mode)
 
     def _filter_recent_items(self, items) -> list:
@@ -2309,6 +2561,8 @@ class MaterialPanelWindow(QWidget):
             self.detail_label.setToolTip("")
         self.detail_label.show()
         self.copy_selected_button.setEnabled(bool(bundle.get("id")))
+        self.collection_member_button.setVisible(self._embedded)
+        self.collection_member_button.setEnabled(self._collections_ready)
         self.role_row.setVisible(not is_audio and not is_font and bundle["status"] != "missing")
         self.gif_role_row.setVisible(is_gif and bundle["status"] != "missing")
         self.audio_usage_row.setVisible(is_audio and bundle["status"] != "missing")
