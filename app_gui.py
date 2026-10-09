@@ -2394,6 +2394,10 @@ class MaterialPanelWindow(QWidget):
             return
         self.refresh()
 
+        if self._toast_callback is not None:
+            self._toast_callback(ui_text("已加入组合", "Added to group") if included else
+                                 ui_text("已移出组合", "Removed from group"), tone="success")
+
     def _copy_collection(self) -> None:
         try:
             payload = collection_handoff(self._collections_path(), self._collection_id, self._bundle_service(), base_url=self._base_url())
@@ -4000,6 +4004,7 @@ class DesktopIntakeCard(QWidget):
         self.index = 0
         self.bundle = None
         self._drag_origin = None
+        self._dragging = False
         self._exporting = False
         self.font_preview_worker = None
         self._preview_generation = 0
@@ -4533,7 +4538,13 @@ class DesktopIntakeCard(QWidget):
         if pixmap and not pixmap.isNull():
             drag.setPixmap(pixmap.scaled(160, 100, Qt.AspectRatioMode.KeepAspectRatio,
                                         Qt.TransformationMode.SmoothTransformation))
-        if drag.exec(Qt.DropAction.CopyAction) == Qt.DropAction.CopyAction:
+        self._dragging = True
+        try:
+            copied = drag.exec(Qt.DropAction.CopyAction) == Qt.DropAction.CopyAction
+        finally:
+            self._dragging = False
+            self._last_buttons, self._last_escape = self._desktop_buttons(), self._desktop_escape()
+        if copied:
             self.dismiss("drag")
 
     def _export_bundle_font(self) -> None:
@@ -4629,7 +4640,7 @@ class DesktopIntakeCard(QWidget):
         return bool(self._escape_state and self._escape_state(0, 53))
 
     def _poll_outside(self) -> None:
-        if self._exporting:
+        if self._exporting or self._dragging:
             return
         # ponytail: poll native counters only while visible; no event tap or input-capturing overlay.
         buttons, escape = self._desktop_buttons(), self._desktop_escape()
@@ -4643,11 +4654,11 @@ class DesktopIntakeCard(QWidget):
             self.store_button.setEnabled(self.ball.worker is None and not self.ball._closing)
 
     def _application_state_changed(self, state) -> None:
-        if not self._exporting and state == Qt.ApplicationState.ApplicationInactive and self.isVisible():
+        if not (self._exporting or self._dragging) and state == Qt.ApplicationState.ApplicationInactive and self.isVisible():
             self.dismiss("outside")
 
     def eventFilter(self, watched, event) -> bool:
-        if self.isVisible() and not self._exporting:
+        if self.isVisible() and not (self._exporting or self._dragging):
             if watched is self.preview and self.mode == "bundle":
                 if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                     self._drag_origin = event.position().toPoint()

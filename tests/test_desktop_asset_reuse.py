@@ -12,8 +12,8 @@ import wave
 from unittest.mock import patch
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -203,6 +203,41 @@ class DesktopAssetReuseTests(unittest.TestCase):
         self.assertIn("导出失败", self.card.status.text())
         outside.close()
 
+    def test_drag_keeps_card_until_the_system_drag_finishes(self):
+        bundle = self.bundle_for(self.gif)
+        self.card.show_bundle(bundle)
+        outside = QWidget()
+        self.app.clipboard().setText("keep clipboard")
+        def during_drag(_actions):
+            self.card._application_state_changed(Qt.ApplicationState.ApplicationInactive)
+            self.card._poll_outside()
+            self.card.eventFilter(outside, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(),
+                Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+            self.card.eventFilter(self.card.preview, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape,
+                Qt.KeyboardModifier.NoModifier))
+            self.assertTrue(self.card.isVisible())
+            self.assertEqual(self.card.mode, "bundle")
+            return Qt.DropAction.IgnoreAction
+        with patch.object(app_gui, "QDrag") as drag_type, \
+             patch.object(self.card, "_desktop_buttons", return_value=(1, 0, 0)) as buttons, \
+             patch.object(self.card, "_desktop_escape", return_value=False), \
+             patch.object(app_gui.QCursor, "pos", return_value=QPoint(-10000, -10000)):
+            drag_type.return_value.exec.side_effect = during_drag
+            self.card._drag_bundle_original()
+            self.assertFalse(self.card._dragging)
+            self.assertEqual(self.app.clipboard().text(), "keep clipboard")
+            self.card._poll_outside()  # The press that began the cancelled drag is consumed.
+            self.assertTrue(self.card.isVisible())
+            drag_type.return_value.exec.side_effect = RuntimeError("drag failed")
+            with self.assertRaises(RuntimeError):
+                self.card._drag_bundle_original()
+            self.assertFalse(self.card._dragging)
+            buttons.return_value = (2, 0, 0)
+            self.card._poll_outside()  # A new outside click still closes the card normally.
+            self.assertFalse(self.card.isVisible())
+        self.assertEqual((self.settings.ASSETS_DIR / bundle["source_key"]).read_bytes(), self.gif.read_bytes())
+        outside.close()
+
     def test_closed_or_missing_card_has_no_file_actions_and_english_labels_fit(self):
         bundle = self.bundle_for(self.font)
         self.card.show_bundle(bundle)
@@ -306,7 +341,9 @@ class DesktopAssetReuseTests(unittest.TestCase):
         panel.refresh()
         panel.item_labels[0].click()
         QTimer.singleShot(0, lambda: choose_menu(0))
-        panel.collection_member_button.click()
+        with patch.object(panel, "_toast_callback") as toast:
+            panel.collection_member_button.click()
+            toast.assert_called_once_with("已加入组合", tone="success")
         self.assertEqual(set(read_collections(panel._collections_path())[0]["asset_ids"]),
                          {self.bundle_for(self.font)["id"], self.bundle_for(self.png)["id"]})
         panel.search_input.clear()
@@ -319,11 +356,13 @@ class DesktopAssetReuseTests(unittest.TestCase):
         image = self.bundle_for(self.png)
         (self.settings.ASSETS_DIR / image["source_key"]).unlink()
         panel.refresh()
-        panel._show_detail_for_bundle(self.service.get_bundle(image["id"]))
-        panel._selected_bundle_id = image["id"]
+        missing_index = next(i for i, item in enumerate(panel._visible_items) if item.source_key == image["source_key"])
+        panel.item_labels[missing_index].click()
         self.assertTrue(panel.collection_member_button.isEnabled())
         QTimer.singleShot(0, lambda: choose_menu(0))
-        panel.collection_member_button.click()
+        with patch.object(panel, "_toast_callback") as toast:
+            panel.collection_member_button.click()
+            toast.assert_called_once_with("已移出组合", tone="success")
         self.assertEqual(read_collections(panel._collections_path())[0]["asset_ids"], [self.bundle_for(self.font)["id"]])
 
     def test_collection_handoff_only_delivers_ready_members_and_preserves_clipboard_on_error(self):
