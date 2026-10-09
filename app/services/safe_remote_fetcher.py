@@ -61,6 +61,9 @@ def download_remote_media(
     timeout: float,
     should_stop: Callable[[], bool] | None = None,
     opener: Callable[..., "SafeRemoteResponse"] | None = None,
+    font_extension: str = "",
+    font_only: bool = False,
+    allow_web_page: bool = False,
 ) -> tuple[Path | None, str]:
     """Fetch one supported media asset into a private, durable local file."""
     stop_requested = should_stop or (lambda: False)
@@ -69,12 +72,16 @@ def download_remote_media(
         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         url_suffix = Path(unquote(urlsplit(url).path)).suffix.lower()
         media_spec = REMOTE_CONTENT_TYPE_EXTENSIONS.get(content_type)
-        if content_type == "application/octet-stream" and url_suffix in SUPPORTED_FONT_EXTENSIONS:
-            media_spec = ("font", url_suffix)
+        if content_type == "application/octet-stream" and (url_suffix in SUPPORTED_FONT_EXTENSIONS or font_extension in SUPPORTED_FONT_EXTENSIONS):
+            media_spec = ("font", url_suffix if url_suffix in SUPPORTED_FONT_EXTENSIONS else font_extension)
         elif content_type in {"font/sfnt", "application/font-sfnt"} and url_suffix in SUPPORTED_FONT_EXTENSIONS:
             media_spec = ("font", url_suffix)
         if media_spec is None:
+            if allow_web_page and content_type in {"text/html", "application/xhtml+xml", "text/css"}:
+                return None, "web_page"
             return None, "video_not_supported" if content_type.startswith("video/") else "unsupported"
+        if font_only and media_spec[0] != "font":
+            return None, "unsupported"
         content_length = _content_length(response.headers.get("content-length"))
         byte_limit = max(0, int(max_bytes))
         size_reason = "too_large"
@@ -364,7 +371,8 @@ def open_safe_remote(
             target.request_target,
             headers={
                 "Host": target.host_header,
-                "Accept": "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,font/ttf,font/otf,font/sfnt,application/font-sfnt;q=0.9,application/octet-stream;q=0.8,audio/*;q=0.9",
+                "Accept": "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,font/ttf,font/otf,font/woff,font/woff2,font/sfnt,text/html,text/css,application/xhtml+xml,application/octet-stream;q=0.8,audio/*;q=0.9",
+                "Accept-Encoding": "identity",
                 "Connection": "close",
                 "User-Agent": "Haypile/0.3",
             },

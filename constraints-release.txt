@@ -9,6 +9,7 @@ colorama==0.4.6
 defusedxml==0.7.1
 fastapi==0.139.0
 fonttools==4.66.1
+Brotli==1.2.0
 h11==0.16.0
 httpcore==1.0.9
 httptools==0.8.0

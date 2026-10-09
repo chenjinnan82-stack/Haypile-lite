@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urldefrag, urlparse
 from uuid import uuid4
 
 
@@ -131,6 +131,7 @@ from app.services.safe_remote_fetcher import (
 )
 from app.services.theme_registry import ThemeRegistry
 from app.services.font_service import DEFAULT_FONT_TEXT, export_font_original, render_font_preview
+from app.services.web_font_service import MAX_WEB_FONT_BYTES, MAX_WEB_FONTS, WebFontCandidate, download_web_fonts
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
@@ -181,6 +182,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -340,10 +343,15 @@ class DroppedMediaHTMLParser(HTMLParser):
         self.urls: list[str] = []
         self.audio_urls: set[str] = set()
         self.image_urls: set[str] = set()
+        self.link_urls: list[str] = []
         self._audio_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if tag == "a":
+            href = next((value for name, value in attrs if name.lower() == "href" and value), "")
+            if href:
+                self.link_urls.append(href.strip())
         if tag == "audio":
             self._audio_depth += 1
         if tag not in {"img", "audio", "source"}:
@@ -378,13 +386,22 @@ class RemoteDownloadWorker(QThread):
         super().__init__()
         self.urls = self._dedupe_urls(urls)
         self.incoming_dir = incoming_dir
+        self.font_candidates: list[WebFontCandidate] = []
+        self.font_discovery_note = ""
 
     def run(self) -> None:
         downloaded: list[Path] = []
+        failed = False
         try:
             self._run_downloads(downloaded)
+        except Exception as exc:
+            failed = True
+            self.font_candidates.clear()
+            logger.warning("网页素材获取异常 error_type=%s", type(exc).__name__)
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit([], ui_text("网页素材无法获取，请重试", "Web assets could not be fetched; retry"), False)
         finally:
-            if self.isInterruptionRequested():
+            if failed or self.isInterruptionRequested():
                 for path in downloaded:
                     path.unlink(missing_ok=True)
                     provenance_path_for(path).unlink(missing_ok=True)
@@ -400,6 +417,8 @@ class RemoteDownloadWorker(QThread):
         unsupported = 0
         video_not_supported = 0
         downloaded_bytes = 0
+        web_font_bytes = 0
+        web_pages = 0
         total = max(len(self.urls), 1)
         for index, url in enumerate(self.urls, start=1):
             if self.isInterruptionRequested():
@@ -411,6 +430,37 @@ class RemoteDownloadWorker(QThread):
                     too_large += 1
                     break
                 path, reason = self._download_one(url, index, max_bytes=min(self.MAX_FILE_SIZE_BYTES, remaining))
+                if reason == "web_page":
+                    web_pages += 1
+                    if len(self.font_candidates) >= MAX_WEB_FONTS or web_font_bytes >= MAX_WEB_FONT_BYTES:
+                        self.font_discovery_note = ui_text("已达到网页扫描上限，列表显示已找到的字体。", "Page scan limit reached; showing fonts found so far.")
+                        continue
+                    self.progress_signal.emit(40, ui_text("正在查找网页字体...", "Finding fonts on the page..."))
+                    candidates, truncated, web_failed = download_web_fonts(
+                        url, self.incoming_dir, timeout=self.TIMEOUT_SECONDS,
+                        should_stop=self.isInterruptionRequested, opener=open_safe_remote,
+                        max_bytes=min(remaining, MAX_WEB_FONT_BYTES - web_font_bytes),
+                        max_fonts=MAX_WEB_FONTS - len(self.font_candidates),
+                    )
+                    # Keep one candidate per original byte sequence across multiple pages.
+                    hashes = {candidate.sha256 for candidate in self.font_candidates}
+                    for candidate in candidates:
+                        digest = candidate.sha256
+                        if digest in hashes:
+                            candidate.path.unlink(missing_ok=True)
+                            provenance_path_for(candidate.path).unlink(missing_ok=True)
+                            continue
+                        hashes.add(digest)
+                        self.font_candidates.append(candidate)
+                        downloaded.append(candidate.path)
+                        size = candidate.path.stat().st_size
+                        web_font_bytes += size
+                        downloaded_bytes += size
+                    if truncated:
+                        self.font_discovery_note = ui_text("已达到网页扫描上限，列表显示已找到的字体。", "Page scan limit reached; showing fonts found so far.")
+                    elif web_failed and not self.font_discovery_note:
+                        self.font_discovery_note = ui_text("部分字体或样式表无法获取，列表显示成功获取的字体。", "Some fonts or stylesheets could not be fetched; showing available fonts.")
+                    continue
             except (httpx.HTTPError, OSError, SafeFetchError, ValueError) as exc:
                 logger.warning(
                     "网页素材下载失败 url=%s error_type=%s",
@@ -437,13 +487,15 @@ class RemoteDownloadWorker(QThread):
             downloaded_bytes += path.stat().st_size
 
         if not downloaded:
-            if video_not_supported and not failed and not too_large and not gif_too_large:
+            if web_pages:
+                message = ui_text("网页中没有找到可获取的字体；可以尝试字体下载链接", "No downloadable fonts found on this page; try a font download link")
+            elif video_not_supported and not failed and not too_large and not gif_too_large:
                 message = ui_text(
                     "不支持视频；请拖入真实 GIF 图片",
                     "Video is not supported; drop a true GIF image",
                 )
             elif unsupported and not failed and not too_large:
-                message = ui_text("没有找到可收纳的图片、音频或 TTF/OTF 字体", "No images, audio, or TTF/OTF fonts to store")
+                message = ui_text("没有找到可收纳的图片、音频或字体", "No images, audio, or fonts to store")
             elif gif_too_large and not failed and not too_large:
                 message = ui_text("GIF 素材超过 50MB", "GIF asset is over 50MB")
             elif font_too_large and not failed and not too_large:
@@ -470,11 +522,103 @@ class RemoteDownloadWorker(QThread):
             timeout=self.TIMEOUT_SECONDS,
             should_stop=self.isInterruptionRequested,
             opener=open_safe_remote,
+            allow_web_page=True,
         )
 
     @staticmethod
     def _dedupe_urls(urls: list[str]) -> list[str]:
-        return dedupe_remote_urls(urls, limit=RemoteDownloadWorker.MAX_URLS)
+        return dedupe_remote_urls([urldefrag(url.strip())[0] for url in urls], limit=RemoteDownloadWorker.MAX_URLS)
+
+
+class WebFontSelectionDialog(QDialog):
+    def __init__(self, candidates: list[WebFontCandidate], note: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.candidates = candidates
+        self.setWindowTitle(ui_text("选择网页字体", "Choose web fonts"))
+        self.resize(780, 640)
+        self.setStyleSheet("QDialog { background: #F6F1E4; color: #333333; }")
+        layout = QVBoxLayout(self)
+        introduction = QLabel(ui_text("点击字体预览，勾选后收纳。网站可能使用多个字体或字符子集。", "Select a font to preview, then check it to store. Sites may use several fonts or character subsets."))
+        introduction.setWordWrap(True)
+        layout.addWidget(introduction)
+        if note:
+            notice = QLabel(note)
+            notice.setWordWrap(True)
+            layout.addWidget(notice)
+        self.font_list = QListWidget()
+        self.font_list.setAccessibleName(ui_text("网页字体候选；空格勾选，方向键预览", "Web font candidates; Space to check, arrow keys to preview"))
+        self.font_list.setMinimumHeight(120)
+        self.font_list.setMaximumHeight(210)
+        self.font_list.setStyleSheet(
+            "QListWidget { background: #FFF9EA; color: #333333; border: 1px solid #DDD3BB; border-radius: 7px; }"
+            "QListWidget:focus { border: 2px solid #C8A24A; }"
+            "QListWidget::item { padding: 8px; }"
+            "QListWidget::item:selected { background: #EFE3C7; color: #333333; }"
+        )
+        for candidate in candidates:
+            metadata = candidate.metadata
+            label = f"{metadata.get('family') or candidate.path.stem} · {metadata.get('style') or 'Regular'} · {candidate.path.suffix[1:].upper()}"
+            if candidate.hint:
+                label += "\n" + candidate.hint[:96] + ("…" if len(candidate.hint) > 96 else "")
+            item = QListWidgetItem(label)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self.font_list.addItem(item)
+        layout.addWidget(self.font_list)
+        self.preview = QLabel()
+        self.preview.setAccessibleName(ui_text("所选字体的原文件预览", "Preview rendered from the selected font file"))
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        scroll = QScrollArea()
+        scroll.setWidget(self.preview)
+        layout.addWidget(scroll, 1)
+        self.details = QTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setAccessibleName(ui_text("字体来源、缺字与许可信息", "Font source, missing characters and license information"))
+        self.details.setMaximumHeight(130)
+        self.details.setStyleSheet("QTextEdit { background: #FFF9EA; color: #333333; border: 1px solid #DDD3BB; }")
+        layout.addWidget(self.details)
+        buttons = QDialogButtonBox()
+        self.store_button = buttons.addButton(ui_text("收纳所选字体", "Store selected fonts"), QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton(ui_text("取消字体收纳", "Cancel font intake"), QDialogButtonBox.ButtonRole.RejectRole)
+        for button in buttons.buttons():
+            button.setMinimumHeight(34)
+            button.setStyleSheet(_ACTION_BUTTON_STYLE + "QPushButton:disabled { color: #8A8374; background: #EEE8D9; }")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.font_list.currentRowChanged.connect(self._show_preview)
+        self.font_list.itemChanged.connect(self._update_selection)
+        self.font_list.setCurrentRow(0)
+        self.font_list.setFocus()
+        self._update_selection()
+
+    def selected_paths(self) -> list[Path]:
+        return [candidate.path for index, candidate in enumerate(self.candidates)
+                if self.font_list.item(index).checkState() == Qt.CheckState.Checked]
+
+    def _update_selection(self) -> None:
+        count = len(self.selected_paths())
+        self.store_button.setEnabled(bool(count))
+        self.store_button.setText(ui_text(f"收纳所选字体（{count}）", f"Store selected fonts ({count})"))
+
+    def _show_preview(self, index: int) -> None:
+        if not 0 <= index < len(self.candidates):
+            return
+        candidate = self.candidates[index]
+        image = QImage(candidate.pixels, candidate.width, candidate.height, QImage.Format.Format_RGBA8888).copy()
+        self.preview.setPixmap(QPixmap.fromImage(image))
+        self.preview.resize(candidate.width, candidate.height)
+        metadata = candidate.metadata
+        information = [ui_text(f"来源：{candidate.origin}", f"Source: {candidate.origin}")]
+        if candidate.hint:
+            information.append(ui_text(f"网页声明：{candidate.hint}", f"Page declaration: {candidate.hint}"))
+        if metadata.get("is_variable"):
+            information.append(ui_text("可变字体，预览使用默认实例", "Variable font; preview uses the default instance"))
+        if candidate.missing:
+            information.append(ui_text(f"此文件缺少字符：{candidate.missing}", f"Characters missing from this file: {candidate.missing}"))
+        license_text = str(metadata.get("license_description") or metadata.get("license_url") or "")
+        information.append(ui_text("内嵌许可：", "Embedded license: ") + (license_text[:1024] or ui_text("未知", "Unknown")))
+        self.details.setPlainText("\n".join(information))
 
 
 class IngestWorker(QThread):
@@ -629,8 +773,8 @@ class IngestWorker(QThread):
                 "Video is not supported; drop a true GIF image",
             ),
             "unsupported_media": ui_text(
-                "文件被拦截：只支持安全的图片/音频/TTF/OTF 字体，或素材超过允许的体积",
-                "Blocked: only safe images/audio/TTF/OTF fonts are supported, or an asset exceeds its size limit",
+                "文件被拦截：只支持安全的图片、音频或字体，或素材超过允许的体积",
+                "Blocked: only safe images, audio, or fonts are supported, or an asset exceeds its size limit",
             ),
         }
         return messages.get(
@@ -1272,8 +1416,8 @@ class MaterialPanelWindow(QWidget):
         self.paste_ingest_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.paste_ingest_button.setAccessibleDescription(
             ui_text(
-                "收纳剪贴板中的图片、音频、GIF 或 TTF/OTF 字体",
-                "Store an image, audio file, GIF, or TTF/OTF font from the clipboard",
+                "收纳剪贴板中的图片、音频、GIF、字体或网页链接",
+                "Store an image, audio file, GIF, font, or page link from the clipboard",
             )
         )
         self.paste_ingest_button.setStyleSheet(_ACTION_BUTTON_STYLE)
@@ -1733,8 +1877,8 @@ class MaterialPanelWindow(QWidget):
         self.paste_ingest_button.setText(ui_text("从剪贴板收纳", "Import from clipboard"))
         self.paste_ingest_button.setAccessibleDescription(
             ui_text(
-                "收纳剪贴板中的图片、音频、GIF 或 TTF/OTF 字体",
-                "Store an image, audio file, GIF, or TTF/OTF font from the clipboard",
+                "收纳剪贴板中的图片、音频、GIF、字体或网页链接",
+                "Store an image, audio file, GIF, font, or page link from the clipboard",
             )
         )
         role_labels = {
@@ -4742,6 +4886,7 @@ class HaypileFloatingBall(QWidget):
 
         self.worker: IngestWorker | None = None
         self.remote_worker: RemoteDownloadWorker | None = None
+        self._font_selection_dialog: WebFontSelectionDialog | None = None
         self._remote_ingest_paths: set[Path] = set()
         self.ai_batch_worker: AIBatchWorker | None = None
         self._ai_batch_queue: list[str] = []
@@ -5271,8 +5416,8 @@ class HaypileFloatingBall(QWidget):
         if route.name == ROUTE_UNSUPPORTED:
             self._show_intake_error(
                 ui_text(
-                    "没有找到可收纳的图片、音频或 TTF/OTF 字体",
-                    "No images, audio, or TTF/OTF fonts to store",
+                    "没有找到可收纳的图片、音频或字体",
+                    "No images, audio, or fonts to store",
                 )
             )
             return
@@ -5417,7 +5562,7 @@ class HaypileFloatingBall(QWidget):
         if mime_data.hasHtml():
             parser = DroppedMediaHTMLParser()
             parser.feed(mime_data.html())
-            urls.extend(value for value in parser.urls if HaypileFloatingBall._is_http_url(value))
+            urls.extend(value for value in (parser.urls or parser.link_urls) if HaypileFloatingBall._is_http_url(value))
         if mime_data.hasText():
             urls.extend(value for value in mime_data.text().split() if HaypileFloatingBall._is_http_url(value))
         return RemoteDownloadWorker._dedupe_urls(urls)
@@ -5660,7 +5805,10 @@ class HaypileFloatingBall(QWidget):
 
     @staticmethod
     def _is_http_url(value: str) -> bool:
-        return urlparse(value).scheme.lower() in {"http", "https"}
+        try:
+            return urlparse(value).scheme.lower() in {"http", "https"}
+        except ValueError:
+            return False
 
     @staticmethod
     def _is_audio_url(value: str) -> bool:
@@ -5670,6 +5818,7 @@ class HaypileFloatingBall(QWidget):
         return bool(
             self.worker is not None
             or self.remote_worker is not None
+            or self._font_selection_dialog is not None
             or self._pending_ingest_finish is not None
         )
 
@@ -5738,20 +5887,47 @@ class HaypileFloatingBall(QWidget):
             for path in downloaded_files:
                 self._delete_remote_temp(path)
             return
-        if self.remote_worker is not None:
-            self.remote_worker.deleteLater()
-            self.remote_worker = None
-        if downloaded_files and fallback_file is not None:
+        worker = self.remote_worker
+        candidates = worker.font_candidates if worker is not None else []
+        note = worker.font_discovery_note if worker is not None else ""
+        if worker is not None:
+            worker.finished.connect(worker.deleteLater)
+            if not worker.isRunning():
+                worker.deleteLater()
+        self.remote_worker = None
+        self._remote_ingest_paths.update(downloaded_files)
+        if candidates:
+            candidate_paths = {candidate.path for candidate in candidates}
+            dialog = WebFontSelectionDialog(candidates, note, self)
+            self._font_selection_dialog = dialog
+            try:
+                selected = set(dialog.selected_paths()) if dialog.exec() == QDialog.DialogCode.Accepted else set()
+            finally:
+                self._font_selection_dialog = None
+                dialog.deleteLater()
+            for path in candidate_paths - selected:
+                self._delete_remote_temp(path)
+                self._remote_ingest_paths.discard(path)
+            downloaded_files = [path for path in downloaded_files if path not in candidate_paths or path in selected]
+        if (downloaded_files or candidates) and fallback_file is not None:
             self._delete_remote_temp(fallback_file)
             self._remote_ingest_paths.discard(fallback_file)
+        if self._closing:
+            self._cleanup_remote_ingest_paths()
+            return
         files = [*local_files, *downloaded_files]
         if not downloaded_files and fallback_file is not None and fallback_file.is_file():
             files.append(fallback_file)
         if not files:
+            if candidates:
+                cancel_message = ui_text("已取消字体收纳", "Font intake cancelled")
+                self.show_toast(cancel_message, tone="pending")
+                self.quick_menu.complete_progress("pending", cancel_message)
+                return
             failure_message = (
                 message
                 if not success
-                else ui_text("没有找到可收纳的图片、音频或 TTF/OTF 字体", "No images, audio, or TTF/OTF fonts to store")
+                else ui_text("没有找到可收纳的图片、音频或字体", "No images, audio, or fonts to store")
             )
             self._show_intake_error(failure_message)
             self.quick_menu.complete_progress("error", failure_message)
@@ -6457,6 +6633,8 @@ class HaypileFloatingBall(QWidget):
         if self._cleanup_done or self._closing:
             return
         self._closing = True
+        if self._font_selection_dialog is not None:
+            self._font_selection_dialog.reject()
         self._shutdown_started_at = time.monotonic()
         self._shutdown_wait_notice_shown = False
         self._collapse_timer.stop()

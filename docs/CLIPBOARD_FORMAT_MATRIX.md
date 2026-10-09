@@ -23,6 +23,7 @@ HTTP, or MCP.
 | Non-empty `image/gif` or `com.compuserve.gif` bytes | Raw GIF intake | Preserved |
 | Direct HTTP(S) media URL plus decoded image pixels | Safe remote intake; static PNG only if no remote item succeeds | Preserved only when remote GIF intake succeeds |
 | Direct HTTP(S) media URL | Safe remote intake | Preserved when the response is a valid GIF |
+| HTTP(S) webpage / CSS URL, or HTML anchor with no media source | Bounded font discovery, preview, and explicit selection | Normal intake after selection |
 | Decoded image pixels only | Static PNG intake | Not preserved |
 | Empty GIF payload | Reject | Not applicable |
 | App-private or otherwise unsupported data | Reject pending evidence | Unknown |

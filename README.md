@@ -20,11 +20,11 @@ A local-first asset intake for AI creators and independent developers.
 
 ## Font intake in the Alpha.10 development candidate
 
-The current source accepts TTF / OTF files up to 50 MiB through file drops, clipboard file paths, or direct font URLs. Variable fonts use their default instance. The asset drawer adds a font filter, family search, custom sample text and size, and explicit missing-glyph feedback.
+The current source accepts TTF / OTF / WOFF / WOFF2 files up to 50 MiB through file drops, clipboard file paths, or direct font URLs. Drop or paste a webpage link to find fonts in its download links and static stylesheets, preview the candidates, and choose which originals to store. Variable fonts use their default instance. The asset drawer adds a font filter, family search, custom sample text and size, and explicit missing-glyph feedback.
 
 Confirm heading, body, or decorative usage before a font enters ready handoff. Read embedded license information, save source/license notes, and export the original bytes. Missing license information remains unknown; manual notes neither replace embedded metadata nor establish commercial rights. HTTP / MCP expose `type=font` and `font_usage`; see the [Agent HTTP contract](docs/AGENT_HTTP_CONTRACT.md).
 
-This is a local acceptance candidate. The historical Alpha.9 downloads below do not include fonts. TTC / OTC / WOFF / WOFF2, fonts with embedded SVG glyphs, webpage font extraction, system installation, and variable-axis controls are outside this version.
+This is a local acceptance candidate. The historical Alpha.9 downloads below do not include fonts. TTC / OTC, fonts with embedded SVG glyphs, script-created styles, system installation, and variable-axis controls are outside this version. Selected text needs a page URL; system-only fonts cannot be downloaded from a page. See [font intake and its limits](docs/FONT_INTAKE.md).
 
 ## Desktop Downloads
 

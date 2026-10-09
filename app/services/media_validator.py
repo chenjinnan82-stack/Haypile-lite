@@ -75,7 +75,7 @@ def validate_media(path: Path) -> MediaValidation:
             metadata = read_font_metadata(path)
         except Exception as exc:
             raise MediaValidationError("invalid_font") from exc
-        return MediaValidation("font", "font/ttf" if suffix == ".ttf" else "font/otf", font_metadata=metadata)
+        return MediaValidation("font", "font/" + suffix[1:], font_metadata=metadata)
     raise MediaValidationError("unsupported_media")
 
 

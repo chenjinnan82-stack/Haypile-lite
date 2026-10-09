@@ -204,10 +204,94 @@ class FontSupportTests(unittest.TestCase):
             output.write(struct.pack(">I", 0xFFFFFFF0))
         with self.assertRaises(MediaValidationError):
             validate_media(invalid)
-        for suffix in (".ttc", ".otc", ".woff", ".woff2"):
+        for suffix in (".ttc", ".otc"):
             unsupported = self.root / ("unsupported" + suffix)
             unsupported.write_bytes(self.ttf.read_bytes())
             self.assertEqual(self.ingest._candidate_rejection_code(unsupported), "unsupported_extension")
+        for suffix in (".woff", ".woff2"):
+            disguised = self.root / ("disguised" + suffix)
+            disguised.write_bytes(self.ttf.read_bytes())
+            with self.assertRaises(MediaValidationError):
+                validate_media(disguised)
+
+    def test_web_formats_preserve_original_bytes_preview_export_and_handoff(self) -> None:
+        originals = [self.ttf, self.root / "cff.otf", self.root / "variable.ttf"]
+        write_test_font(originals[1])
+        write_test_font(originals[2], variable=True)
+        paths = []
+        for original in originals:
+            reference, _ = render_font_preview(original, "Haypile 冬", 32)
+            for flavor in ("woff", "woff2"):
+                path = self.root / (original.stem + "." + flavor)
+                with TTFont(original) as font:
+                    font.flavor = flavor
+                    font.save(path)
+                metadata = validate_media(path)
+                self.assertEqual(metadata.mime_type, "font/" + flavor)
+                self.assertEqual(metadata.font_metadata["is_variable"], original.stem == "variable")
+                preview, missing = render_font_preview(path, "Haypile 冬", 32)
+                self.assertEqual(missing, "冬")
+                self.assertEqual(preview.tobytes(), reference.tobytes())
+                preview.close()
+                target = self.root / ("export-" + path.name)
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                export_font_original(path, target, sha256=digest, storage_dir=self.storage)
+                self.assertEqual(target.read_bytes(), path.read_bytes())
+                paths.append(path)
+            reference.close()
+        bundles = self.store(*paths)
+        self.assertEqual(len(bundles), 6)
+        for bundle in bundles:
+            self.assertEqual(bundle["status"], "pending")
+            self.assertEqual(bundle["sha256"], hashlib.sha256((self.assets / bundle["source_key"]).read_bytes()).hexdigest())
+
+    def test_web_font_decompression_and_optional_metadata_are_bounded(self) -> None:
+        import brotli
+        from fontTools.ttLib.woff2 import WOFF2DirectoryEntry
+        from io import BytesIO
+        for flavor in ("woff", "woff2"):
+            path = self.root / ("compressed." + flavor)
+            with TTFont(self.ttf) as font:
+                font.flavor = flavor
+                font.save(path)
+            valid = path.read_bytes()
+            corrupted = bytearray(valid)
+            struct.pack_into(">I", corrupted, 16, MAX_FONT_BYTES + 1)
+            path.write_bytes(corrupted)
+            with self.assertRaises(MediaValidationError):
+                validate_media(path)
+            with TTFont(self.ttf) as font:
+                font["SVG "] = newTable("SVG ")
+                font["SVG "].docList = [SVGDocument('<svg xmlns="http://www.w3.org/2000/svg"/>', 2, 2, compressed=True)]
+                font.flavor = flavor
+                font.save(path)
+            with patch("app.services.font_service.brotli.Decompressor", side_effect=AssertionError("must not decode SVG")), \
+                 patch("app.services.font_service.zlib.decompressobj", side_effect=AssertionError("must not decode SVG")):
+                with self.assertRaises(MediaValidationError):
+                    validate_media(path)
+            path.write_bytes(valid)
+            if flavor == "woff2":
+                source = BytesIO(valid)
+                source.seek(48)
+                for _ in range(struct.unpack_from(">H", valid, 12)[0]):
+                    WOFF2DirectoryEntry().fromFile(source)
+                start = source.tell()
+                bomb = brotli.compress(b"x" * (4 * 1024 * 1024))
+                corrupted = bytearray(valid[:start] + bomb)
+                struct.pack_into(">I", corrupted, 8, len(corrupted))
+                struct.pack_into(">I", corrupted, 20, len(bomb))
+                path.write_bytes(corrupted)
+                with patch("fontTools.ttLib.woff2.brotli.decompress", side_effect=AssertionError("unbounded decoder must not run")):
+                    with self.assertRaises(MediaValidationError):
+                        validate_media(path)
+            # Optional WOFF XML is not used for embedded SFNT name metadata.
+            with TTFont(self.ttf) as font:
+                font.flavor = flavor
+                font.save(path)
+            with TTFont(path) as font:
+                font.flavorData.metaData = b"<metadata>" + b" " * 100000 + b"</metadata>"
+                font.save(self.root / ("metadata." + flavor))
+            self.assertEqual(validate_media(self.root / ("metadata." + flavor)).font_metadata["family"], "Haypile Acceptance")
 
     def test_identity_usage_notes_duplicate_latest_and_restart(self) -> None:
         bundle, = self.store()

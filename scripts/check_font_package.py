@@ -38,6 +38,16 @@ def main() -> int:
         else:
             write_test_font(path, variable=variable, symbol=name == "symbol.ttf")
         hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    from fontTools.ttLib import TTFont
+    for original in ("static.ttf", "outline.otf", "variable.ttf"):
+        for flavor in ("woff", "woff2"):
+            path = samples / (Path(original).stem + "." + flavor)
+            with TTFont(samples / original) as font:
+                font.flavor = flavor
+                font.save(path)
+            hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    for name in hashes:
+        path = samples / name
         # Leave the synthetic URL raw to exercise sanitization in the compiled reader.
         provenance_path_for(path).write_text(json.dumps({"font_usage": "body", "font_annotation": {
             "license_note": "Original MIT test outlines", "source_note": "https://reader(test):private@example.com/font.ttf?token=" + "!" * 24,
@@ -70,7 +80,7 @@ def main() -> int:
                     time.sleep(.1)
             fonts = json.loads(get("/api/v1/bundles?type=font&font_usage=body&status=ready")[0])
             assert len(fonts) == len(hashes), fonts
-            assert sum(font["font_metadata"]["is_variable"] for font in fonts) == 1
+            assert sum(font["font_metadata"]["is_variable"] for font in fonts) == 3
             for font in fonts:
                 name = Path(font["source_key"]).name
                 data, headers = get(font["url"])
@@ -94,10 +104,10 @@ def main() -> int:
             assert {asset["sha256"] for asset in handoff["assets"]} == set(hashes.values())
             assert all(asset["font_annotation"]["license_note"] == "Original MIT test outlines" for asset in handoff["assets"])
             assert all(asset["font_annotation"]["source_note"] == "https://example.com" for asset in handoff["assets"])
-            report = {"result": "passed", "formats": ["TTF", "CFF OTF", "variable TTF default", "TrueType OTF", "symbol TTF"], "hashes": hashes,
+            report = {"result": "passed", "formats": ["TTF", "CFF OTF", "variable TTF default", "TrueType OTF", "symbol TTF", "TrueType/CFF/variable WOFF", "TrueType/CFF/variable WOFF2"], "hashes": hashes,
                       "manifest_generation": ready["manifest_generation"], "mcp_handoff": handoff}
             (output / "font-package-results.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-            print("PASS: packaged TTF / CFF OTF / TrueType OTF / variable default / symbol TTF, static hashes, HTTP and MCP handoff")
+            print("PASS: packaged TTF / OTF / WOFF / WOFF2, CFF and variable default, symbol TTF, static hashes, HTTP and MCP handoff")
         finally:
             backend.terminate()
             try:

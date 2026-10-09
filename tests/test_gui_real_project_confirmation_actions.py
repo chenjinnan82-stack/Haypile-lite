@@ -3114,6 +3114,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             def __exit__(self, *_args):
                 return False
 
+            def iter_bytes(self):
+                yield b"<html><body>No custom fonts</body></html>"
+
         app_gui_module.open_safe_remote = lambda *_args, **_kwargs: FakeResponse()
         worker = app_gui_module.RemoteDownloadWorker(
             ["https://example.com/page"],
@@ -3125,7 +3128,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             worker.run()
 
             self.assertFalse(finished[-1][2])
-            self.assertEqual(finished[-1][1], "没有找到可收纳的图片、音频或 TTF/OTF 字体")
+            self.assertEqual(finished[-1][1], "网页中没有找到可获取的字体；可以尝试字体下载链接")
         finally:
             app_gui_module.open_safe_remote = previous_opener
 
