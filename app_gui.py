@@ -56,6 +56,7 @@ from app.core.config import (
 from app.core.exceptions import ResourceExhaustedError
 from app.core.file_lock import InterProcessFileLock
 from app.gui.backend_runtime import BackendRuntimeController
+from app.gui.native_drag import execute_copy_drag
 from app.gui.desktop_startup import (
     DesktopStartupResult,
     prepare_desktop_runtime,
@@ -4621,7 +4622,7 @@ class DesktopIntakeCard(QWidget):
         card_generation = self._preview_generation
         self._dragging = True
         try:
-            copied = drag.exec(Qt.DropAction.CopyAction) == Qt.DropAction.CopyAction
+            copied = execute_copy_drag(drag, self)
         finally:
             self._dragging = False
             self._last_buttons, self._last_escape = self._desktop_buttons(), self._desktop_escape()

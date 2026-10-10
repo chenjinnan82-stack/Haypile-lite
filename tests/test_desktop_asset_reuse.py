@@ -3,13 +3,15 @@ from __future__ import annotations
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import ctypes
 import hashlib
 from pathlib import Path
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 import wave
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
@@ -18,6 +20,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
 import app_gui
+from app.gui import native_drag
 from app.core.config import Settings
 from app.core.file_lock import InterProcessFileLock
 from app.services.asset_collections import read_collections, save_collection, dissolve_collection, set_collection_asset, collection_handoff
@@ -276,6 +279,64 @@ class DesktopAssetReuseTests(unittest.TestCase):
                     self.assertEqual(self.card.candidates, [candidate])
                     self.assertEqual(self.ball._web_candidates, [candidate])
                     self.assertTrue(candidate.path.is_file())
+        self.assertEqual((self.settings.ASSETS_DIR / bundle["source_key"]).read_bytes(), self.gif.read_bytes())
+
+    def test_cocoa_completion_preserves_cancel_and_restores_the_native_callback(self):
+        bundle = self.bundle_for(self.gif)
+        signature = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p,
+                                     ctypes.c_void_p, native_drag._NSPoint, ctypes.c_ulong)
+        forwarded = []
+        original = signature(lambda *arguments: forwarded.append(arguments[-1]))
+        original_address = ctypes.cast(original, ctypes.c_void_p).value
+        for outcome in ("copy", "cancel", "other_view", "new_card", "exception", "changed_abi", "missing_method"):
+            with self.subTest(outcome=outcome):
+                self.card.show_bundle(bundle)
+                view = int(self.card.winId())
+                installed = original_address
+                replacements = []
+                def replace(_method, implementation):
+                    nonlocal installed
+                    previous = installed
+                    installed = implementation.value if isinstance(implementation, ctypes.c_void_p) else implementation
+                    replacements.append(installed)
+                    return previous
+                objc = SimpleNamespace(
+                    object_getClass=Mock(return_value=2),
+                    sel_registerName=Mock(return_value=3),
+                    class_getInstanceMethod=Mock(return_value=0 if outcome == "missing_method" else 4),
+                    method_getTypeEncoding=Mock(return_value=b"changed" if outcome == "changed_abi" else b"v48@0:8@16{CGPoint=dd}24Q40"),
+                    method_getImplementation=Mock(return_value=original_address),
+                    method_setImplementation=Mock(side_effect=replace),
+                )
+                forwarded.clear()
+                def during_drag(actions):
+                    self.assertEqual(actions, Qt.DropAction.CopyAction)
+                    if outcome == "exception":
+                        raise RuntimeError("drag failed")
+                    if outcome not in ("changed_abi", "missing_method"):
+                        receiver = view + 1 if outcome == "other_view" else view
+                        operation = 0 if outcome == "cancel" else 1
+                        signature(installed)(receiver, 3, None, native_drag._NSPoint(), operation)
+                    if outcome == "new_card":
+                        self.card.show_recent()
+                    return Qt.DropAction.IgnoreAction
+                with patch.object(native_drag.QGuiApplication, "platformName", return_value="cocoa"), \
+                     patch.object(native_drag.ctypes, "CDLL", return_value=objc), \
+                     patch.object(app_gui, "QDrag") as drag_type:
+                    drag_type.return_value.exec.side_effect = during_drag
+                    if outcome == "exception":
+                        with self.assertRaises(RuntimeError):
+                            self.card._drag_bundle_original()
+                    else:
+                        self.card._drag_bundle_original()
+                    drag_type.return_value.exec.assert_called_once_with(Qt.DropAction.CopyAction)
+                self.assertEqual(installed, original_address)
+                self.assertEqual(len(replacements), 0 if outcome in ("changed_abi", "missing_method") else 2)
+                self.assertEqual(forwarded, [] if outcome in ("exception", "changed_abi", "missing_method") else [0 if outcome == "cancel" else 1])
+                self.assertEqual(self.card.isVisible(), outcome != "copy")
+                self.assertFalse(self.card._dragging)
+                if outcome == "new_card":
+                    self.assertEqual(self.card.mode, "recent")
         self.assertEqual((self.settings.ASSETS_DIR / bundle["source_key"]).read_bytes(), self.gif.read_bytes())
 
     def test_closed_or_missing_card_has_no_file_actions_and_english_labels_fit(self):
