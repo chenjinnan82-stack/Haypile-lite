@@ -248,6 +248,36 @@ class DesktopAssetReuseTests(unittest.TestCase):
         self.assertEqual((self.settings.ASSETS_DIR / bundle["source_key"]).read_bytes(), self.gif.read_bytes())
         outside.close()
 
+    def test_completed_drag_does_not_dismiss_a_new_card(self):
+        bundle = self.bundle_for(self.gif)
+        with Image.open(self.png) as image:
+            candidate = app_gui.WebImageCandidate(self.png, hashlib.sha256(self.png.read_bytes()).hexdigest(),
+                {"width":64, "height":48, "mime_type":"image/png"}, "https://example.org", "image", "New image",
+                image.convert("RGBA").tobytes(), 64, 48)
+        replacements = (
+            ("recent", self.card.show_recent),
+            ("bundle", lambda: self.card.show_bundle(self.bundle_for(self.png))),
+            ("images", lambda: self.card.show_candidates([], [candidate])),
+        )
+        for mode, replace in replacements:
+            with self.subTest(mode=mode):
+                self.card.show_bundle(bundle)
+                def during_drag(_actions):
+                    if mode == "images":
+                        self.ball._web_candidates = [candidate]
+                    replace()  # The native drag loop still delivers application events.
+                    return Qt.DropAction.CopyAction
+                with patch.object(app_gui, "QDrag") as drag_type:
+                    drag_type.return_value.exec.side_effect = during_drag
+                    self.card._drag_bundle_original()
+                self.assertTrue(self.card.isVisible())
+                self.assertEqual(self.card.mode, mode)
+                if mode == "images":
+                    self.assertEqual(self.card.candidates, [candidate])
+                    self.assertEqual(self.ball._web_candidates, [candidate])
+                    self.assertTrue(candidate.path.is_file())
+        self.assertEqual((self.settings.ASSETS_DIR / bundle["source_key"]).read_bytes(), self.gif.read_bytes())
+
     def test_closed_or_missing_card_has_no_file_actions_and_english_labels_fit(self):
         bundle = self.bundle_for(self.font)
         self.card.show_bundle(bundle)

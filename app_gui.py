@@ -4618,13 +4618,14 @@ class DesktopIntakeCard(QWidget):
         if pixmap and not pixmap.isNull():
             drag.setPixmap(pixmap.scaled(160, 100, Qt.AspectRatioMode.KeepAspectRatio,
                                         Qt.TransformationMode.SmoothTransformation))
+        card_generation = self._preview_generation
         self._dragging = True
         try:
             copied = drag.exec(Qt.DropAction.CopyAction) == Qt.DropAction.CopyAction
         finally:
             self._dragging = False
             self._last_buttons, self._last_escape = self._desktop_buttons(), self._desktop_escape()
-        if copied:
+        if copied and card_generation == self._preview_generation:
             self.dismiss("drag")
 
     def _export_bundle_font(self) -> None:
