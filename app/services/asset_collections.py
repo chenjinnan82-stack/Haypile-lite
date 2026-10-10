@@ -49,20 +49,45 @@ def _asset_id(value) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
-def save_collection(path: Path, name: str, *, asset_id: str = "") -> dict:
+def save_collection(path: Path, name: str, *, asset_id: str = "", collection_id: str = "") -> dict:
     name = _collection_name(name)
     if not isinstance(asset_id, str) or (asset_id and not _asset_id(asset_id)):
         raise ValueError("invalid_asset_id")
+    if not isinstance(collection_id, str) or (collection_id and not re.fullmatch(r"[0-9a-f]{32}", collection_id)):
+        raise ValueError("invalid_collection_id")
+    if collection_id and asset_id:
+        raise ValueError("invalid_collection_member")
     lock = InterProcessFileLock(path.with_suffix(".lock"))
     if not lock.acquire(timeout=0):
         raise TimeoutError("collections_busy")
     try:
         collections = read_collections(path)
-        if any(item["name"].casefold() == name.casefold() for item in collections):
+        collection = next((item for item in collections if item["id"] == collection_id), None)
+        if collection_id and collection is None:
+            raise ValueError("collection_not_found")
+        if any(_collection_name(item["name"]).casefold() == name.casefold() and item["id"] != collection_id for item in collections):
             raise ValueError("collection_name_exists")
-        collection = {"id": uuid4().hex, "name": name, "asset_ids": [asset_id] if asset_id else []}
-        atomic_write_json(path, {"version": 1, "collections": [*collections, collection]})
+        if collection is None:
+            collection = {"id": uuid4().hex, "name": name, "asset_ids": [asset_id] if asset_id else []}
+            collections.append(collection)
+        else:
+            collection["name"] = name
+        atomic_write_json(path, {"version": 1, "collections": collections})
         return collection
+    finally:
+        lock.release()
+
+
+def dissolve_collection(path: Path, collection_id: str) -> None:
+    lock = InterProcessFileLock(path.with_suffix(".lock"))
+    if not lock.acquire(timeout=0):
+        raise TimeoutError("collections_busy")
+    try:
+        collections = read_collections(path)
+        remaining = [item for item in collections if item["id"] != collection_id]
+        if len(remaining) == len(collections):
+            raise ValueError("collection_not_found")
+        atomic_write_json(path, {"version": 1, "collections": remaining})
     finally:
         lock.release()
 

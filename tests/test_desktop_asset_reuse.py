@@ -13,14 +13,15 @@ from unittest.mock import patch
 
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QTextDocument
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
 import app_gui
 from app.core.config import Settings
 from app.core.file_lock import InterProcessFileLock
-from app.services.asset_collections import read_collections, save_collection, set_collection_asset, collection_handoff
+from app.services.asset_collections import read_collections, save_collection, dissolve_collection, set_collection_asset, collection_handoff
+from app.services.asset_provenance import write_asset_provenance
 from app.services.ingest_service import IngestCandidate, IngestService
 from app.services.scanner import manifest_dirty_path, mark_manifest_dirty
 from app.services.storage_runtime import StorageRuntimeDB
@@ -74,6 +75,15 @@ class DesktopAssetReuseTests(unittest.TestCase):
     def mouse(self, kind, x, button=Qt.MouseButton.NoButton, buttons=Qt.MouseButton.LeftButton):
         event = QMouseEvent(kind, QPointF(x, 12), QPointF(x, 12), button, buttons, Qt.KeyboardModifier.NoModifier)
         self.app.sendEvent(self.card.preview, event)
+
+    def choose_menu(self, button, index):
+        def choose():
+            menu = self.app.activePopupWidget()
+            self.assertIsInstance(menu, app_gui.QMenu)
+            menu.actions()[index].trigger()
+            menu.close()
+        QTimer.singleShot(0, choose)
+        button.click()
 
     def test_recent_duplicate_intake_moves_to_front_without_touching_original(self):
         old = self.bundle_for(self.png)
@@ -315,18 +325,146 @@ class DesktopAssetReuseTests(unittest.TestCase):
         panel._copy_collection()
         self.assertEqual(self.app.clipboard().text(), "keep clipboard")
 
+    def test_collection_rename_and_dissolve_preserve_members_and_originals_on_failure(self):
+        path = self.settings.STORAGE_DIR / "collections.json"
+        image = self.bundle_for(self.png)
+        group = save_collection(path, "Keep", asset_id=image["id"])
+        other = save_collection(path, "Other")
+        before = {p: p.read_bytes() for p in self.settings.ASSETS_DIR.rglob("*") if p.is_file()}
+        renamed = save_collection(path, " Renamed ", collection_id=group["id"])
+        self.assertEqual(renamed, {**group, "name": "Renamed"})
+        self.assertEqual(save_collection(path, "RENAMED", collection_id=group["id"])["id"], group["id"])
+        original = path.read_bytes()
+        for name, target in (("other", group["id"]), ("", group["id"]), ("new", "0" * 32)):
+            with self.assertRaises(ValueError):
+                save_collection(path, name, collection_id=target)
+            self.assertEqual(path.read_bytes(), original)
+        with patch("app.services.json_io.os.replace", side_effect=OSError("unavailable")):
+            for operation in (lambda: save_collection(path, "Failed", collection_id=group["id"]),
+                              lambda: dissolve_collection(path, group["id"])):
+                with self.assertRaises(OSError):
+                    operation()
+                self.assertEqual(path.read_bytes(), original)
+        lock = InterProcessFileLock(path.with_suffix(".lock"))
+        self.assertTrue(lock.acquire(timeout=0))
+        try:
+            with self.assertRaises(TimeoutError):
+                dissolve_collection(path, group["id"])
+        finally:
+            lock.release()
+        dissolve_collection(path, group["id"])
+        self.assertEqual(read_collections(path), [other])
+        with self.assertRaisesRegex(ValueError, "not_found"):
+            dissolve_collection(path, group["id"])
+        path.write_text("{broken")
+        with self.assertRaises(ValueError):
+            dissolve_collection(path, other["id"])
+        self.assertEqual(path.read_text(), "{broken")
+        self.assertEqual(before, {p: p.read_bytes() for p in self.settings.ASSETS_DIR.rglob("*") if p.is_file()})
+        self.assertEqual(self.service.get_bundle(image["id"])["status"], "pending")
+
+    def test_collection_menu_renames_inline_and_requires_confirmation_to_dissolve(self):
+        panel = self.ball.material_panel
+        path = panel._collections_path()
+        group = save_collection(path, "个人网站", asset_id=self.bundle_for(self.font)["id"])
+        save_collection(path, "已有组合")
+        self.ball._handle_quick_menu_action("assets")
+        panel.collection_picker.setCurrentIndex(panel.collection_picker.findData(group["id"]))
+        self.choose_menu(panel.new_collection_button, 1)
+        self.assertEqual(panel.collection_name.text(), group["name"])
+        panel.collection_name.setText("已有组合")
+        QTest.keyClick(panel.collection_name, Qt.Key.Key_Return)
+        self.assertTrue(panel.collection_notice.isVisible())
+        self.assertIn("已存在", panel.collection_notice.text())
+        panel.collection_name.setText("作品集")
+        with patch.object(panel, "_toast_callback") as toast:
+            panel.collection_save.click()
+            toast.assert_called_once_with("组合已重命名", tone="success")
+        self.assertEqual(read_collections(path)[0], {**group, "name": "作品集"})
+        self.assertEqual(panel.collection_picker.currentText(), "作品集")
+        self.choose_menu(panel.new_collection_button, 1)
+        panel.collection_picker.setCurrentIndex(panel.collection_picker.findText("已有组合"))
+        self.assertFalse(panel.collection_editor.isVisible())
+        panel.collection_picker.setCurrentIndex(panel.collection_picker.findData(group["id"]))
+        self.choose_menu(panel.new_collection_button, 1)
+        self.ball.quick_menu.hide()
+        panel.set_batch_scope("all")
+        self.assertTrue(panel.collection_editor.isHidden())
+        self.assertEqual(panel._collection_edit_id, "")
+        self.ball._handle_quick_menu_action("assets")
+        panel.collection_picker.setCurrentIndex(panel.collection_picker.findData(group["id"]))
+        self.choose_menu(panel.new_collection_button, 2)
+        self.assertTrue(panel.collection_name.isReadOnly())
+        self.assertEqual(panel.collection_name.text(), "作品集")
+        self.assertIn("原素材仍保留", panel.collection_notice.text())
+        self.assertEqual(len(read_collections(path)), 2)
+        QTest.keyClick(panel.collection_cancel, Qt.Key.Key_Escape)
+        self.assertFalse(panel.collection_editor.isVisible())
+        self.assertFalse(panel.collection_name.isReadOnly())
+        self.assertEqual(len(read_collections(path)), 2)
+        self.choose_menu(panel.new_collection_button, 2)
+        with patch("app.services.json_io.os.replace", side_effect=OSError("unavailable")):
+            panel.collection_save.click()
+        self.assertTrue(panel.collection_editor.isVisible())
+        self.assertEqual(panel._collection_id, group["id"])
+        panel.collection_save.click()
+        self.assertEqual(len(read_collections(path)), 1)
+        self.assertEqual(panel._collection_id, "")
+        self.assertEqual(len(panel._all_recent_items), len(self.originals))
+        self.assertTrue((self.settings.ASSETS_DIR / self.bundle_for(self.font)["source_key"]).is_file())
+        self.assertFalse(self.card.isVisible())
+        self.assertEqual(self.ball.quick_menu.size(), app_gui.QSize(620, 520))
+
+    def test_search_combines_font_source_and_usage_without_changing_group_members(self):
+        panel = self.ball.material_panel
+        font = self.bundle_for(self.font)
+        self.service.update_bundle_font(font["id"], font_usage="body")
+        source = self.settings.ASSETS_DIR / font["source_key"]
+        write_asset_provenance(source, {"origin_url": "https://example.com/font?token=private", "font_usage": "body"})
+        group = save_collection(panel._collections_path(), "Fonts", asset_id=font["id"])
+        self.ball._handle_quick_menu_action("assets")
+        panel.collection_picker.setCurrentIndex(panel.collection_picker.findData(group["id"]))
+        for query, count in (("acceptance example.com body", 1), (" REGULAR  EXAMPLE.COM ", 1), ("example.com missingword", 0), ("", 1)):
+            panel.search_input.setText(query)
+            panel.refresh()
+            self.assertEqual(len(panel._visible_items), count, query)
+        self.assertTrue(panel.search_input.isClearButtonEnabled())
+        self.assertIn("Haypile Acceptance", panel.item_labels[0].toolTip())
+        self.assertIn("example.com", panel.item_labels[0].toolTip())
+        self.assertNotIn("private", panel.item_labels[0].toolTip())
+        self.assertEqual(read_collections(panel._collections_path())[0]["asset_ids"], [font["id"]])
+
+    def test_font_names_remain_literal_in_tooltips_and_do_not_create_shortcuts(self):
+        font = self.bundle_for(self.font)
+        name = "<b>R&D</b>"
+        font = {**font, "font_metadata": {**font["font_metadata"], "family": name}}
+        document = QTextDocument()
+        self.card.show_bundle(font)
+        document.setHtml(self.card.title.toolTip())
+        self.assertEqual(document.toPlainText(), name)
+        with patch.object(self.ball, "_bundle_service", return_value=self.service), \
+             patch.object(self.service, "list_recent_bundles", return_value=[font]):
+            self.card.show_recent()
+            button = self.card.recent_layout.itemAt(0).widget()
+            document.setHtml(button.toolTip())
+            self.assertEqual(document.toPlainText(), name + " · Regular")
+            self.assertTrue(QKeySequence.mnemonic(button.text()).isEmpty())
+        panel = self.ball.material_panel
+        with patch.object(panel, "_bundle_service", return_value=self.service), \
+             patch.object(self.service, "list_bundles", return_value=[font]):
+            self.ball._handle_quick_menu_action("assets")
+        button = panel.item_labels[0]
+        document.setHtml(button.toolTip())
+        self.assertTrue(document.toPlainText().startswith(name + " Regular\n"))
+        self.assertTrue(QKeySequence.mnemonic(button.text()).isEmpty())
+
     def test_collection_gui_creates_from_selected_asset_and_adds_later_intake(self):
         panel = self.ball.material_panel
         self.ball._handle_quick_menu_action("assets")
         panel.set_batch_scope("all")
         panel._set_filter_mode("font")
         panel.item_labels[0].click()
-        def choose_menu(index):
-            menu = self.app.activePopupWidget()
-            menu.actions()[index].trigger()
-            menu.close()
-        QTimer.singleShot(0, lambda: choose_menu(-1))
-        panel.collection_member_button.click()
+        self.choose_menu(panel.collection_member_button, -1)
         self.assertTrue(panel.collection_editor.isVisible())
         panel.collection_name.setText("个人网站")
         QTest.keyClick(panel.collection_name, Qt.Key.Key_Return)
@@ -340,9 +478,8 @@ class DesktopAssetReuseTests(unittest.TestCase):
         panel.search_input.setText(Path(self.bundle_for(self.png)["source_key"]).stem)
         panel.refresh()
         panel.item_labels[0].click()
-        QTimer.singleShot(0, lambda: choose_menu(0))
         with patch.object(panel, "_toast_callback") as toast:
-            panel.collection_member_button.click()
+            self.choose_menu(panel.collection_member_button, 0)
             toast.assert_called_once_with("已加入组合", tone="success")
         self.assertEqual(set(read_collections(panel._collections_path())[0]["asset_ids"]),
                          {self.bundle_for(self.font)["id"], self.bundle_for(self.png)["id"]})
@@ -359,9 +496,8 @@ class DesktopAssetReuseTests(unittest.TestCase):
         missing_index = next(i for i, item in enumerate(panel._visible_items) if item.source_key == image["source_key"])
         panel.item_labels[missing_index].click()
         self.assertTrue(panel.collection_member_button.isEnabled())
-        QTimer.singleShot(0, lambda: choose_menu(0))
         with patch.object(panel, "_toast_callback") as toast:
-            panel.collection_member_button.click()
+            self.choose_menu(panel.collection_member_button, 0)
             toast.assert_called_once_with("已移出组合", tone="success")
         self.assertEqual(read_collections(panel._collections_path())[0]["asset_ids"], [self.bundle_for(self.font)["id"]])
 
@@ -396,15 +532,15 @@ class DesktopAssetReuseTests(unittest.TestCase):
     def test_collection_editor_cancel_duplicate_and_english_keep_management_size(self):
         panel = self.ball.material_panel
         self.ball._handle_quick_menu_action("assets")
-        panel.new_collection_button.click()
+        self.choose_menu(panel.new_collection_button, 0)
         QTest.keyClick(panel.collection_name, Qt.Key.Key_Escape)
         self.assertFalse(panel.collection_editor.isVisible())
         self.assertTrue(self.ball.quick_menu.isVisible())
-        panel.new_collection_button.click()
+        self.choose_menu(panel.new_collection_button, 0)
         panel.collection_name.setText("My group")
         panel.collection_save.click()
         original = panel._collections_path().read_bytes()
-        panel.new_collection_button.click()
+        self.choose_menu(panel.new_collection_button, 0)
         panel.collection_name.setText("My group")
         panel.collection_save.click()
         self.assertTrue(panel.collection_editor.isVisible())
@@ -419,7 +555,7 @@ class DesktopAssetReuseTests(unittest.TestCase):
             for widget in (panel.collection_picker, panel.new_collection_button, panel.collection_copy):
                 self.assertTrue(widget.isVisible())
                 self.assertTrue(panel.rect().contains(widget.rect().translated(widget.mapTo(panel, app_gui.QPoint()))))
-            self.assertEqual(panel.new_collection_button.text(), "New group")
+            self.assertEqual(panel.new_collection_button.text(), "Manage groups")
             for button in panel.filter_buttons.values():
                 if button.isVisible():
                     self.assertGreaterEqual(button.width(), button.fontMetrics().horizontalAdvance(button.text()) + 8)

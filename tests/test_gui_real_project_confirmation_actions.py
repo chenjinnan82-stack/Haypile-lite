@@ -1358,7 +1358,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertEqual(panel.filter_buttons["all"].text(), "All")
             self.assertEqual(panel.filter_buttons["pending"].text(), "Pending")
             self.assertEqual(panel.filter_buttons["image"].text(), "Images")
-            self.assertEqual(panel.search_input.placeholderText(), "Search file, role, status")
+            self.assertEqual(panel.search_input.placeholderText(), "Search name, font, source, role")
             self.assertEqual(
                 panel.empty_state_label.text(),
                 "The nest is empty\nDrop an image, GIF, audio file, or font to start storing",
