@@ -28,6 +28,8 @@
 
 最近收纳按最后一次完成的收纳批次排序，重复收纳也会排到前面，不修改原文件时间；旧素材没有批次记录时按副本修改时间补齐。复制与拖出保留原始字节和文件格式，包括 GIF 动画、SVG、音频和字体。未收纳的网页候选不提供原文件取用。复制、拖出与导出不会自动确认用途或进入可用交接；目标应用须支持对应文件格式，文字输入框可能只接收文件地址。文件缺失、被修改或目录暂不可读时停止取用，复制失败保留已有剪贴板内容。
 
+已登记素材的 SHA-256 身份保持不变。副本字节被修改后，即使文件大小和修改时间相同，也标记为不可用；列表、组合交接和静态文件读取统一拒绝交付。读取不会修复或删除文件，恢复原始字节后可再次取用。
+
 ## 窗口与状态
 
 - 待机时仅保留 72 点草堆。卡片是独立的非模态原生窗口，宽 280 点，常规高度 240 点，信息展开高度 320 点；短反馈为 100 点，有取消或重试按钮时为 140 点。
@@ -42,6 +44,7 @@
 - macOS 同时读取本次拖拽的系统完成回调，处理外部应用已接收但 Qt 返回 IgnoreAction 的情况。只识别当前卡片的复制完成；结束或异常后恢复原回调，系统接口变化时沿用 Qt 结果，不把取消当成功。
 - 拖拽结束只收起发起拖拽的那次卡片；期间新到达的网页候选或重新打开的卡片保留，不清理新候选。
 - 下载、入库和字体预览线程由草堆持有。结果信号提前到达时，等待线程实际停止再释放；退出期间不销毁仍运行的线程。入库线程与界面使用同一份存储配置。
+- 退出也会等待正在进行的系统拖拽或字体保存对话框返回，再清理候选和销毁卡片；退出期间结束的保存对话框不再写入导出文件。远程请求的响应头、正文和 TLS 握手受同一截止时间及取消检查约束，取消或超时清理未完成下载；系统 DNS 调用仅能在返回后检查。
 
 原始文件字节、SHA-256、远程地址和下载限制保持原有契约；字体详情见[字体收纳](FONT_INTAKE.md)。
 
@@ -74,6 +77,7 @@
 ```sh
 QT_QPA_PLATFORM=offscreen .build-venv/bin/python -m unittest tests.test_web_image_intake tests.test_web_font_intake tests.test_attached_hub tests.test_gui_real_project_confirmation_actions
 QT_QPA_PLATFORM=offscreen .build-venv/bin/python -m unittest tests.test_desktop_asset_reuse tests.test_bundle_service
+QT_QPA_PLATFORM=offscreen .build-venv/bin/python -m unittest tests.test_asset_integrity tests.test_remote_fetch_deadline
 QT_QPA_PLATFORM=offscreen .build-venv/bin/python -m unittest discover -s tests
 QT_QPA_PLATFORM=offscreen .build-venv/bin/python scripts/render_hub_visuals.py --out /tmp/haypile-management
 ```

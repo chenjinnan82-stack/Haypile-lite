@@ -169,7 +169,10 @@ Status meanings:
 - `pending`: registered but still `unknown`; GIF roles are manual, and audio also
   stays pending until its `audio_usage` is confirmed. Fonts have `role=font` and remain pending until `font_usage` is confirmed.
 - `missing`: registered in the current manifest projection, but the controlled
-  physical copy is unavailable. Theme-only references are not Agent bundles.
+  physical copy is unavailable or its bytes no longer match the registered SHA-256.
+  The original identity is retained, and static access and ready handoffs are
+  denied until the original bytes are restored. Reads do not repair or delete
+  the file. Theme-only references are not Agent bundles.
 
 ## Theme Vault API
 

@@ -171,7 +171,7 @@ class LocalDataSecurityTests(unittest.TestCase):
             assets = root / "assets"
             manifest = root / "manifest.json"
             assets.mkdir()
-            (assets / "active.svg").write_text("<svg><script>alert(1)</script></svg>", encoding="utf-8")
+            (assets / "active.svg").write_text('<svg width="12" height="8"></svg>', encoding="utf-8")
             manifest.write_text(json.dumps({"active.svg": {"type": "image"}}), encoding="utf-8")
             static = ManifestStaticFiles(directory=str(assets), manifest_path=manifest)
             local_app = Starlette(routes=[Mount("/static", app=static)])

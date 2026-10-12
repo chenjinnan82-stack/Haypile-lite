@@ -121,7 +121,7 @@ class BundleServiceTests(unittest.TestCase):
             self.assertEqual(second_page, [all_bundles[1]])
             self.assertLess(first_page[-1]["source_key"], second_page[-1]["source_key"])
 
-    def test_bundle_service_rehashes_stale_runtime_entry(self) -> None:
+    def test_bundle_service_preserves_changed_asset_identity_and_marks_it_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             service = _bundle_service(Path(raw))
             hero = Path(raw) / "assets/generic/images/generic_img_hero_image_abcd.png"
@@ -130,7 +130,8 @@ class BundleServiceTests(unittest.TestCase):
             bundle = service.get_bundle("generic_img_hero_image_abcd")
 
             self.assertIsNotNone(bundle)
-            self.assertEqual(bundle["sha256"], hashlib.sha256(b"changed hero").hexdigest())
+            self.assertEqual(bundle["sha256"], hashlib.sha256(b"hero").hexdigest())
+            self.assertEqual(bundle["status"], "missing")
 
     def test_bundle_service_filters_latest_batch_and_includes_duplicates(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -236,6 +237,9 @@ class BundleServiceTests(unittest.TestCase):
             unknown = root / "assets/generic/images/generic_img_unknown_eeee.png"
             hero.unlink()
             unknown.unlink()
+            payload = json.loads(service.manifest_path.read_text())
+            payload["generic/images/generic_img_unknown_eeee.png"].pop("sha256")
+            service.manifest_path.write_text(json.dumps(payload))
 
             bundles = {item["source_key"]: item for item in service.list_bundles()}
 
@@ -376,14 +380,17 @@ def _bundle_service(tmp_path: Path) -> BundleService:
             {
                 "generic/images/generic_img_hero_image_abcd.png": {
                     "type": "image",
+                    "sha256": hashlib.sha256(b"hero").hexdigest(),
                     "url_path": "/static/generic/images/generic_img_hero_image_abcd.png",
                 },
                 "generic/images/generic_img_unknown_eeee.png": {
                     "type": "image",
+                    "sha256": hashlib.sha256(b"unknown").hexdigest(),
                     "url_path": "/static/generic/images/generic_img_unknown_eeee.png",
                 },
                 "generic/audio/generic_aud_unknown_ffff.wav": {
                     "type": "audio",
+                    "sha256": hashlib.sha256(b"audio").hexdigest(),
                     "duration_seconds": 12.5,
                     "audio_metadata": {"sample_rate_hz": 48000, "channels": 2, "bitrate_bps": 192000},
                     "audio_tags": {"title": "Pika Call", "artist": "Winter Ridge", "album": "Haypile"},

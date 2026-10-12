@@ -7,6 +7,7 @@ import mimetypes
 import os
 import socket
 import ssl
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -66,10 +67,18 @@ def download_remote_media(
     image_only: bool = False,
     allow_web_page: bool = False,
 ) -> tuple[Path | None, str]:
-    """Fetch one supported media asset into a private, durable local file."""
+    """Fetch media; injected openers must accept timeout and should_stop keywords."""
     stop_requested = should_stop or (lambda: False)
+    if stop_requested():
+        return None, "interrupted"
     destination: Path | None = None
-    with (opener or open_safe_remote)(url, timeout=timeout) as response:
+    try:
+        response = (opener or open_safe_remote)(url, timeout=timeout, should_stop=stop_requested)
+    except SafeFetchError as exc:
+        if str(exc) == "interrupted":
+            return None, "interrupted"
+        raise
+    with response:
         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         url_suffix = Path(unquote(urlsplit(url).path)).suffix.lower()
         media_spec = REMOTE_CONTENT_TYPE_EXTENSIONS.get(content_type)
@@ -123,8 +132,10 @@ def download_remote_media(
                 if not rejection_reason:
                     target.flush()
                     os.fsync(target.fileno())
-        except Exception:
+        except BaseException as exc:
             destination.unlink(missing_ok=True)
+            if isinstance(exc, SafeFetchError) and str(exc) == "interrupted":
+                return None, "interrupted"
             raise
 
         if rejection_reason:
@@ -303,10 +314,84 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def connect(self) -> None:
         raw_socket = socket.create_connection((self._address, self.port), self.timeout)
         try:
-            self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
-        except Exception:
+            self.sock = self._context.wrap_socket(
+                raw_socket, server_hostname=self.host, do_handshake_on_connect=False,
+            )
+            self.sock.do_handshake()
+        except BaseException:
             raw_socket.close()
+            self.close()
             raise
+
+
+class _FetchWatchdog:
+    """Interrupt stdlib's buffered reads, whose socket timeout resets on each recv."""
+
+    def __init__(self, connection: http.client.HTTPConnection, deadline: float,
+                 should_stop: Callable[[], bool]) -> None:
+        self._connection = connection
+        self._deadline = deadline
+        self._should_stop = should_stop
+        self._socket = None
+        self._reason = ""
+        self._callback_error: BaseException | None = None
+        self._finished = threading.Event()
+        self._thread = threading.Thread(target=self._watch, name="HaypileRemoteFetch", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def capture_socket(self) -> None:
+        # getresponse() may detach Connection: close sockets from the connection.
+        self._socket = self._connection.sock
+
+    def check(self) -> None:
+        if not self._reason and self._callback_error is None:
+            try:
+                stopped = self._should_stop()
+            except BaseException as exc:
+                self._callback_error = exc
+            else:
+                if stopped:
+                    self._interrupt("interrupted")
+                elif time.monotonic() >= self._deadline:
+                    self._interrupt("download_timeout")
+        if self._callback_error is not None:
+            self._interrupt("interrupted")
+            raise self._callback_error
+        if self._reason:
+            self._interrupt(self._reason)
+            raise SafeFetchError(self._reason)
+
+    def _interrupt(self, reason: str) -> None:
+        self._reason = self._reason or reason
+        active_socket = self._socket or self._connection.sock
+        if active_socket is not None:
+            try:
+                # Closing a socket with an active makefile() does not release a
+                # blocked read; shutdown does. The owner closes files afterward.
+                active_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _watch(self) -> None:
+        while not self._finished.is_set():
+            try:
+                self.check()
+            except BaseException as exc:
+                if not isinstance(exc, SafeFetchError) and self._callback_error is None:
+                    self._callback_error = exc
+                    self._interrupt("interrupted")
+                # A connect call may not expose its socket until after the
+                # failure. Keep watching until the owner finishes cleanup;
+                # check() rethrows saved callback failures on the owner thread.
+                pass
+            remaining = self._deadline - time.monotonic()
+            self._finished.wait(0.05 if self._reason else min(0.05, max(0.0, remaining)))
+
+    def close(self) -> None:
+        self._finished.set()
+        self._thread.join()
 
 
 class SafeRemoteResponse:
@@ -314,29 +399,33 @@ class SafeRemoteResponse:
         self,
         connection: http.client.HTTPConnection,
         response: http.client.HTTPResponse,
-        deadline: float,
+        watchdog: _FetchWatchdog,
     ) -> None:
         self._connection = connection
         self._response = response
         self.status = int(response.status)
         self.headers: Mapping[str, str] = {key.lower(): value for key, value in response.getheaders()}
-        self._deadline = deadline
+        self._watchdog = watchdog
 
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
         while True:
-            remaining = self._deadline - time.monotonic()
-            if remaining <= 0:
-                raise SafeFetchError("download_timeout")
-            if self._connection.sock is not None:
-                self._connection.sock.settimeout(max(0.01, remaining))
-            chunk = self._response.read(chunk_size)
+            self._watchdog.check()
+            try:
+                chunk = self._response.read(chunk_size)
+            except Exception:
+                self._watchdog.check()
+                raise
+            self._watchdog.check()
             if not chunk:
                 return
             yield chunk
 
     def close(self) -> None:
-        self._response.close()
-        self._connection.close()
+        self._watchdog.close()
+        try:
+            self._response.close()
+        finally:
+            self._connection.close()
 
     def __enter__(self) -> "SafeRemoteResponse":
         return self
@@ -351,9 +440,19 @@ def open_safe_remote(
     timeout: float = 15.0,
     resolver: Callable[..., list[tuple[object, ...]]] = socket.getaddrinfo,
     ssl_context: ssl.SSLContext | None = None,
+    should_stop: Callable[[], bool] = lambda: False,
 ) -> SafeRemoteResponse:
+    """Pin public peers and bound socket I/O; platform DNS is checked on return.
+
+    should_stop is polled on the owner and watchdog threads. Callback errors
+    shut down the socket and propagate to the owner.
+    """
     deadline = time.monotonic() + max(0.1, timeout)
+    if should_stop():
+        raise SafeFetchError("interrupted")
     target = validate_remote_url(url, resolver=resolver)
+    if should_stop():
+        raise SafeFetchError("interrupted")
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise SafeFetchError("download_timeout")
@@ -368,7 +467,11 @@ def open_safe_remote(
     else:
         connection = _PinnedHTTPConnection(target, address, remaining)
 
+    watchdog = _FetchWatchdog(connection, deadline, should_stop)
+    watchdog.start()
+    response = None
     try:
+        watchdog.check()
         connection.request(
             "GET",
             target.request_target,
@@ -380,17 +483,26 @@ def open_safe_remote(
                 "User-Agent": "Haypile/0.3",
             },
         )
+        watchdog.capture_socket()
+        watchdog.check()
         peer = connection.sock.getpeername()[0] if connection.sock is not None else ""
         if str(_normalized_ip(peer)) != str(_normalized_ip(address)):
             raise SafeFetchError("peer_address_mismatch")
         response = connection.getresponse()
-        if time.monotonic() >= deadline:
-            raise SafeFetchError("download_timeout")
+        watchdog.check()
         if 300 <= response.status < 400:
             raise SafeFetchError("redirect_not_allowed")
         if response.status < 200 or response.status >= 300:
             raise SafeFetchError(f"http_status_{response.status}")
-        return SafeRemoteResponse(connection, response, deadline)
-    except Exception:
-        connection.close()
+        return SafeRemoteResponse(connection, response, watchdog)
+    except BaseException:
+        try:
+            watchdog.check()
+        finally:
+            watchdog.close()
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                connection.close()
         raise

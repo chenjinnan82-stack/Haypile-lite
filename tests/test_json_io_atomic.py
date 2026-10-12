@@ -10,6 +10,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+from PIL import Image
 
 from app.api.v1.health import readyz
 from app.services.json_io import atomic_write_json
@@ -139,7 +140,7 @@ class AtomicJsonIoTests(unittest.TestCase):
             manifest = root / "index" / "manifest.json"
             assets.mkdir()
             manifest.parent.mkdir()
-            (assets / "allowed.png").write_bytes(b"ok")
+            Image.new("RGB", (2, 2), "red").save(assets / "allowed.png")
             (assets / "secret.txt").write_text("secret", encoding="utf-8")
             manifest.write_text(json.dumps({"allowed.png": {"url_path": "/static/allowed.png"}}), encoding="utf-8")
             static = ManifestStaticFiles(directory=str(assets), manifest_path=manifest)
@@ -180,7 +181,7 @@ class AtomicJsonIoTests(unittest.TestCase):
             manifest = root / "index" / "manifest.json"
             assets.mkdir()
             manifest.parent.mkdir()
-            (assets / "allowed.png").write_bytes(b"ok")
+            Image.new("RGB", (2, 2), "red").save(assets / "allowed.png")
             manifest.write_text(
                 json.dumps({"allowed.png": {"url_path": "/static/allowed.png"}}),
                 encoding="utf-8",

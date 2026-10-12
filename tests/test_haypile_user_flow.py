@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import tempfile
@@ -186,15 +187,16 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         existing = self.assets_dir / "generic/images/known.svg"
         existing.parent.mkdir(parents=True)
         existing.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>', encoding="utf-8")
+        digest = hashlib.sha256(existing.read_bytes()).hexdigest()
         StorageRuntimeDB(self.runtime_db_path).record_link(
-            sha256_hex="known-sha",
+            sha256_hex=digest,
             src_path=existing,
             dst_path=existing,
             strategy="copy",
         )
         index = StorageRuntimeDB(self.runtime_db_path).asset_hash_index(self.assets_dir)
 
-        self.assertEqual(index, {"known-sha": existing.resolve()})
+        self.assertEqual(index, {digest: existing.resolve()})
 
     def test_duplicate_imports_keep_each_browser_origin_in_batch_history(self) -> None:
         first = self.tmpdir / "first.svg"

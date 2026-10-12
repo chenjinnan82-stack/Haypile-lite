@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 import os
 import shutil
@@ -16,6 +15,7 @@ from app.core.config import get_settings
 from app.services.json_io import atomic_write_json
 from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_FONT_EXTENSIONS
 from app.services.media_validator import MediaValidationError, validate_media
+from app.services.asset_integrity import asset_file_sha256
 
 
 STORAGE_FORMAT_VERSION = 2
@@ -823,7 +823,8 @@ class StorageRuntimeDB:
                 stat = resolved.stat()
             except OSError:
                 continue
-            if stat.st_size == int(dst_size) and stat.st_mtime_ns == int(dst_mtime_ns):
+            if (stat.st_size == int(dst_size) and stat.st_mtime_ns == int(dst_mtime_ns)
+                    and asset_file_sha256(resolved) == str(sha256_hex)):
                 index[str(sha256_hex)] = resolved
         return index
 
@@ -921,11 +922,10 @@ class StorageRuntimeDB:
 
     @staticmethod
     def _sha256_file(path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+        digest = asset_file_sha256(path)
+        if not digest:
+            raise OSError("asset_file_unreadable_or_changed")
+        return digest
 
     @staticmethod
     def _fsync_directory(directory: Path) -> None:

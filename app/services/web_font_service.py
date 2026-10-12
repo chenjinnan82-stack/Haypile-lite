@@ -201,7 +201,10 @@ class PageFontHTMLParser(HTMLParser):
 
 
 def read_web_text(url: str, *, opener: Callable, timeout: float, should_stop: Callable) -> tuple[str, str]:
-    with opener(url, timeout=timeout) as response:
+    """Read bounded text using an opener accepting timeout and should_stop keywords."""
+    if should_stop():
+        raise SafeFetchError("interrupted")
+    with opener(url, timeout=timeout, should_stop=should_stop) as response:
         raw_type = response.headers.get("content-type", "")
         content_type = raw_type.split(";", 1)[0].strip().lower()
         if content_type not in {"text/html", "application/xhtml+xml", "text/css"}:

@@ -14,10 +14,11 @@ import wave
 from unittest.mock import Mock, patch
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QPoint, QPointF, Qt, QTimer
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QTextDocument
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
+from shiboken6 import isValid
 
 import app_gui
 from app.gui import native_drag
@@ -215,6 +216,172 @@ class DesktopAssetReuseTests(unittest.TestCase):
         self.assertFalse(protected.exists())
         self.assertIn("导出失败", self.card.status.text())
         outside.close()
+
+    def test_font_export_keeps_original_identity_when_nested_events_replace_the_card(self):
+        self.card.show_bundle(self.bundle_for(self.font))
+        target = self.root / "exported-after-replacement.ttf"
+        replacement = self.bundle_for(self.png)
+        replacement_status = []
+
+        def choose(*_args):
+            loop = QEventLoop()
+            def replace():
+                self.card.show_bundle(replacement)
+                replacement_status.append((self.card.status.text(), self.card.status.toolTip()))
+                loop.quit()
+            QTimer.singleShot(0, replace)
+            loop.exec()
+            return str(target), ""
+
+        with patch.object(app_gui.QFileDialog, "getSaveFileName", side_effect=choose):
+            self.card._export_bundle_font()
+        self.assertEqual(target.read_bytes(), self.font.read_bytes())
+        self.assertEqual(self.card.bundle["id"], replacement["id"])
+        self.assertEqual((self.card.status.text(), self.card.status.toolTip()), replacement_status[0])
+        self.assertFalse(self.card._exporting)
+
+    def _check_managed_shutdown_during_native_operation(self, mode, *, choose_target=False):
+        ball = app_gui.HaypileFloatingBall(settings=self.settings, managed_shutdown=True)
+        card = ball.intake_card
+        original = self.font if mode == "export" else self.gif
+        bundle = self.bundle_for(original)
+        source = self.settings.ASSETS_DIR / bundle["source_key"]
+        card.show_bundle(bundle)
+        preview_deadline = time.monotonic() + 2
+        while card.font_preview_worker is not None and time.monotonic() < preview_deadline:
+            QTest.qWait(5)
+        self.assertIsNone(card.font_preview_worker)
+        candidate_path = self.root / f"shutdown-{mode}-candidate.png"
+        candidate_path.write_bytes(self.png.read_bytes())
+        with Image.open(candidate_path) as image:
+            candidate = app_gui.WebImageCandidate(candidate_path, hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
+                {"width": 64, "height": 48, "mime_type": "image/png"}, "https://example.org", "image", "New image",
+                image.convert("RGBA").tobytes(), 64, 48)
+        events, errors, observations = [], [], []
+        state = {"requested": False, "window_ready": False, "completed": False}
+        backend = SimpleNamespace(is_stopped=True, stop=Mock())
+        active_drag = None
+        export_target = self.root / "shutdown-export.ttf"
+        previous_quit_policy = self.app.quitOnLastWindowClosed()
+        self.app.setQuitOnLastWindowClosed(False)
+
+        # Match main(): an already stopped backend is the fastest completion path.
+        def maybe_complete_shutdown():
+            if state["completed"] or not state["window_ready"] or not backend.is_stopped:
+                return
+            state["completed"] = True
+            ball.complete_shutdown()
+            events.append("completed")
+            QTimer.singleShot(0, QCoreApplication.quit)
+
+        def request_shutdown():
+            state["requested"] = True
+            backend.stop()
+            maybe_complete_shutdown()
+
+        def mark_window_ready():
+            events.append("ready")
+            state["window_ready"] = True
+            maybe_complete_shutdown()
+
+        ball.shutdown_requested.connect(request_shutdown)
+        ball.shutdown_ready.connect(mark_window_ready)
+        self.app.aboutToQuit.connect(ball.shutdown)
+        card.destroyed.connect(lambda: events.append("card_destroyed"))
+
+        def native_loop():
+            loop = QEventLoop()
+            observation_timer = QTimer(loop)
+            observation_timer.setSingleShot(True)
+            def observe():
+                observations.append({
+                    "card_valid": isValid(card), "status_valid": isValid(card.status),
+                    "drag_valid": isValid(active_drag) if active_drag is not None else True,
+                    "native_operation_active": card._exporting or card._dragging,
+                    "cleanup_done": ball._cleanup_done, "window_ready": state["window_ready"],
+                    "card_keeps_candidate": card.candidates == [candidate],
+                    "ball_keeps_candidate": ball._web_candidates == [candidate],
+                    "candidate_file_exists": candidate_path.is_file(),
+                })
+                events.append("observed_active_operation")
+                loop.quit()
+            observation_timer.timeout.connect(observe)
+            def begin_shutdown():
+                # Native loops may deliver the events that replace a card first.
+                ball._web_candidates = [candidate]
+                card.show_candidates([], [candidate])
+                ball.shutdown()
+                observation_timer.start(20)
+            QTimer.singleShot(0, begin_shutdown)
+            events.append("native_enter")
+            loop.exec()
+            observation_timer.stop()
+            events.append("native_return")
+
+        def fake_dialog(*_args):
+            native_loop()
+            return str(export_target) if choose_target else "", ""
+
+        def fake_drag(drag, _window):
+            nonlocal active_drag
+            active_drag = drag
+            native_loop()
+            return True
+
+        def operation():
+            try:
+                if mode == "export":
+                    card._export_bundle_font()
+                else:
+                    card._drag_bundle_original()
+                events.append("operation_return")
+            except Exception as exc:
+                errors.append(exc)
+
+        watchdog = QTimer()
+        watchdog.setSingleShot(True)
+        watchdog.timeout.connect(QCoreApplication.quit)
+        try:
+            with patch.object(app_gui.QFileDialog, "getSaveFileName", side_effect=fake_dialog), \
+                 patch.object(app_gui, "execute_copy_drag", side_effect=fake_drag), \
+                 patch.object(app_gui, "export_font_original", wraps=app_gui.export_font_original) as export:
+                QTimer.singleShot(0, operation)
+                watchdog.start(2000)
+                outer_code = self.app.exec()
+                export.assert_not_called()  # Cancellation and shutdown both prevent destination writes.
+            self.assertEqual(outer_code, 0)
+            self.assertEqual(errors, [])
+            self.assertEqual(observations, [{
+                "card_valid": True, "status_valid": True, "drag_valid": True,
+                "native_operation_active": True, "cleanup_done": False, "window_ready": False,
+                "card_keeps_candidate": True, "ball_keeps_candidate": True, "candidate_file_exists": True,
+            }])
+            self.assertTrue(state["completed"])
+            self.assertEqual(events, ["native_enter", "observed_active_operation", "native_return",
+                "operation_return", "ready", "completed", "card_destroyed"])
+            backend.stop.assert_called_once_with()
+            self.assertEqual(source.read_bytes(), original.read_bytes())
+            self.assertFalse(export_target.exists())
+            self.assertFalse(candidate_path.exists())  # Deferred cleanup still runs after the native loop.
+        finally:
+            watchdog.stop()
+            if isValid(ball):
+                self.app.aboutToQuit.disconnect(ball.shutdown)
+                if not ball._cleanup_done:
+                    ball._managed_shutdown = False
+                    ball.shutdown()
+                    ball._poll_shutdown()
+                ball.close()
+            self.app.setQuitOnLastWindowClosed(previous_quit_policy)
+
+    def test_managed_shutdown_waits_for_cancelled_export_nested_loop(self):
+        self._check_managed_shutdown_during_native_operation("export")
+
+    def test_managed_shutdown_waits_for_drag_nested_loop(self):
+        self._check_managed_shutdown_during_native_operation("drag")
+
+    def test_managed_shutdown_prevents_export_when_dialog_returns_a_target(self):
+        self._check_managed_shutdown_during_native_operation("export", choose_target=True)
 
     def test_drag_keeps_card_until_the_system_drag_finishes(self):
         bundle = self.bundle_for(self.gif)

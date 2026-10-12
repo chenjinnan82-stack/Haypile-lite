@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -76,13 +78,18 @@ class StorageRuntimeDBTests(unittest.TestCase):
             asset.parent.mkdir(parents=True)
             asset.write_bytes(b"image")
             db = StorageRuntimeDB(db_path=tmpdir / "index/runtime.db")
-            db.record_link(sha256_hex="known-sha", src_path=asset, dst_path=asset, strategy="copy")
+            digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+            db.record_link(sha256_hex=digest, src_path=asset, dst_path=asset, strategy="copy")
 
-            self.assertEqual(db.asset_hash_index(assets), {"known-sha": asset.resolve()})
+            self.assertEqual(db.asset_hash_index(assets), {digest: asset.resolve()})
             self.assertEqual(
                 StorageRuntimeDB.read_asset_hash_index(db.db_path, assets),
-                {"known-sha": asset.resolve()},
+                {digest: asset.resolve()},
             )
+            before = asset.stat()
+            asset.write_bytes(b"other")
+            os.utime(asset, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertEqual(StorageRuntimeDB.read_asset_hash_index(db.db_path, assets), {})
             asset.write_bytes(b"changed-image")
             self.assertEqual(db.asset_hash_index(assets), {})
             self.assertEqual(StorageRuntimeDB.read_asset_hash_index(db.db_path, assets), {})

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -22,6 +23,8 @@ from app.core.config import _ensure_private_directory, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.services.ingest_service import IngestService
 from app.services.scanner import manifest_dirty_path
+from app.services.asset_integrity import asset_file_sha256
+from app.services.storage_runtime import StorageRuntimeDB
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -38,22 +41,27 @@ class ManifestStaticFiles(StaticFiles):
         self.dirty_path = manifest_dirty_path(manifest_path)
         self.assets_root = Path(directory).resolve(strict=False)
         self.name = name
-        self._manifest_signature: tuple[int, int] | None = None
-        self._cached_manifest_keys: set[str] = set()
+        self._manifest_signature: tuple[int, ...] | None = None
+        self._cached_manifest: dict[str, dict] = {}
 
     def lookup_path(self, path: str):
         normalized = path.replace("\\", "/").lstrip("/")
-        if normalized not in self._manifest_keys():
+        item = self._manifest_entries().get(normalized)
+        if item is None:
             return "", None
         full_path, stat_result = super().lookup_path(path)
         if not full_path:
             return "", None
         candidate = Path(full_path)
-        if candidate.is_symlink():
+        if candidate.is_symlink() or (self.assets_root / normalized).is_symlink():
             return "", None
         try:
             candidate.resolve(strict=False).relative_to(self.assets_root)
         except ValueError:
+            return "", None
+        expected = str(item.get("sha256") or "").lower()
+        actual = asset_file_sha256(candidate, legacy_type=None if expected else str(item.get("type") or ""))
+        if not actual or (expected and expected != actual) or self.dirty_path.exists():
             return "", None
         return full_path, stat_result
 
@@ -66,34 +74,45 @@ class ManifestStaticFiles(StaticFiles):
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    def _manifest_keys(self) -> set[str]:
+    def _manifest_entries(self) -> dict[str, dict]:
         if self.dirty_path.exists():
             self._manifest_signature = None
-            self._cached_manifest_keys = set()
-            return set()
+            self._cached_manifest = {}
+            return {}
         try:
             stat = self.manifest_path.stat()
         except OSError:
             self._manifest_signature = None
-            self._cached_manifest_keys = set()
-            return set()
-        signature = (stat.st_mtime_ns, stat.st_size)
-        if signature == self._manifest_signature:
-            return self._cached_manifest_keys
+            self._cached_manifest = {}
+            return {}
+        signature = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        # Windows ctime is creation-time and cannot invalidate equal-length edits.
+        if os.name != "nt" and signature == self._manifest_signature:
+            return self._cached_manifest
         try:
             payload = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             self._manifest_signature = None
-            self._cached_manifest_keys = set()
-            return set()
+            self._cached_manifest = {}
+            return {}
         if not isinstance(payload, dict):
             self._manifest_signature = None
-            self._cached_manifest_keys = set()
-            return set()
-        keys = {str(key).replace("\\", "/").lstrip("/") for key in payload}
+            self._cached_manifest = {}
+            return {}
+        recorded = {str(path): digest for digest, path in StorageRuntimeDB.read_recorded_asset_hash_index(
+            self.manifest_path.parent / "storage_runtime.db", self.assets_root).items()}
+        entries = {}
+        for key, value in payload.items():
+            if not isinstance(value, dict):
+                continue
+            normalized = str(key).replace("\\", "/").lstrip("/")
+            expected = recorded.get(str((self.assets_root / normalized).resolve(strict=False)))
+            if expected and value.get("sha256") and value["sha256"] != expected:
+                continue
+            entries[normalized] = {**value, "sha256": expected or value.get("sha256", "")}
         self._manifest_signature = signature
-        self._cached_manifest_keys = keys
-        return keys
+        self._cached_manifest = entries
+        return entries
 
 
 @asynccontextmanager

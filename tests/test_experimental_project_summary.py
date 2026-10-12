@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from PIL import Image
+
 from app.services import experimental_project_summary as material_summary_module
 from app.services.asset_provenance import write_asset_provenance
 from app.services.bundle_service import BundleService
@@ -195,7 +197,7 @@ class MaterialSummaryTests(unittest.TestCase):
         url = "/static/generic/images/generic_img_unknown_bbbb.png"
         asset_path = self.assets_dir / source_key
         asset_path.parent.mkdir(parents=True, exist_ok=True)
-        asset_path.write_bytes(b"image")
+        Image.new("RGB", (2, 2)).save(asset_path)
         self._write_json(self.manifest_path, {source_key: {"type": "image", "url_path": url}})
         service = BundleService(
             assets_dir=self.assets_dir,

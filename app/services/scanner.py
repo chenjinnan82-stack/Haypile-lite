@@ -15,6 +15,7 @@ from app.services.json_io import atomic_write_json
 from app.services.media_validator import MediaValidationError, validate_audio, validate_media
 from app.services.media_types import SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_FONT_EXTENSIONS
 from app.services.storage_runtime import StorageRuntimeDB
+from app.services.asset_integrity import asset_file_sha256
 
 
 class ManifestReadinessError(RuntimeError):
@@ -136,6 +137,9 @@ class AssetScanner:
                 continue
 
             suffix: str = path.suffix.lower()
+            if suffix not in self.IMAGE_EXTENSIONS | self.AUDIO_EXTENSIONS | self.FONT_EXTENSIONS:
+                continue
+            digest_before = asset_file_sha256(path)
             if suffix in self.IMAGE_EXTENSIONS:
                 image_item = self._scan_image(path)
                 if image_item:
@@ -154,6 +158,13 @@ class AssetScanner:
                     "type": "font", "content_type": font.mime_type,
                     "font_metadata": font.font_metadata, "url_path": self._to_url_path(path),
                 }
+
+            key = self._relative_key(path)
+            if key in manifest:
+                if digest_before and asset_file_sha256(path) == digest_before:
+                    manifest[key]["sha256"] = digest_before
+                else:
+                    del manifest[key]
 
         if stop_requested():
             raise InterruptedError("manifest_scan_interrupted")

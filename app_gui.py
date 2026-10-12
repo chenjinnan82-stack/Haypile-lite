@@ -86,6 +86,7 @@ from app.services.ai_provider import (
     normalize_api_base_url,
 )
 from app.services.bundle_service import BundleService
+from app.services.asset_integrity import asset_file_sha256
 from app.services.desktop_diagnostics import (
     build_desktop_diagnostic_summary,
     read_build_commit,
@@ -1190,7 +1191,7 @@ class FontPreviewWorker(QThread):
         try:
             if self.isInterruptionRequested():
                 return
-            if BundleService._sha256(path) != sha256:
+            if asset_file_sha256(path) != sha256:
                 raise ValueError("font_hash_mismatch")
             canvas, missing = render_font_preview(path, text, size, width=self.preview_width)
             with canvas:
@@ -4608,6 +4609,8 @@ class DesktopIntakeCard(QWidget):
         self._copy_feedback_timer.start(1400)
 
     def _drag_bundle_original(self) -> None:
+        if self._dragging or self._exporting:
+            return
         path = self._stored_bundle_source()
         if path is None:
             return
@@ -4630,30 +4633,35 @@ class DesktopIntakeCard(QWidget):
             self.dismiss("drag")
 
     def _export_bundle_font(self) -> None:
-        if self.mode != "bundle" or self.bundle.get("type") != "font":
+        if self._dragging or self._exporting or self.mode != "bundle" or self.bundle.get("type") != "font":
             return
         source = self._stored_bundle_source()
         if source is None:
             return
+        source_sha256 = str(self.bundle["sha256"])
+        card_generation = self._preview_generation
         self._exporting = True
         try:
             target, _filter = QFileDialog.getSaveFileName(
                 self, ui_text("导出字体原文件", "Export original font"), source.name,
                 f"{source.suffix.upper()[1:]} (*{source.suffix})",
             )
-            if not target:
+            if not target or self.ball._closing:
                 return
             settings = self.ball.settings
-            export_font_original(source, Path(target), sha256=str(self.bundle["sha256"]), storage_dir=settings.STORAGE_DIR,
+            export_font_original(source, Path(target), sha256=source_sha256, storage_dir=settings.STORAGE_DIR,
                                  protected_paths=(settings.ASSETS_DIR, settings.INDEX_DIR, settings.THEMES_DIR, settings.MANIFEST_PATH))
         except (OSError, ValueError):
-            self.status.setText(ui_text("导出失败，目标原文件已保留；请选择素材库外的位置", "Export failed; destination retained. Choose a location outside the library."))
+            if card_generation == self._preview_generation:
+                self.status.setText(ui_text("导出失败，目标原文件已保留；请选择素材库外的位置", "Export failed; destination retained. Choose a location outside the library."))
         else:
-            self.status.setText(ui_text("已导出字体原文件", "Original font exported"))
+            if card_generation == self._preview_generation:
+                self.status.setText(ui_text("已导出字体原文件", "Original font exported"))
         finally:
             self._exporting = False
             self._last_buttons, self._last_escape = self._desktop_buttons(), self._desktop_escape()
-            self.status.setToolTip(self.status.text())
+            if card_generation == self._preview_generation:
+                self.status.setToolTip(self.status.text())
 
     def _refresh_usage(self) -> None:
         self.usage_button_group.setExclusive(False)
@@ -6591,7 +6599,8 @@ class HaypileFloatingBall(QWidget):
         if self._cleanup_done or self._closing:
             return
         self._closing = True
-        self.intake_card.dismiss("shutdown")
+        if not (self.intake_card._dragging or self.intake_card._exporting):
+            self.intake_card.dismiss("shutdown")
         self.intake_card._cancel_preview()
         self._shutdown_started_at = time.monotonic()
         self._shutdown_wait_notice_shown = False
@@ -6640,7 +6649,10 @@ class HaypileFloatingBall(QWidget):
                 self.intake_card.font_preview_worker,
             )
         )
-        if workers_done:
+        # Native operations dispatch nested events and still own the card until they return.
+        native_operations_done = not (self.intake_card._dragging or self.intake_card._exporting)
+        if workers_done and native_operations_done:
+            self.intake_card.dismiss("shutdown")
             self._shutdown_timer.stop()
             if not self._shutdown_ready_emitted:
                 self._shutdown_ready_emitted = True

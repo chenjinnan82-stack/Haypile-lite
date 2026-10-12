@@ -8,6 +8,7 @@ from typing import Any
 from app.core.config import get_settings
 from app.core.file_lock import InterProcessFileLock
 from app.services.font_service import FONT_USAGES
+from app.services.asset_integrity import asset_file_sha256
 from app.services.asset_provenance import public_origin_url, read_asset_provenance, write_asset_provenance
 from app.services.scanner import read_manifest_snapshot
 from app.services.storage_runtime import StorageRuntimeDB
@@ -67,7 +68,6 @@ class BundleService:
         manifest, readiness = read_manifest_snapshot(self.manifest_path)
         self.manifest_generation = str(readiness["manifest_generation"])
         theme_assets = self._theme_assets_by_url()
-        sha_by_path = self._sha_by_dst_path()
         recorded_sha_by_path = self._recorded_sha_by_dst_path()
         bundles: list[dict[str, Any]] = []
 
@@ -86,12 +86,16 @@ class BundleService:
                 continue
             asset_exists = source_path.is_file() and not source_path.is_symlink()
             resolved_source = str(source_path.resolve(strict=False))
-            cached_sha = sha_by_path.get(resolved_source) or (
-                recorded_sha_by_path.get(resolved_source) if not asset_exists else ""
-            ) or ""
-            sha256 = cached_sha if self._is_sha256(cached_sha) else (
-                self._sha256(source_path) if asset_exists else ""
-            )
+            recorded_sha = recorded_sha_by_path.get(resolved_source, "").lower()
+            projected_sha = str(item.get("sha256") or "").lower()
+            expected_sha = recorded_sha or projected_sha
+            actual_sha = asset_file_sha256(source_path, legacy_type=None if expected_sha else item_type) if asset_exists else ""
+            asset_exists = bool(actual_sha) and (not expected_sha or actual_sha == expected_sha)
+            if recorded_sha and projected_sha and recorded_sha != projected_sha:
+                asset_exists = False
+            sha256 = expected_sha or actual_sha
+            if not self._is_sha256(sha256):
+                sha256 = ""
             provenance = read_asset_provenance(source_path) if asset_exists else {}
             ai_suggestions = provenance.get("ai_suggestions")
             bundle_audio_usage = self._audio_usage_from(provenance) if item_type == "audio" else "unknown"
@@ -386,15 +390,6 @@ class BundleService:
         value = str(provenance.get("audio_usage") or "").strip().lower()
         return value if value in ALLOWED_AUDIO_USAGES else "unknown"
 
-    def _sha_by_dst_path(self) -> dict[str, str]:
-        return {
-            str(path): sha256_hex
-            for sha256_hex, path in StorageRuntimeDB.read_asset_hash_index(
-                self.runtime_db_path,
-                self.assets_dir,
-            ).items()
-        }
-
     def _recorded_sha_by_dst_path(self) -> dict[str, str]:
         return {
             str(path): sha256_hex
@@ -471,17 +466,6 @@ class BundleService:
             "ui_animation": "Use as a small interface-state or feedback animation.",
             "audio": "Use as an audio asset.",
         }.get(role, "Use as a general visual asset.")
-
-    @staticmethod
-    def _sha256(path: Path) -> str:
-        try:
-            with path.open("rb") as source:
-                digest = hashlib.sha256()
-                for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                    digest.update(chunk)
-                return digest.hexdigest()
-        except OSError:
-            return ""
 
     @staticmethod
     def _safe_id(text: str) -> str:
