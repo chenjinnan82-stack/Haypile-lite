@@ -56,10 +56,56 @@ shared-resource interference was not controlled.
 The product now saves AI advice but requires the existing manual role selector
 before AI-classified images become ready. There is no new confirmation window.
 Transparent-preview contrast was subsequently fixed and verified with pixel,
-metadata, size, and byte-budget regressions. The whole model evaluation has not
+metadata, size, and byte-budget regressions. The full 91-image evaluation has not
 been rerun after that fix; the baseline does not certify current accuracy.
-No prompt or confidence threshold was tuned to pass this dataset. A future
+The original baseline did not tune prompts or confidence thresholds. A future
 automatic mode needs a fresh held-out set, independent human labels, and a
 controlled runtime evaluation. Existing JSON field `auto_ready` denotes an
 offline candidate and never indicates that this evaluator imported or approved
 an asset.
+
+## Existing small-model optimization, 2026-10-13
+
+A frozen, balanced 24-image subset of the same agent-labelled development
+collection is used for paired comparisons. Its labels have SHA-256
+`87b9b74578751243360459abf3d17001946701fb8c8e2eb130ecbb2729f30a61`.
+The baseline already includes the transparent-preview correction. These samples
+were reused during optimization: they are not an independent held-out test or
+an estimate of general accuracy. No model, confidence threshold, label, or
+user AI setting was changed.
+
+A shorter English role rubric was rejected after the production path returned
+16/24 correct roles versus 14/24 previously, but hero-image correctness fell
+from 3/4 to 0/4. A net improvement alone did not justify that category regression.
+The original Chinese prompt is preserved. Prototype results using a second
+JPEG encoding are excluded from the final product comparison.
+
+The accepted production profile keeps that prompt and existing `qwen2.5vl:3b`,
+using only a 1024-pixel local preview, 4096-token context, and structured JSON.
+The same 24 samples produced the following results, with original files and
+labels unchanged:
+
+| Measurement | Previous implementation | Accepted profile |
+| --- | ---: | ---: |
+| Exact role matches, all samples | 14/24 | 15/24 |
+| Valid model responses | 24/24 | 24/24 |
+| Median latency | 10.67 s | 8.05 s |
+| P95 latency, nearest rank | 24.65 s | 8.61 s |
+| Maximum latency | 25.98 s | 10.34 s |
+| Former automatic candidates / correct | 23 / 13 | 20 / 13 |
+
+All 24 accepted responses matched the five-field schema and contained tags and
+a summary. One previously incorrect unknown-role sample became correct; no
+previously correct sample became incorrect. Hero, icon, logo, background,
+content-image, and texture exact-match counts did not change. Texture remains
+0/4 and logo 2/4 in this subset, so neither is reliable enough for automation.
+Some tags remained English; schema validity does not guarantee language,
+factual accuracy, or useful wording.
+
+Observed latency fell in these runs, but shared Ollama load was not isolated,
+and the improvement cannot be attributed to an individual request option.
+The former candidate accuracy is 65% with 83.33% coverage on this subset;
+24 development samples cannot pass the 80–120-sample release gate. The original
+91-image result is a different distribution and must not be compared directly
+to this subset. Automatic role confirmation remains disabled. Product images
+still require the existing manual selector; no new window or model was added.

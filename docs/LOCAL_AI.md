@@ -16,6 +16,17 @@ ollama pull qwen2.5vl:3b
 
 Choose **Local model** and use **Check again**. Images stay on the machine.
 
+The existing `qwen2.5vl:3b` remains the default. Local Ollama requests use a
+1024-pixel maximum preview edge, a 4096-token context, and a five-field JSON
+schema for role, confidence, reason, tags, and summary. The original role prompt
+is preserved.
+These are per-request limits using Ollama's [chat API](https://docs.ollama.com/api/chat)
+and [context options](https://docs.ollama.com/faq); no global Ollama setting or
+additional model is required. API and Sophon keep their original prompt,
+2048-pixel preview limit, and request format. Schema constraints improve output
+structure, but do not guarantee a correct role. Invalid confidence values are
+treated as zero.
+
 ## API
 
 Haypile supports an OpenAI-compatible `/v1/chat/completions` vision endpoint

@@ -28,6 +28,22 @@ from app.services.media_validator import MediaValidationError, validate_raster, 
 
 logger = logging.getLogger(__name__)
 
+_LOCAL_SORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "role": {
+            "type": "string",
+            "enum": ["main_background", "hero_image", "logo", "icon", "content_image", "texture", "unknown"],
+        },
+        "role_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reason": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+        "agent_summary": {"type": "string"},
+    },
+    "required": ["role", "role_confidence", "reason", "tags", "agent_summary"],
+    "additionalProperties": False,
+}
+
 
 @dataclass(slots=True)
 class StyleClassificationResult:
@@ -243,7 +259,8 @@ class StyleClassifier:
             validate_raster(image_path)
             with Image.open(image_path) as opened:
                 image = ImageOps.exif_transpose(opened)
-                image.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+                max_edge = 1024 if getattr(self, "transport", "ollama") == "ollama" else 2048
+                image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
                 has_alpha = "A" in image.getbands() or "transparency" in image.info
                 if has_alpha:
                     image = image.convert("RGBA")
@@ -368,6 +385,9 @@ class StyleClassifier:
                 "temperature": 0.0,
             },
         }
+        if getattr(self, "transport", "ollama") == "ollama":
+            payload["options"]["num_ctx"] = 4096
+            payload["format"] = _LOCAL_SORT_SCHEMA
         if self.keep_alive:
             payload["keep_alive"] = self.keep_alive
         return payload
@@ -596,16 +616,14 @@ class StyleClassifier:
 
     @staticmethod
     def _to_confidence(value: Any) -> float:
+        if isinstance(value, bool):
+            return 0.0
         try:
             score = float(value)
         except (TypeError, ValueError):
             return 0.0
-        if not math.isfinite(score):
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
             return 0.0
-        if score < 0.0:
-            return 0.0
-        if score > 1.0:
-            return 1.0
         return score
 
     @staticmethod

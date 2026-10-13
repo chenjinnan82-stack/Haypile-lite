@@ -119,6 +119,30 @@ class StyleClassifierPreviewTests(unittest.TestCase):
             self.assertEqual(original.info["private_note"], "source metadata")
             self.assertEqual(original.getexif()[270], "private description")
 
+    def test_preview_profile_is_local_only_and_preserves_original(self) -> None:
+        source = self.root / "large-alpha.png"
+        image = Image.new("RGBA", (3000, 2000), (255, 255, 255, 128))
+        text = PngInfo()
+        text.add_text("private_note", "source metadata")
+        exif = Image.Exif()
+        exif[270] = "private description"
+        image.save(source, pnginfo=text, exif=exif, icc_profile=b"private-profile")
+        original = source.read_bytes()
+
+        for transport, max_edge in (("ollama", 1024), ("openai", 2048), ("sophon", 2048)):
+            with self.subTest(transport=transport):
+                self.classifier.transport = transport
+                encoded, media_type = self.classifier._encode_image_preview(source)
+                payload = base64.b64decode(encoded)
+                self.assertEqual(media_type, "image/jpeg")
+                self.assertLessEqual(len(payload), self.classifier.max_image_bytes)
+                with Image.open(io.BytesIO(payload)) as preview:
+                    self.assertEqual(preview.mode, "RGB")
+                    self.assertEqual(max(preview.size), max_edge)
+                    for field in ("exif", "icc_profile", "private_note", "comment", "xmp"):
+                        self.assertNotIn(field, preview.info)
+                self.assertEqual(source.read_bytes(), original)
+
 
 class StyleClassifierPowerTests(unittest.TestCase):
     def tearDown(self) -> None:
@@ -132,6 +156,44 @@ class StyleClassifierPowerTests(unittest.TestCase):
         payload = classifier._build_request_payload("prompt", "image")
 
         self.assertEqual(payload["keep_alive"], "30s")
+
+    def test_compact_request_and_prompt_are_local_only(self) -> None:
+        classifier = StyleClassifier.__new__(StyleClassifier)
+        classifier.model = "qwen2.5vl:3b"
+        classifier.keep_alive = "30s"
+        legacy_prompt = None
+        for transport in ("openai", "sophon", "ollama"):
+            with self.subTest(transport=transport):
+                classifier.transport = transport
+                prompt = classifier._build_prompt([], {"width": 3000})
+                payload = classifier._build_request_payload(prompt, "image", "image/jpeg")
+                self.assertEqual(payload["model"], classifier.model)
+                self.assertTrue(prompt.startswith("你是 Haypile 入库视觉分拣官"))
+                if legacy_prompt is None:
+                    legacy_prompt = prompt
+                self.assertEqual(prompt, legacy_prompt)
+                if transport == "ollama":
+                    self.assertEqual(payload["options"], {"temperature": 0.0, "num_ctx": 4096})
+                    schema = payload["format"]
+                    fields = {"role", "role_confidence", "reason", "tags", "agent_summary"}
+                    self.assertEqual(set(schema["required"]), fields)
+                    self.assertEqual(set(schema["properties"]), fields)
+                    self.assertFalse(schema["additionalProperties"])
+                    self.assertEqual(schema["properties"]["role_confidence"],
+                                     {"type": "number", "minimum": 0, "maximum": 1})
+                    self.assertEqual(schema["properties"]["tags"]["maxItems"], 6)
+                else:
+                    self.assertNotIn("format", payload)
+                if transport == "openai":
+                    self.assertNotIn("options", payload)
+                    self.assertNotIn("keep_alive", payload)
+                    self.assertEqual(payload["temperature"], 0.0)
+                    self.assertEqual(payload["messages"][1]["content"][1]["image_url"]["url"],
+                                     "data:image/jpeg;base64,image")
+                else:
+                    self.assertEqual(payload["keep_alive"], "30s")
+                    if transport == "sophon":
+                        self.assertEqual(payload["options"], {"temperature": 0.0})
 
     def test_normalize_result_keeps_ai_suggestions_conservative(self) -> None:
         classifier = StyleClassifier.__new__(StyleClassifier)
@@ -158,6 +220,30 @@ class StyleClassifierPowerTests(unittest.TestCase):
         self.assertEqual(result.ai_suggestions()["agent_summary"], "适合作为自然风格主视觉。")
         self.assertEqual(result.ai_suggestions()["trust"], "untrusted_advisory")
         self.assertTrue(result.ai_suggestions()["must_not_execute"])
+
+    def test_confidence_rejects_invalid_values_and_keeps_numeric_strings(self) -> None:
+        for value, expected in (
+            (True, 0.0),
+            (False, 0.0),
+            (95, 0.0),
+            (-0.1, 0.0),
+            (float("nan"), 0.0),
+            (float("inf"), 0.0),
+            (float("-inf"), 0.0),
+            (0, 0.0),
+            (1, 1.0),
+            (0.85, 0.85),
+            ("0", 0.0),
+            ("1", 1.0),
+            ("0.85", 0.85),
+            ("95", 0.0),
+            ("-0.1", 0.0),
+            ("NaN", 0.0),
+            ("Infinity", 0.0),
+            ("garbage", 0.0),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(StyleClassifier._to_confidence(value), expected)
 
     def test_model_json_rejects_nonfinite_numbers(self) -> None:
         for payload in (
