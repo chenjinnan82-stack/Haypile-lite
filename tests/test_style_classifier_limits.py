@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from PIL import Image
+from PIL.PngImagePlugin import PngInfo
 
 from app.core.config import get_settings
 from app.services.style_classifier import StyleClassificationResult, StyleClassifier
@@ -38,6 +39,85 @@ def test_ingest_worker_does_not_run_visual_classification() -> None:
     )[0]
 
     assert "classify_image" not in ingest_worker
+
+
+class StyleClassifierPreviewTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.classifier = StyleClassifier.__new__(StyleClassifier)
+        self.classifier.max_image_bytes = 8 * 1024 * 1024
+
+    def preview(self, image: Image.Image, **save_options) -> Image.Image:
+        source = self.root / "source.png"
+        image.save(source, **save_options)
+        original = source.read_bytes()
+        metadata = self.classifier._collect_image_metadata(source)
+        encoded, media_type = self.classifier._encode_image_preview(source)
+        payload = base64.b64decode(encoded)
+        self.assertEqual(media_type, "image/jpeg")
+        self.assertTrue(payload)
+        self.assertLessEqual(len(payload), self.classifier.max_image_bytes)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(self.classifier._collect_image_metadata(source), metadata)
+        with Image.open(io.BytesIO(payload)) as decoded:
+            self.assertEqual(decoded.mode, "RGB")
+            self.assertLessEqual(max(decoded.size), 2048)
+            return decoded.copy()
+
+    def test_black_transparent_graphic_has_white_background(self) -> None:
+        image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+        image.paste((0, 0, 0, 255), (48, 48, 80, 80))
+
+        preview = self.preview(image)
+
+        self.assertGreaterEqual(min(preview.getpixel((8, 8))), 245)
+        self.assertLessEqual(max(preview.getpixel((64, 64))), 10)
+
+    def test_white_transparent_graphic_has_dark_background(self) -> None:
+        image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+        image.paste((255, 255, 255, 255), (48, 48, 80, 80))
+
+        preview = self.preview(image)
+
+        self.assertLessEqual(max(preview.getpixel((8, 8))), 40)
+        self.assertGreaterEqual(min(preview.getpixel((64, 64))), 245)
+
+    def test_palette_transparency_is_composited(self) -> None:
+        image = Image.new("P", (128, 128), 0)
+        image.putpalette([255, 255, 255, 0, 0, 0] + [0] * 762)
+        image.paste(1, (48, 48, 80, 80))
+
+        preview = self.preview(image, transparency=0)
+
+        self.assertGreaterEqual(min(preview.getpixel((8, 8))), 245)
+        self.assertLessEqual(max(preview.getpixel((64, 64))), 10)
+
+    def test_fully_transparent_image_has_safe_blank_preview(self) -> None:
+        preview = self.preview(Image.new("RGBA", (128, 128), (200, 80, 10, 0)))
+
+        self.assertEqual(preview.getextrema(), ((255, 255), (255, 255), (255, 255)))
+
+    def test_transparent_preview_keeps_size_budget_and_strips_metadata(self) -> None:
+        image = Image.effect_noise((4096, 3072), 100).convert("RGBA")
+        image.putalpha(128)
+        text = PngInfo()
+        text.add_text("private_note", "source metadata")
+        exif = Image.Exif()
+        exif[270] = "private description"
+        self.classifier.max_image_bytes = 256 * 1024
+
+        preview = self.preview(image, pnginfo=text, exif=exif, icc_profile=b"private-profile")
+
+        self.assertLess(max(preview.size), 2048)
+        for field in ("exif", "icc_profile", "private_note", "comment", "xmp"):
+            self.assertNotIn(field, preview.info)
+        with Image.open(self.root / "source.png") as original:
+            self.assertEqual(original.size, (4096, 3072))
+            self.assertEqual(original.mode, "RGBA")
+            self.assertEqual(original.info["private_note"], "source metadata")
+            self.assertEqual(original.getexif()[270], "private description")
 
 
 class StyleClassifierPowerTests(unittest.TestCase):

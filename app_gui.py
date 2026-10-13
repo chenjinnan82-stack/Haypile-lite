@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urldefrag, urlparse
 from uuid import uuid4
 
@@ -214,6 +215,7 @@ logger = logging.getLogger(__name__)
 _UI_MOSS = "#4E5F3D"
 _UI_GOLD_TEXT = "#A67624"
 _UI_ERROR = "#9B4C37"
+_AI_IMAGE_SUFFIXES = StyleClassifier.ALLOWED_IMAGE_SUFFIXES - {".svg"}
 
 _CHOICE_BUTTON_STYLE = (
     "QPushButton { color: #4E5F3D; background: #F6F1E4; "
@@ -779,71 +781,76 @@ async def _classify_registered_bundle(
     classifier: StyleClassifier,
     theme_candidates: list[str],
     bundle_service: BundleService,
+    should_stop: Callable[[], bool] = lambda: False,
 ):
     source_key = str(bundle.get("source_key") or "").strip()
     if (
         str(bundle.get("type") or "").lower() != "image"
-        or str(bundle.get("content_type") or "").lower() == "image/gif"
+        or Path(source_key).suffix.lower() not in _AI_IMAGE_SUFFIXES
         or not source_key
     ):
         raise ValueError("unsupported_bundle")
     assets_root = assets_dir.resolve(strict=False)
+    if (assets_root / source_key).is_symlink():
+        raise OSError("asset_missing_or_changed")
     asset_path = (assets_root / source_key).resolve(strict=False)
     asset_path.relative_to(assets_root)
-    if not asset_path.is_file() or asset_path.is_symlink():
-        raise OSError("asset_missing")
+    if not bundle.get("sha256") or asset_file_sha256(asset_path) != bundle["sha256"]:
+        raise OSError("asset_missing_or_changed")
+    if should_stop():
+        raise InterruptedError("ai_cancelled")
 
     classification = await classifier.classify_image(asset_path, candidate_themes=theme_candidates)
-    provenance = read_asset_provenance(asset_path)
-    provenance.update(
-        {
-            "source_key": source_key,
-            "sha256": str(bundle.get("sha256") or ""),
-            "ai_suggestions": classification.ai_suggestions(),
-        }
-    )
-    write_asset_provenance(asset_path, provenance)
-    auto_ready = StyleClassifier.is_auto_ready(classification)
-    if auto_ready:
-        auto_ready = bundle_service.set_bundle_role(str(bundle.get("id") or ""), classification.role) is not None
-    return classification, auto_ready
+    if should_stop():
+        raise InterruptedError("ai_cancelled")
+    _persist_ai_suggestions(bundle, assets_dir, classification.ai_suggestions(),
+                            index_dir=bundle_service.runtime_db_path.parent, should_stop=should_stop)
+    # The local model failed the accuracy gate; suggestions require manual confirmation.
+    return classification, False
 
 
-def _persist_ai_failure(bundle: dict[str, object], assets_dir: Path, reason: str) -> None:
-    if str(bundle.get("content_type") or "").lower() == "image/gif":
-        return
-    source_key = str(bundle.get("source_key") or "").strip()
-    if not source_key:
-        return
+def _persist_ai_suggestions(bundle, assets_dir: Path, suggestions: dict, *,
+                            index_dir: Path | None = None, should_stop: Callable[[], bool] = lambda: False) -> None:
+    # Reuse the intake lock only for this short read-modify-write, never for inference.
+    lock = InterProcessFileLock((index_dir or assets_dir.parent / "index") / "ingest.transaction.lock")
+    if should_stop():
+        raise InterruptedError("ai_cancelled")
+    if not lock.acquire():
+        raise TimeoutError("ai_update_busy")
     try:
+        if should_stop():
+            raise InterruptedError("ai_cancelled")
+        source_key = str(bundle.get("source_key") or "").strip()
         assets_root = assets_dir.resolve(strict=False)
+        if (assets_root / source_key).is_symlink():
+            raise OSError("asset_missing_or_changed")
         asset_path = (assets_root / source_key).resolve(strict=False)
         asset_path.relative_to(assets_root)
-        if not asset_path.is_file() or asset_path.is_symlink():
-            return
+        if not bundle.get("sha256") or asset_file_sha256(asset_path) != bundle["sha256"]:
+            raise OSError("asset_missing_or_changed")
         provenance = read_asset_provenance(asset_path)
         existing = provenance.get("ai_suggestions")
-        if isinstance(existing, dict) and existing.get("source") == "model":
+        if suggestions.get("source") != "model" and isinstance(existing, dict) and existing.get("source") == "model":
             return
-        provenance.update(
-            {
-                "source_key": source_key,
-                "sha256": str(bundle.get("sha256") or ""),
-                "ai_suggestions": {
-                    "source": "model_fallback",
-                    "usage": "unknown",
-                    "quality": "unknown",
-                    "quality_reason": "classification_unavailable",
-                    "confidence": {"theme": 0.0, "role": 0.0},
-                    "reason": str(reason or "model_call_failed")[:80],
-                    "tags": [],
-                    "agent_summary": "",
-                    "trust": "untrusted_advisory",
-                    "must_not_execute": True,
-                },
-            }
-        )
+        if should_stop():
+            raise InterruptedError("ai_cancelled")
+        provenance.update(source_key=source_key, sha256=str(bundle["sha256"]), ai_suggestions=suggestions)
         write_asset_provenance(asset_path, provenance)
+    finally:
+        lock.release()
+
+
+def _persist_ai_failure(bundle: dict[str, object], assets_dir: Path, reason: str, *,
+                        index_dir: Path | None = None, should_stop: Callable[[], bool] = lambda: False) -> None:
+    if bundle.get("type") != "image" or Path(str(bundle.get("source_key") or "")).suffix.lower() not in _AI_IMAGE_SUFFIXES:
+        return
+    try:
+        _persist_ai_suggestions(bundle, assets_dir, {
+            "source": "model_fallback", "usage": "unknown", "quality": "unknown",
+            "quality_reason": "classification_unavailable", "confidence": {"theme": 0.0, "role": 0.0},
+            "reason": str(reason or "model_call_failed")[:80], "tags": [], "agent_summary": "",
+            "trust": "untrusted_advisory", "must_not_execute": True,
+        }, index_dir=index_dir, should_stop=should_stop)
     except (OSError, ValueError):
         logger.debug("Failed to persist AI failure state")
 
@@ -856,15 +863,18 @@ class AIRefreshWorker(QThread):
         bundle: dict[str, object],
         assets_dir: Path,
         provider: AIProviderConfig | None = None,
+        *, settings: Settings | None = None,
     ) -> None:
         super().__init__()
+        settings = settings or get_settings()
         self.bundle = dict(bundle)
         self.assets_dir = assets_dir
-        self.theme_registry = ThemeRegistry()
-        self.style_classifier = StyleClassifier(provider)
-        self.bundle_service = BundleService()
+        self.theme_registry = ThemeRegistry(settings.THEMES_DIR)
+        self.style_classifier = StyleClassifier(provider, settings=settings)
+        self.bundle_service = BundleService(assets_dir=assets_dir, manifest_path=settings.MANIFEST_PATH,
+                                            themes_dir=settings.THEMES_DIR, runtime_db_path=settings.INDEX_DIR / "storage_runtime.db")
         self.theme_candidates = self.theme_registry.list_theme_ids()
-        fallback = get_settings().VISION_FALLBACK_THEME
+        fallback = settings.VISION_FALLBACK_THEME
         if fallback not in self.theme_candidates:
             self.theme_candidates.append(fallback)
 
@@ -881,9 +891,20 @@ class AIRefreshWorker(QThread):
                     self.style_classifier,
                     self.theme_candidates,
                     self.bundle_service,
+                    self.isInterruptionRequested,
                 )
             )
+        except InterruptedError:
+            self.finished_signal.emit(bundle_id, ui_text("AI 整理已取消", "AI sorting cancelled"), False)
+            return
         except (ResourceExhaustedError, httpx.TimeoutException, OSError, RuntimeError, ValueError) as exc:
+            if self.isInterruptionRequested():
+                self.finished_signal.emit(bundle_id, ui_text("AI 整理已取消", "AI sorting cancelled"), False)
+                return
+            _persist_ai_failure(self.bundle, self.assets_dir, "model_call_failed", index_dir=self.bundle_service.runtime_db_path.parent, should_stop=self.isInterruptionRequested)
+            if self.isInterruptionRequested():
+                self.finished_signal.emit(bundle_id, ui_text("AI 整理已取消", "AI sorting cancelled"), False)
+                return
             logger.warning("AI 分拣刷新失败: bundle_id=%s error_type=%s", bundle_id, type(exc).__name__)
             self.finished_signal.emit(bundle_id, ui_text("AI 分拣失败", "AI sorting failed"), False)
             return
@@ -891,18 +912,24 @@ class AIRefreshWorker(QThread):
             loop.close()
         if self.isInterruptionRequested():
             return
-        classification, auto_ready = classification
+        classification, _ = classification
         suggestions = classification.ai_suggestions()
         source = str(suggestions.get("source") or "").strip()
         reason = str(suggestions.get("reason") or source or "unknown").strip()
-        success = source not in {"model_fallback", "disabled", "guard", ""}
+        success = source == "model"
+        try:
+            current = self.bundle_service.get_bundle(bundle_id)
+        except (OSError, ValueError, ManifestReadinessError):
+            current = None
         message = (
-            ui_text("AI 分拣完成 · 已自动可用", "AI sorting complete · ready")
-            if auto_ready
+            ui_text("AI 建议已更新 · 保留当前用途", "AI suggestions updated · current role retained")
+            if success and current and current.get("status") == "ready"
             else ui_text("AI 分拣已更新 · 等待确认", "AI sorting updated · review needed")
             if success
             else ui_text(f"AI 分拣未得到模型结果：{reason}", f"AI sorting did not get a model result: {reason}")
         )
+        if not success and current and (current.get("ai_suggestions") or {}).get("source") == "model":
+            message += ui_text(" · 已保留上次成功建议", " · previous successful suggestions retained")
         self.finished_signal.emit(bundle_id, message, success)
 
 
@@ -916,20 +943,23 @@ class AIBatchWorker(QThread):
         bundles: list[dict[str, object]],
         assets_dir: Path,
         provider: AIProviderConfig | None = None,
+        *, settings: Settings | None = None,
     ) -> None:
         super().__init__()
+        settings = settings or get_settings()
         self.batch_id = batch_id
         self.bundles = [
             dict(bundle)
             for bundle in bundles
-            if str(bundle.get("content_type") or "").lower() != "image/gif"
+            if bundle.get("type") == "image" and Path(str(bundle.get("source_key") or "")).suffix.lower() in _AI_IMAGE_SUFFIXES
         ]
         self.assets_dir = assets_dir
-        self.style_classifier = StyleClassifier(provider)
-        self.bundle_service = BundleService()
-        registry = ThemeRegistry()
+        self.style_classifier = StyleClassifier(provider, settings=settings)
+        self.bundle_service = BundleService(assets_dir=assets_dir, manifest_path=settings.MANIFEST_PATH,
+                                            themes_dir=settings.THEMES_DIR, runtime_db_path=settings.INDEX_DIR / "storage_runtime.db")
+        registry = ThemeRegistry(settings.THEMES_DIR)
         self.theme_candidates = registry.list_theme_ids()
-        fallback = get_settings().VISION_FALLBACK_THEME
+        fallback = settings.VISION_FALLBACK_THEME
         if fallback not in self.theme_candidates:
             self.theme_candidates.append(fallback)
 
@@ -961,16 +991,26 @@ class AIBatchWorker(QThread):
                             self.style_classifier,
                             self.theme_candidates,
                             self.bundle_service,
+                            self.isInterruptionRequested,
                         )
                     )
+                except InterruptedError:
+                    self.finished_signal.emit(self.batch_id, ui_text("AI 整理已取消", "AI sorting cancelled"), "cancelled")
+                    return
                 except (ResourceExhaustedError, httpx.TimeoutException, OSError, RuntimeError, ValueError) as exc:
+                    if self.isInterruptionRequested():
+                        self.finished_signal.emit(self.batch_id, ui_text("AI 整理已取消", "AI sorting cancelled"), "cancelled")
+                        return
                     logger.warning(
                         "批次 AI 整理失败: batch=%s bundle=%s error_type=%s",
                         self.batch_id,
                         bundle.get("id"),
                         type(exc).__name__,
                     )
-                    _persist_ai_failure(bundle, self.assets_dir, "model_call_failed")
+                    _persist_ai_failure(bundle, self.assets_dir, "model_call_failed", index_dir=self.bundle_service.runtime_db_path.parent, should_stop=self.isInterruptionRequested)
+                    if self.isInterruptionRequested():
+                        self.finished_signal.emit(self.batch_id, ui_text("AI 整理已取消", "AI sorting cancelled"), "cancelled")
+                        return
                     auto_ready = False
                     failed_count += 1
                 else:
@@ -978,7 +1018,11 @@ class AIBatchWorker(QThread):
                         classified_count += 1
                     else:
                         failed_count += 1
-                if auto_ready:
+                try:
+                    current = self.bundle_service.get_bundle(str(bundle.get("id") or ""))
+                except (OSError, ValueError, ManifestReadinessError):
+                    current = None
+                if auto_ready or (current and current.get("status") == "ready"):
                     ready_count += 1
                 else:
                     pending_count += 1
@@ -2664,6 +2708,7 @@ class MaterialPanelWindow(QWidget):
         if not query:
             return True
         bundle = self._bundle_for_item(item)
+        suggestions = bundle.get("ai_suggestions") or {}
         haystack = "\n".join(
             str(value or "").casefold()
             for value in (
@@ -2681,6 +2726,8 @@ class MaterialPanelWindow(QWidget):
                 bundle["type"],
                 bundle.get("audio_usage", ""),
                 bundle.get("audio_tags", {}),
+                suggestions.get("tags", []),
+                suggestions.get("agent_summary", ""),
                 bundle.get("font_usage", ""),
                 bundle.get("font_metadata", {}),
                 bundle.get("font_annotation", {}),
@@ -2820,7 +2867,7 @@ class MaterialPanelWindow(QWidget):
     def _refresh_retry_ai_button(self, bundle: dict[str, object]) -> None:
         visible = (
             str(bundle.get("type") or "").lower() == "image"
-            and str(bundle.get("content_type") or "").lower() != "image/gif"
+            and Path(str(bundle.get("source_key") or "")).suffix.lower() in _AI_IMAGE_SUFFIXES
             and str(bundle.get("status") or "") != "missing"
             and bool(str(bundle.get("source_key") or "").strip())
         )
@@ -2855,19 +2902,16 @@ class MaterialPanelWindow(QWidget):
             self.detail_label.setText(ui_text("资源不存在", "Asset not found"))
             self.detail_label.show()
             return
-        if str(bundle.get("content_type") or "").lower() == "image/gif":
+        if bundle.get("type") != "image" or Path(str(bundle.get("source_key") or "")).suffix.lower() not in _AI_IMAGE_SUFFIXES:
             self.retry_ai_button.hide()
             return
         self.retry_ai_button.setEnabled(False)
         self.retry_ai_button.setText(ui_text("AI 分拣中...", "AI sorting..."))
-        if self._ai_provider_factory is None:
-            self.ai_refresh_worker = AIRefreshWorker(bundle, self.settings.ASSETS_DIR)
-        else:
-            self.ai_refresh_worker = AIRefreshWorker(
-                bundle,
-                self.settings.ASSETS_DIR,
-                self._ai_provider_factory(),
-            )
+        self.ai_refresh_worker = AIRefreshWorker(
+            bundle, self.settings.ASSETS_DIR,
+            self._ai_provider_factory() if self._ai_provider_factory else None,
+            settings=self.settings,
+        )
         self.ai_refresh_worker.finished_signal.connect(self._on_ai_refresh_finished)
         self.ai_refresh_worker.start()
 
@@ -6371,7 +6415,7 @@ class HaypileFloatingBall(QWidget):
                 bundles = [
                     bundle
                     for bundle in bundles
-                    if str(bundle.get("content_type") or "").lower() != "image/gif"
+                    if Path(str(bundle.get("source_key") or "")).suffix.lower() in _AI_IMAGE_SUFFIXES
                 ]
             except ManifestReadinessError:
                 self._ai_batch_queue.insert(0, batch_id)
@@ -6384,6 +6428,7 @@ class HaypileFloatingBall(QWidget):
                 bundles,
                 self.assets_dir,
                 self._current_ai_provider_config(),
+                settings=self.settings,
             )
             self.ai_batch_worker.finished_signal.connect(self._on_ai_batch_finished)
             self.ai_batch_worker.start()

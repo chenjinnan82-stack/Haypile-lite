@@ -31,6 +31,7 @@ try:
     from PySide6.QtWidgets import QApplication
 
     import app_gui as app_gui_module
+    from app.core.config import Settings
     from app.services import experimental_project_summary as experimental_summary_module
     from app.services.asset_provenance import read_asset_provenance, write_asset_provenance
     from app.services.experimental_project_summary import MaterialPanelSummary, MaterialSummaryItem
@@ -1028,7 +1029,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         assets_dir = self.tmpdir / "assets"
         asset_path = assets_dir / "generic" / "images" / "hero.png"
         asset_path.parent.mkdir(parents=True)
-        asset_path.write_bytes(b"image")
+        Image.new("RGB", (16, 16), "red").save(asset_path)
+        digest = hashlib.sha256(asset_path.read_bytes()).hexdigest()
 
         class FakeClassifier:
             async def classify_image(self, _asset_path, candidate_themes=None):
@@ -1049,9 +1051,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 "id": "hero",
                 "type": "image",
                 "source_key": "generic/images/hero.png",
-                "sha256": "d" * 64,
+                "sha256": digest,
             },
             assets_dir,
+            settings=Settings(_env_file=None, STORAGE_DIR=self.tmpdir, ASSETS_DIR=assets_dir,
+                              INDEX_DIR=self.tmpdir / "index", THEMES_DIR=self.tmpdir / "themes",
+                              MANIFEST_PATH=self.tmpdir / "index/assets_manifest.json"),
         )
         worker.style_classifier = FakeClassifier()
         finished: list[tuple[str, str, bool]] = []
@@ -1062,7 +1067,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         provenance = read_asset_provenance(asset_path)
         self.assertEqual(finished, [("hero", "AI 分拣已更新 · 等待确认", True)])
         self.assertEqual(provenance["source_key"], "generic/images/hero.png")
-        self.assertEqual(provenance["sha256"], "d" * 64)
+        self.assertEqual(provenance["sha256"], digest)
         self.assertEqual(provenance["ai_suggestions"]["quality"], "high")
         self.assertEqual(provenance["ai_suggestions"]["agent_summary"], "适合作为主视觉。")
 
@@ -1070,7 +1075,8 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         assets_dir = self.tmpdir / "assets"
         asset_path = assets_dir / "generic" / "images" / "hero.png"
         asset_path.parent.mkdir(parents=True)
-        asset_path.write_bytes(b"image")
+        Image.new("RGB", (16, 16), "red").save(asset_path)
+        digest = hashlib.sha256(asset_path.read_bytes()).hexdigest()
 
         class FakeClassifier:
             async def classify_image(self, _asset_path, candidate_themes=None):
@@ -1088,9 +1094,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 "id": "hero",
                 "type": "image",
                 "source_key": "generic/images/hero.png",
-                "sha256": "d" * 64,
+                "sha256": digest,
             },
             assets_dir,
+            settings=Settings(_env_file=None, STORAGE_DIR=self.tmpdir, ASSETS_DIR=assets_dir,
+                              INDEX_DIR=self.tmpdir / "index", THEMES_DIR=self.tmpdir / "themes",
+                              MANIFEST_PATH=self.tmpdir / "index/assets_manifest.json"),
         )
         worker.style_classifier = FakeClassifier()
         finished: list[tuple[str, str, bool]] = []
@@ -1147,7 +1156,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                 self.callback(*args)
 
         class FakeWorker:
-            def __init__(self, _bundle, _assets_dir):
+            def __init__(self, _bundle, _assets_dir, provider=None, *, settings=None):
                 self.finished_signal = FakeSignal()
 
             def isRunning(self):
@@ -1226,7 +1235,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         class FakeWorker:
             created = []
 
-            def __init__(self, _bundle, _assets_dir):
+            def __init__(self, _bundle, _assets_dir, provider=None, *, settings=None):
                 self.finished_signal = FakeSignal()
                 self.running = False
                 FakeWorker.created.append(self)

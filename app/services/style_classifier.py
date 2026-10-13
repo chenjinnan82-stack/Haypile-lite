@@ -14,8 +14,8 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
-from app.core.config import get_settings
+from PIL import Image, ImageOps, ImageStat, UnidentifiedImageError
+from app.core.config import Settings, get_settings
 from app.core.exceptions import ResourceExhaustedError
 from app.core.limiter import ConcurrencyLimiter
 from app.services.ai_provider import (
@@ -69,7 +69,7 @@ class StyleClassificationResult:
 
 class StyleClassifier:
     """
-    Vision-based style classifier for pre-ingest theme routing.
+    Post-ingest image role suggestions; storage never waits for this model.
 
     Design goals:
     - Never block ingest pipeline on model failures.
@@ -78,8 +78,8 @@ class StyleClassifier:
     """
 
     ALLOWED_IMAGE_SUFFIXES: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
-    def __init__(self, provider: AIProviderConfig | None = None) -> None:
-        settings = get_settings()
+    def __init__(self, provider: AIProviderConfig | None = None, *, settings: Settings | None = None) -> None:
+        settings = settings or get_settings()
         self.low_power_mode: bool = bool(settings.HAYPILE_LOW_POWER_MODE)
         configured_enabled = bool(settings.VISION_CLASSIFIER_ENABLED) and not self.low_power_mode
         default_mode = "local" if configured_enabled else "off"
@@ -121,7 +121,7 @@ class StyleClassifier:
         candidate_themes: list[str] | None = None,
     ) -> StyleClassificationResult:
         """
-        Classify an image into a theme bucket and a basic asset role.
+        Suggest an image role after intake; theme routing stays deterministic.
 
         Returns fallback result if:
         - classifier is disabled,
@@ -247,12 +247,17 @@ class StyleClassifier:
                 has_alpha = "A" in image.getbands() or "transparency" in image.info
                 if has_alpha:
                     image = image.convert("RGBA")
-                    media_type, image_format = "image/png", "PNG"
-                    save_options: dict[str, Any] = {"optimize": True}
+                    alpha = image.getchannel("A")
+                    luminance = ImageStat.Stat(image.convert("L"), mask=alpha).mean[0] if alpha.getbbox() else 0.0
+                    background = (32, 32, 32) if luminance >= 128 else (255, 255, 255)
+                    preview = Image.new("RGB", image.size, background)
+                    preview.paste(image, mask=alpha)
+                    image = preview
                 else:
                     image = image.convert("RGB")
-                    media_type, image_format = "image/jpeg", "JPEG"
-                    save_options = {"quality": 86, "optimize": True, "progressive": True}
+                image.info.clear()
+                media_type, image_format = "image/jpeg", "JPEG"
+                save_options = {"quality": 86, "optimize": True, "progressive": True}
                 for _attempt in range(5):
                     buffer = io.BytesIO()
                     image.save(buffer, format=image_format, **save_options)
@@ -619,6 +624,7 @@ class StyleClassifier:
 
     @staticmethod
     def is_auto_ready(result: StyleClassificationResult) -> bool:
+        """Offline evaluation candidate rule; runtime still requires manual confirmation."""
         return (
             result.source == "model"
             and result.role != "unknown"

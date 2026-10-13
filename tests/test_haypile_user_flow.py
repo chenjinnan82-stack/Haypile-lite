@@ -11,6 +11,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from PIL import Image
+
 from app.core.config import get_settings
 from app.services.bundle_service import BundleService
 from app.services.asset_provenance import read_asset_provenance, write_asset_provenance
@@ -66,13 +68,12 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_drop_flow_ingests_dedupes_exposes_handoff_and_survives_restart(self) -> None:
-        image = self.tmpdir / "hero.svg"
-        duplicate = self.tmpdir / "same-hero.svg"
+        image = self.tmpdir / "hero.png"
+        duplicate = self.tmpdir / "same-hero.png"
         audio = self.tmpdir / "tone.wav"
         invalid = self.tmpdir / "fake.png"
-        svg = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"></svg>'
-        image.write_text(svg, encoding="utf-8")
-        duplicate.write_text(svg, encoding="utf-8")
+        Image.new("RGB", (1200, 800), "red").save(image)
+        duplicate.write_bytes(image.read_bytes())
         invalid.write_text("not an image", encoding="utf-8")
         self._write_wav(audio)
 
@@ -122,6 +123,11 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
 
         self.assertEqual(ai_finished[-1][0], batch_id)
         self.assertEqual(ai_finished[-1][2], "success")
+        self.assertEqual(service.list_bundles(status="ready"), [])
+        advised = service.get_bundle(image_bundle["id"])
+        self.assertEqual(advised["status"], "pending")
+        self.assertEqual(advised["ai_suggestions"]["usage"], "hero_image")
+        service.set_bundle_role(image_bundle["id"], "hero_image")
         ready = service.list_bundles(status="ready")
         handoff = build_handoff(ready)
         payload_text = json.dumps(handoff)
@@ -322,11 +328,8 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         self.assertEqual(len(observed_batch_ids), 1)
 
     def test_ai_failure_does_not_undo_ingest_or_mark_asset_ready(self) -> None:
-        image = self.tmpdir / "pending.svg"
-        image.write_text(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"></svg>',
-            encoding="utf-8",
-        )
+        image = self.tmpdir / "pending.png"
+        Image.new("RGB", (1200, 800), "blue").save(image)
         batches: list[str] = []
         worker = IngestWorker([image], self.assets_dir)
         worker.batch_signal.connect(lambda batch_id, _summary: batches.append(batch_id))
@@ -383,7 +386,8 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         )
         worker = AIBatchWorker(
             "batch-partial",
-            [{"id": "one"}, {"id": "two"}],
+            [{"id": "one", "type": "image", "source_key": "one.png"},
+             {"id": "two", "type": "image", "source_key": "two.png"}],
             self.assets_dir,
         )
         finished: list[tuple[str, str, str]] = []
@@ -398,7 +402,7 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         self.assertIn("部分完成", finished[-1][1])
 
     def test_ai_batch_reports_cancelled(self) -> None:
-        worker = AIBatchWorker("batch-cancel", [{"id": "one"}], self.assets_dir)
+        worker = AIBatchWorker("batch-cancel", [{"id": "one", "type": "image", "source_key": "one.png"}], self.assets_dir)
         finished: list[tuple[str, str, str]] = []
         worker.finished_signal.connect(lambda *values: finished.append(values))
         with patch.object(worker, "isInterruptionRequested", return_value=True):

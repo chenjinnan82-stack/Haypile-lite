@@ -159,7 +159,7 @@ class Settings(BaseSettings):
     VISION_CLASSIFIER_MODEL: str = "qwen2.5vl:3b"
     VISION_CLASSIFIER_BASE_URL: str = "http://127.0.0.1:11434"
     SOPHON_BASE_URL: str = "http://127.0.0.1:8030"
-    VISION_CLASSIFIER_TIMEOUT_SECONDS: float = 8.0
+    VISION_CLASSIFIER_TIMEOUT_SECONDS: float = 30.0
     VISION_CLASSIFIER_MAX_IMAGE_BYTES: int = 8 * 1024 * 1024
     VISION_CLASSIFIER_KEEP_ALIVE: str = "30s"
     VISION_CONFIDENCE_THRESHOLD: float = 0.45
@@ -255,7 +255,7 @@ class Settings(BaseSettings):
         try:
             timeout = float(value)
         except (TypeError, ValueError):
-            return 8.0
+            return 30.0
         return timeout if timeout >= 0.5 else 0.5
 
     @field_validator("VISION_CLASSIFIER_MAX_IMAGE_BYTES", mode="before")
