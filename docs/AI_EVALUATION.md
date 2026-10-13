@@ -109,3 +109,19 @@ The former candidate accuracy is 65% with 83.33% coverage on this subset;
 91-image result is a different distribution and must not be compared directly
 to this subset. Automatic role confirmation remains disabled. Product images
 still require the existing manual selector; no new window or model was added.
+
+A follow-up Chinese clarification of material surfaces, collages, and symbols
+inside photographs was also rejected. On the same frozen 24 development images
+it returned 24 valid responses but only 14 correct roles versus the accepted
+profile's 15, with one logo regression and no newly correct sample. Median/P95
+latency was 10.99/18.32 seconds in that run. The original prompt remains active;
+the reserved 19-image verification subset was not run because the candidate
+failed its development acceptance criteria.
+
+That follow-up did expose a separate response-handling defect: a parsed empty
+object or incomplete local response could be saved as successful advice. Local
+responses now have to satisfy the requested field schema before being accepted.
+Regression tests verify that these failures preserve previous suggestions and
+do not confirm a role. All 48 recorded responses from the accepted run and the
+follow-up pass this client check; that replay validates compatibility, not a
+new accuracy improvement.

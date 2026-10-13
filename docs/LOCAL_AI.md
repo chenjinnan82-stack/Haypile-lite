@@ -27,6 +27,11 @@ additional model is required. API and Sophon keep their original prompt,
 structure, but do not guarantee a correct role. Invalid confidence values are
 treated as zero.
 
+Before saving a local result, Haypile also checks the required fields, their
+types, allowed roles, confidence range, and tag limit. Incomplete or malformed
+responses count as failed attempts and preserve the last successful suggestions.
+A valid `unknown` result remains a usable advisory result.
+
 ## API
 
 Haypile supports an OpenAI-compatible `/v1/chat/completions` vision endpoint

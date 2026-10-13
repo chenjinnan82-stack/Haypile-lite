@@ -58,7 +58,7 @@ class AIStabilityTests(unittest.TestCase):
 
     def test_normal_model_fallbacks_keep_prior_success(self):
         classifier = StyleClassifier(AIProviderConfig(mode="local"), settings=self.settings)
-        for raw in ("", "not JSON"):
+        for raw in ("", "not JSON", "{}", '{"role":"logo","role_confidence":0.9}'):
             with self.subTest(raw=raw):
                 write_asset_provenance(self.path, {"origin_url": "https://example.org/source",
                     "ai_suggestions": self.result.ai_suggestions()})
@@ -78,6 +78,39 @@ class AIStabilityTests(unittest.TestCase):
         self.assertFalse(ready)
         self.assertEqual(self.service.get_bundle(self.bundle["id"])["role"], "logo")
         self.assertEqual(read_asset_provenance(self.path)["ai_suggestions"]["tags"], ["sunset"])
+
+    def test_local_model_response_schema_before_accepting_advice(self):
+        classifier = StyleClassifier(AIProviderConfig(mode="local"), settings=self.settings)
+        valid = {"role": "hero_image", "role_confidence": .9, "reason": "主体清晰",
+                 "tags": ["红色", "主体"], "agent_summary": "适合主视觉"}
+        cases = [(valid, "model"), ({**valid, "role": "unknown", "role_confidence": 0}, "model")]
+        cases.extend(({**valid, **changed}, "model_fallback") for changed in (
+            {"role": "not-a-role"}, {"role": ["logo"]},
+            {"role_confidence": True}, {"role_confidence": "0.9"},
+            {"role_confidence": 95}, {"role_confidence": -1},
+            {"role_confidence": 10 ** 400}, {"role_confidence": float("nan")},
+            {"reason": {}}, {"agent_summary": []},
+            {"tags": "red"}, {"tags": [1]}, {"tags": ["tag"] * 7},
+            {"unexpected": "field"},
+        ))
+        for payload, expected_source in cases:
+            with self.subTest(payload=payload):
+                with patch.object(classifier, "_call_model", AsyncMock(return_value=(json.dumps(payload), {}))):
+                    result = asyncio.run(classifier.classify_image(self.path))
+                self.assertEqual(result.source, expected_source)
+                if expected_source == "model_fallback":
+                    self.assertEqual(result.role, "unknown")
+                    self.assertEqual(result.role_confidence, 0)
+
+        for transport in ("openai", "sophon"):
+            with self.subTest(transport=transport):
+                classifier.transport = transport
+                legacy = '{"role":"logo","role_confidence":"0.9"}'
+                with patch.object(classifier, "_call_model", AsyncMock(return_value=(legacy, {}))):
+                    result = asyncio.run(classifier.classify_image(self.path))
+                self.assertEqual(result.source, "model")
+                self.assertEqual(result.role, "logo")
+                self.assertEqual(result.role_confidence, .9)
 
     def test_high_confidence_advice_never_confirms_usage(self):
         _, ready = self.classify(SimpleNamespace(classify_image=AsyncMock(return_value=self.result)))

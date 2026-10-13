@@ -224,9 +224,11 @@ class StyleClassifier:
             return result
 
         parsed = self._parse_model_json(raw)
-        if parsed is None:
+        if parsed is None or (
+            self.transport == "ollama" and not self._valid_local_result(parsed)
+        ):
             result = self._fallback_result(
-                reason="model_json_parse_failed",
+                reason="model_json_parse_failed" if parsed is None else "model_json_schema_failed",
                 role="unknown",
                 source="model_fallback",
             )
@@ -575,6 +577,24 @@ class StyleClassifier:
         if not isinstance(data, dict) or StyleClassifier._contains_nonfinite(data):
             return None
         return data
+
+    @staticmethod
+    def _valid_local_result(payload: dict[str, Any]) -> bool:
+        # Verify the requested schema locally; a successful HTTP response is not enough.
+        if set(payload) != set(_LOCAL_SORT_SCHEMA["required"]):
+            return False
+        score, tags = payload["role_confidence"], payload["tags"]
+        return (
+            isinstance(payload["role"], str)
+            and payload["role"] in _LOCAL_SORT_SCHEMA["properties"]["role"]["enum"]
+            and type(score) in (int, float)
+            and 0 <= score <= 1
+            and isinstance(payload["reason"], str)
+            and isinstance(payload["agent_summary"], str)
+            and isinstance(tags, list)
+            and len(tags) <= 6
+            and all(isinstance(tag, str) for tag in tags)
+        )
 
     @staticmethod
     def _reject_json_constant(value: str) -> None:
