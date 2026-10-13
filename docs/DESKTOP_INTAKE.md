@@ -62,6 +62,12 @@
 
 管理页搜索可匹配名称、字体家族与款式、来源站点、用途和状态；多个关键词用空格分开，所有关键词都须匹配，可跨不同字段。输入框提供原生清除按钮。列表提示保留完整名称、来源站点和副本文件名，长名称也可通过辅助功能读取。名称中的 `&` 与类似 HTML 的文字按原样显示，不创建快捷键或解析为提示标记。搜索和筛选不改变组合成员或整组交付内容。
 
+字体筛选提供家族下拉框，当前范围内的款式按家族、字重和正斜体集中浏览；预览文案和字号保留，便于同文比较。字符覆盖计数与网页子集提示见[字体收纳](FONT_INTAKE.md)。
+
+图片详情在现有预览下显示最多五个近似主色，点击色值复制 `#RRGGBB`。取色来自小尺寸预览，忽略几乎透明的像素，GIF 使用首帧；这是缩略图的颜色归纳，不是网页 CSS 配色或精确吸管。纯透明图片不显示色值。复制前核对素材仍可用，失效时保留原剪贴板。
+
+音频详情提供主动点击的试听、暂停/继续和停止，以及当前时长；使用现有 Qt 音频组件读取已校验的本地副本，默认音量 50%。选择素材不会自动播放；切换素材、刷新、隐藏管理页和退出都会停止并释放来源。格式或输出设备出错时在原位置提示，源文件变化后停止取用。播放能力受当前系统的解码器和输出设备影响，不修改文件或确认用途。
+
 ## 网页图片
 
 网页图片按封面、页面图片、站点图标排序，读取 Open Graph／Twitter 图片元数据、`img src/srcset`、常见 `data-src/data-srcset` 及显式图标链接。相对地址按页面首个带 href 的 base 解析。响应式图片优先尝试声明尺寸较大的候选，失败时使用备用地址；不按浏览器当前视口执行媒体查询，不宣称候选就是屏幕实际显示的图片。图片与字体共用一次 HTML 内容读取。
@@ -78,6 +84,7 @@
 QT_QPA_PLATFORM=offscreen .build-venv/bin/python -m unittest tests.test_web_image_intake tests.test_web_font_intake tests.test_attached_hub tests.test_gui_real_project_confirmation_actions
 QT_QPA_PLATFORM=offscreen .build-venv/bin/python -m unittest tests.test_desktop_asset_reuse tests.test_bundle_service
 QT_QPA_PLATFORM=offscreen .build-venv/bin/python -m unittest tests.test_asset_integrity tests.test_remote_fetch_deadline
+QT_QPA_PLATFORM=offscreen .build-venv/bin/python -m unittest tests.test_font_coverage tests.test_image_palette tests.test_material_tools
 QT_QPA_PLATFORM=offscreen .build-venv/bin/python -m unittest discover -s tests
 QT_QPA_PLATFORM=offscreen .build-venv/bin/python scripts/render_hub_visuals.py --out /tmp/haypile-management
 ```

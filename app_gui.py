@@ -87,6 +87,8 @@ from app.services.ai_provider import (
 )
 from app.services.bundle_service import BundleService
 from app.services.asset_integrity import asset_file_sha256
+from app.services.image_palette import dominant_colors
+from PIL import Image
 from app.services.desktop_diagnostics import (
     build_desktop_diagnostic_summary,
     read_build_commit,
@@ -205,6 +207,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +347,22 @@ def ui_text(zh: str, en: str) -> str:
 
 def _plain_tooltip(text: str) -> str:
     return "<qt>" + escape_html(text).replace("\n", "<br>") + "</qt>"
+
+
+def _font_coverage_text(metadata: dict) -> str:
+    coverage = metadata.get("coverage") or {}
+    counts = ("character_count", "latin_letter_count", "digit_count", "cjk_ideograph_count")
+    if not isinstance(coverage, dict) or any(type(coverage.get(key)) is not int or coverage[key] < 0 for key in counts):
+        return ""
+    if coverage.get("symbol_encoding"):
+        return ui_text(f"符号编码 · {coverage['character_count']} 个字符映射",
+                       f"Symbol encoding · {coverage['character_count']} mapped characters")
+    return ui_text(
+        f"字符映射 {coverage['character_count']} · 汉字 {coverage['cjk_ideograph_count']}\n"
+        f"英文字母 {coverage['latin_letter_count']}/52 · 数字 {coverage['digit_count']}/10",
+        f"Mapped characters {coverage['character_count']} · CJK {coverage['cjk_ideograph_count']}\n"
+        f"Latin letters {coverage['latin_letter_count']}/52 · Digits {coverage['digit_count']}/10",
+    )
 
 
 def set_ui_language(mode: str) -> None:
@@ -1232,6 +1251,7 @@ class MaterialPanelWindow(QWidget):
         self._visible_items = []
         self._page_index = 0
         self._filter_mode = "all"
+        self._font_family_filter = ""
         self._batch_scope = "latest" if self._embedded else "all"
         self._collection_id = ""
         self._collections = []
@@ -1249,6 +1269,10 @@ class MaterialPanelWindow(QWidget):
         self._ai_enabled_callback = None
         self._low_power_enabled = False
         self._gif_movie: QMovie | None = None
+        self._audio_player: QMediaPlayer | None = None
+        self._audio_output: QAudioOutput | None = None
+        self._audio_bundle_id = ""
+        self._audio_preview_failed = False
         self._gif_frame_count = 0
         self._gif_stop_timer = QTimer(self)
         self._gif_stop_timer.setSingleShot(True)
@@ -1441,6 +1465,15 @@ class MaterialPanelWindow(QWidget):
             filter_layout.addWidget(button)
         layout.addWidget(self.filter_row)
         self._refresh_filter_buttons()
+
+        self.font_family_picker = QComboBox(self.container)
+        self.font_family_picker.setMinimumHeight(28)
+        self.font_family_picker.setStyleSheet("QComboBox { color: #4E5F3D; background: #FFF9EA; border: 1px solid #DDD3BB; border-radius: 6px; padding: 4px 7px; } QComboBox:focus { border: 1px solid #A67624; }")
+        self.font_family_picker.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.font_family_picker.setAccessibleName(ui_text("筛选字体家族", "Filter font family"))
+        self.font_family_picker.currentIndexChanged.connect(self._select_font_family)
+        self.font_family_picker.hide()
+        layout.addWidget(self.font_family_picker)
 
         self.search_input = QLineEdit(self.container)
         self.search_input.setPlaceholderText(ui_text("搜索名称、字体、来源、用途", "Search name, font, source, role"))
@@ -1638,6 +1671,45 @@ class MaterialPanelWindow(QWidget):
         self.preview_label.mousePressEvent = self._replay_gif_preview
         self.preview_label.hide()
         layout.addWidget(self.preview_label)
+        self.palette_row = QWidget(self.container)
+        palette_layout = QGridLayout(self.palette_row)
+        palette_layout.setContentsMargins(0, 0, 0, 0)
+        palette_layout.setSpacing(4)
+        self.palette_label = QLabel(ui_text("主色 · 点击复制色值", "Main colors · click to copy"), self.palette_row)
+        self.palette_label.setTextFormat(Qt.TextFormat.PlainText)
+        palette_layout.addWidget(self.palette_label, 0, 0, 1, 3)
+        self.palette_buttons = []
+        for index in range(5):
+            button = QPushButton(self.palette_row)
+            button.setMinimumHeight(26)
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            button.clicked.connect(lambda _checked=False, target=button: self._copy_palette_color(target.text()))
+            palette_layout.addWidget(button, 1 + index // 3, index % 3)
+            self.palette_buttons.append(button)
+        self.palette_row.hide()
+        layout.addWidget(self.palette_row)
+
+        self.audio_controls = QWidget(self.container)
+        audio_layout = QVBoxLayout(self.audio_controls)
+        audio_layout.setContentsMargins(0, 0, 0, 0)
+        audio_layout.setSpacing(4)
+        audio_buttons = QHBoxLayout()
+        self.audio_play_button = QPushButton(ui_text("试听", "Listen"), self.audio_controls)
+        self.audio_stop_button = QPushButton(ui_text("停止", "Stop"), self.audio_controls)
+        for button in (self.audio_play_button, self.audio_stop_button):
+            button.setMinimumHeight(28)
+            button.setStyleSheet(_ACTION_BUTTON_STYLE)
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            audio_buttons.addWidget(button)
+        self.audio_play_button.clicked.connect(self._toggle_audio_preview)
+        self.audio_stop_button.clicked.connect(self._stop_audio_preview)
+        self.audio_time_label = QLabel("00:00 / 00:00", self.audio_controls)
+        self.audio_time_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.audio_time_label.setWordWrap(True)
+        audio_layout.addLayout(audio_buttons)
+        audio_layout.addWidget(self.audio_time_label)
+        self.audio_controls.hide()
+        layout.addWidget(self.audio_controls)
         self.font_preview_scroll = QScrollArea(self.container)
         self.font_preview_scroll.setFixedHeight(72)
         self.font_preview_label = QLabel()
@@ -1786,6 +1858,7 @@ class MaterialPanelWindow(QWidget):
         layout.addWidget(self.collection_editor)
         layout.addWidget(self.collection_actions)
         layout.addWidget(toolbar)
+        layout.addWidget(self.font_family_picker)
 
         body = QWidget(self.container)
         body.setStyleSheet("QWidget { background: transparent; border: none; }")
@@ -1818,6 +1891,8 @@ class MaterialPanelWindow(QWidget):
         self.detail_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         detail_layout.addWidget(self.empty_state_label, 1)
         detail_layout.addWidget(self.preview_label)
+        detail_layout.addWidget(self.palette_row)
+        detail_layout.addWidget(self.audio_controls)
         detail_layout.addWidget(self.font_preview_scroll)
         detail_layout.addWidget(self.detail_label, 1)
         detail_layout.addWidget(self.accept_ai_button)
@@ -1925,6 +2000,10 @@ class MaterialPanelWindow(QWidget):
 
     def retranslate(self) -> None:
         self._retranslate_font_controls()
+        self.font_family_picker.setAccessibleName(ui_text("筛选字体家族", "Filter font family"))
+        self.palette_label.setText(ui_text("主色 · 点击复制色值", "Main colors · click to copy"))
+        self.audio_stop_button.setText(ui_text("停止", "Stop"))
+        self._update_audio_preview()
         labels = {
             "all": ui_text("全部", "All"),
             "ready": ui_text("可用", "Ready"),
@@ -2036,6 +2115,7 @@ class MaterialPanelWindow(QWidget):
             self.hide()
 
     def refresh(self) -> None:
+        self._stop_audio_preview()
         self._stop_gif_preview(reset_to_first=True, discard=True)
         self._refresh_collections()
         service = self._bundle_service()
@@ -2074,6 +2154,7 @@ class MaterialPanelWindow(QWidget):
         }
         scoped_items = [] if catalog_unavailable else list(summary.recent_items)
         self._all_recent_items = scoped_items
+        self._refresh_font_families(scoped_bundles)
         self._recent_items = self._filter_recent_items(scoped_items)
         page_size = len(self.item_labels)
         page_count = max(1, math.ceil(len(self._recent_items) / page_size))
@@ -2095,6 +2176,8 @@ class MaterialPanelWindow(QWidget):
         self.role_row.hide()
         self.gif_role_row.hide()
         self.audio_usage_row.hide()
+        self.audio_controls.hide()
+        self.palette_row.hide()
         self.font_controls.hide()
         self._cancel_font_preview()
         self.retry_ai_button.hide()
@@ -2221,6 +2304,11 @@ class MaterialPanelWindow(QWidget):
                 f"{self._asset_type_label(item.asset_type)} · {self._display_role_label(item.usage_label)} · "
                 f"{self._agent_usability_label(bundle['status'])}"
             )
+            if bundle.get("type") == "font":
+                metadata = bundle.get("font_metadata") or {}
+                label.setText(f"{item.title.replace('&', '&&')}\n{metadata.get('weight', 400)} · "
+                              + Path(str(bundle.get("source_key") or "")).suffix.lstrip(".").upper()
+                              + " · " + self._bundle_status_label(str(bundle["status"])))
             label.setChecked(selected)
             label.setAccessibleName(item.title)
             label.setAccessibleDescription(
@@ -2524,11 +2612,45 @@ class MaterialPanelWindow(QWidget):
 
     def _filter_recent_items(self, items) -> list:
         query = self.search_input.text().strip().casefold()
-        return [
+        filtered = [
             item
             for item in items
             if self._item_matches_filter_mode(item) and self._item_matches_query(item, query)
         ]
+        if self._filter_mode == "font":
+            def key(item):
+                metadata = self._bundle_for_item(item).get("font_metadata") or {}
+                return (str(metadata.get("family") or "").casefold(), int(metadata.get("weight") or 400),
+                        bool(metadata.get("italic")), str(metadata.get("style") or ""), item.source_key)
+            filtered = [item for item in filtered if not self._font_family_filter or
+                        str((self._bundle_for_item(item).get("font_metadata") or {}).get("family") or "").casefold() == self._font_family_filter]
+            filtered.sort(key=key)
+        return filtered
+
+    def _refresh_font_families(self, bundles) -> None:
+        families = {}
+        for bundle in bundles:
+            family = str((bundle.get("font_metadata") or {}).get("family") or "").strip()
+            if bundle.get("type") == "font" and family:
+                key = family.casefold()
+                name, count = families.get(key, (family, 0))
+                families[key] = (name, count + 1)
+        if self._font_family_filter not in families:
+            self._font_family_filter = ""
+        self.font_family_picker.blockSignals(True)
+        self.font_family_picker.clear()
+        self.font_family_picker.addItem(ui_text("全部字体家族", "All font families"), "")
+        for key, (name, count) in sorted(families.items()):
+            self.font_family_picker.addItem(f"{name} ({count})", key)
+        self.font_family_picker.setCurrentIndex(max(0, self.font_family_picker.findData(self._font_family_filter)))
+        self.font_family_picker.blockSignals(False)
+        self.font_family_picker.setVisible(self._filter_mode == "font" and bool(families))
+
+    def _select_font_family(self, _index) -> None:
+        self._font_family_filter = str(self.font_family_picker.currentData() or "")
+        self._page_index = 0
+        self._selected_bundle_id = ""
+        self.refresh()
 
     def _item_matches_filter_mode(self, item) -> bool:
         mode = self._filter_mode
@@ -2590,6 +2712,7 @@ class MaterialPanelWindow(QWidget):
             event.accept()
 
     def _show_detail_for_bundle(self, bundle: dict[str, object], *, copied: bool = False, confirmed: bool = False) -> None:
+        self.detail_label.setWordWrap(not self._embedded or bundle.get("type") == "font")
         handoff_line = (
             ui_text("已复制 handoff · provenance 已包含", "handoff copied · provenance included")
             if copied
@@ -2652,6 +2775,9 @@ class MaterialPanelWindow(QWidget):
         self.role_row.setVisible(not is_audio and not is_font and bundle["status"] != "missing")
         self.gif_role_row.setVisible(is_gif and bundle["status"] != "missing")
         self.audio_usage_row.setVisible(is_audio and bundle["status"] != "missing")
+        self.audio_controls.setVisible(is_audio)
+        self.audio_controls.setEnabled(is_audio and bundle["status"] != "missing")
+        self._update_audio_preview()
         self._suggested_ai_role = self._suggested_role(bundle.get("ai_suggestions"))
         self.accept_ai_button.setVisible(
             not is_audio
@@ -2684,7 +2810,11 @@ class MaterialPanelWindow(QWidget):
                                            "Embedded license: view notes" if license_known else "License unknown; verify use"))
             self.detail_label.setTextFormat(Qt.TextFormat.PlainText)
             self.detail_label.setText(font_detail)
-            self.detail_label.setToolTip(full_detail_text)
+            coverage = _font_coverage_text(metadata)
+            if coverage:
+                self.detail_label.setText(font_detail + "\n" + coverage + "\n" + ui_text(
+                    "字符映射不代表完整字库，请用实际文案检查缺字", "Character mappings do not imply a complete font; check your own text"))
+            self.detail_label.setToolTip(_plain_tooltip(self.detail_label.text() + "\n" + full_detail_text))
         self._refresh_retry_ai_button(bundle)
 
     def _refresh_retry_ai_button(self, bundle: dict[str, object]) -> None:
@@ -3032,6 +3162,8 @@ class MaterialPanelWindow(QWidget):
             self.detail_label.setText(ui_text("已导出字体原文件", "Original font exported"))
 
     def _show_preview_for_item(self, item, bundle: dict[str, object] | None = None) -> None:
+        self._stop_audio_preview()
+        self.palette_row.hide()
         self._stop_gif_preview(reset_to_first=True, discard=True)
         self._cancel_font_preview()
         self.preview_label.clear()
@@ -3042,7 +3174,7 @@ class MaterialPanelWindow(QWidget):
             self._queue_font_preview()
             return
         if asset_type == "audio":
-            self.preview_label.setText(ui_text("音频资源\n不在这里播放，agent 通过 URL 使用", "Audio asset\nAgents use it through URL"))
+            self.preview_label.setText(ui_text("音频资源 · 点击试听", "Audio asset · click Listen"))
             self.preview_label.show()
             return
         if asset_type != "image" or not item.source_key:
@@ -3053,6 +3185,8 @@ class MaterialPanelWindow(QWidget):
         if pixmap.isNull():
             self.preview_label.hide()
             return
+        if (bundle or {}).get("status") != "missing":
+            self._show_image_palette(pixmap)
         content_type = str((bundle or {}).get("content_type") or "").lower()
         try:
             frame_count = int((bundle or {}).get("frame_count") or 0)
@@ -3089,6 +3223,121 @@ class MaterialPanelWindow(QWidget):
             )
         )
         self.preview_label.show()
+
+    def _verified_selected_source(self, media_type: str) -> Path | None:
+        try:
+            service = self._bundle_service()
+            bundle = service.get_bundle(self._selected_bundle_id)
+            path = service._asset_path(str(bundle["source_key"])) if bundle else None
+            if (bundle and bundle.get("type") == media_type and bundle.get("status") != "missing"
+                    and path is not None and bundle.get("sha256")
+                    and asset_file_sha256(path) == bundle["sha256"]):
+                return path
+        except (OSError, ValueError, ManifestReadinessError):
+            pass
+        self.detail_label.setText(ui_text("原文件不可用，请刷新后重试", "Original file unavailable; refresh and retry"))
+        return None
+
+    def _show_image_palette(self, pixmap: QPixmap) -> None:
+        sample = pixmap.scaled(128, 128, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation) if max(pixmap.width(), pixmap.height()) > 128 else pixmap
+        bitmap = sample.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+        with Image.frombytes("RGBA", (bitmap.width(), bitmap.height()), bytes(bitmap.constBits()),
+                             "raw", "RGBA", bitmap.bytesPerLine()) as image:
+            colors = dominant_colors(image)
+        self.palette_label.setText(ui_text("主色 · 点击复制色值", "Main colors · click to copy"))
+        for index, button in enumerate(self.palette_buttons):
+            button.setVisible(index < len(colors))
+            if index >= len(colors):
+                button.setText("")
+                continue
+            color = colors[index]
+            value = QColor(color)
+            channels = [channel / 12.92 if channel <= .04045 else ((channel + .055) / 1.055) ** 2.4
+                        for channel in (value.redF(), value.greenF(), value.blueF())]
+            luminance = sum(weight * channel for weight, channel in zip((.2126, .7152, .0722), channels))
+            foreground = "#000000" if luminance > .179 else "#FFFFFF"
+            button.setText(color)
+            button.setAccessibleName(ui_text(f"复制主色色值 {color}", f"Copy main color {color}"))
+            button.setToolTip(ui_text("来自缩略图的近似主色", "Approximate main color from the thumbnail"))
+            button.setStyleSheet(f"QPushButton {{ background: {color}; color: {foreground}; border: 1px solid #756F61; "
+                                "border-radius: 5px; font-size: 10px; padding: 3px; }"
+                                "QPushButton:focus { border: 2px solid #A67624; }")
+        self.palette_row.setVisible(bool(colors))
+
+    def _copy_palette_color(self, color: str) -> None:
+        if not self.palette_row.isVisible() or not color:
+            return
+        if self._verified_selected_source("image") is None:
+            self.palette_row.hide()
+            return
+        QApplication.clipboard().setText(color)
+        self.palette_label.setText(ui_text(f"已复制 {color}", f"Copied {color}"))
+
+    def _toggle_audio_preview(self) -> None:
+        if not self.isVisible() or self._font_preview_closing:
+            return
+        source = self._verified_selected_source("audio")
+        if source is None:
+            self._stop_audio_preview()
+            self._audio_preview_failed = True
+            self.audio_time_label.setText(ui_text("原文件不可用", "Original file unavailable"))
+            return
+        self._audio_preview_failed = False
+        if self._audio_player is None:
+            self._audio_player = QMediaPlayer(self)
+            self._audio_output = QAudioOutput(self)
+            self._audio_output.setVolume(.5)
+            self._audio_player.setAudioOutput(self._audio_output)
+            self._audio_player.playbackStateChanged.connect(self._update_audio_preview)
+            self._audio_player.positionChanged.connect(self._update_audio_preview)
+            self._audio_player.durationChanged.connect(self._update_audio_preview)
+            self._audio_player.errorOccurred.connect(self._audio_preview_error)
+        player = self._audio_player
+        url = QUrl.fromLocalFile(str(source))
+        if player.source() != url:
+            self._audio_bundle_id = self._selected_bundle_id
+            player.setSource(url)
+        if self._audio_bundle_id != self._selected_bundle_id or player.source() != url:
+            return
+        if player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            player.pause()
+        else:
+            if player.duration() and player.position() >= player.duration():
+                player.setPosition(0)
+            player.play()
+        if self._audio_bundle_id != self._selected_bundle_id:
+            return
+        self._update_audio_preview()
+
+    def _stop_audio_preview(self) -> None:
+        self._audio_bundle_id = ""
+        self._audio_preview_failed = False
+        if self._audio_player is not None:
+            self._audio_player.stop()
+            self._audio_player.setSource(QUrl())
+        self._update_audio_preview()
+
+    def _update_audio_preview(self, *_args) -> None:
+        if self._audio_preview_failed:
+            return
+        player = self._audio_player if self._audio_bundle_id == self._selected_bundle_id and self._audio_bundle_id else None
+        state = player.playbackState() if player else QMediaPlayer.PlaybackState.StoppedState
+        self.audio_play_button.setText(ui_text("暂停", "Pause") if state == QMediaPlayer.PlaybackState.PlayingState else
+                                      ui_text("继续", "Resume") if state == QMediaPlayer.PlaybackState.PausedState else ui_text("试听", "Listen"))
+        self.audio_stop_button.setEnabled(state != QMediaPlayer.PlaybackState.StoppedState)
+        def clock(milliseconds):
+            seconds = max(0, int(milliseconds)) // 1000
+            return f"{seconds // 60:02}:{seconds % 60:02}"
+        bundle = next((bundle for bundle in self._bundle_by_source_key.values() if bundle.get("id") == self._selected_bundle_id), {})
+        duration = player.duration() if player else float(bundle.get("duration_seconds") or 0) * 1000
+        self.audio_time_label.setText(f"{clock(player.position() if player else 0)} / {clock(duration)}")
+
+    def _audio_preview_error(self, *_args) -> None:
+        if self._audio_bundle_id and self._audio_bundle_id == self._selected_bundle_id:
+            self._stop_audio_preview()
+            self._audio_preview_failed = True
+            self.audio_time_label.setText(ui_text("无法试听此文件，请检查音频格式和输出设备", "Cannot play this file; check the format and audio device"))
 
     def _on_gif_frame_changed(self, frame_index: int) -> None:
         movie = self._gif_movie
@@ -3418,6 +3667,7 @@ class MaterialPanelWindow(QWidget):
         return "#666666"
 
     def hideEvent(self, event) -> None:
+        self._stop_audio_preview()
         self._cancel_font_preview()
         self._stop_gif_preview(reset_to_first=True, discard=True)
         if self.confirmation_preview is not None:
@@ -3425,6 +3675,7 @@ class MaterialPanelWindow(QWidget):
         super().hideEvent(event)
 
     def closeEvent(self, event) -> None:
+        self._stop_audio_preview()
         self._cancel_font_preview()
         if self.font_preview_worker is not None and self.font_preview_worker.isRunning():
             self._font_close_pending = True
@@ -4461,6 +4712,10 @@ class DesktopIntakeCard(QWidget):
                                   + "\n" + ui_text("来源：", "Source: ") + (origin or ui_text("未记录", "Unrecorded"))
                                   + "\n" + suffix.lstrip('.').upper() + (" · " + hint if hint else "")
                                   + "\n" + status
+                                  + ("\n" + _font_coverage_text(metadata) if metadata.get("coverage") else "")
+                                  + "\n" + ui_text("字符映射不代表完整字库，请用实际文案检查缺字", "Character mappings do not imply a complete font; check your own text")
+                                  + ("\n" + ui_text("网页声明了字符范围，候选可能是字体子集", "The page declares character ranges; this candidate may be a subset") if "U+" in hint.upper() else "")
+                                  + ("\n" + ui_text("网页字体候选，尚未确认具体文字的实际用字", "Declared web font candidate; use by specific text is unconfirmed") if self.mode == "fonts" else "")
                                   + "\n" + ui_text("内嵌许可：", "Embedded license: ") + (license_text[:8192] or ui_text("未知", "Unknown"))
                                   + ("\n" + self._discovery_note if self.mode == "fonts" and self._discovery_note else ""))
 
@@ -6624,6 +6879,7 @@ class HaypileFloatingBall(QWidget):
         self._shutdown_ai_batch_worker()
         self._shutdown_ai_refresh_worker()
         self.material_panel._font_preview_closing = True
+        self.material_panel._stop_audio_preview()
         self.material_panel._cancel_font_preview()
         self.shutdown_requested.emit()
         self.show_toast(

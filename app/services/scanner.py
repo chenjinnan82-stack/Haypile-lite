@@ -254,7 +254,10 @@ class AssetScanner:
     @staticmethod
     def _tag_text(tags: Any, keys: tuple[str, ...]) -> str:
         for key in keys:
-            value = tags.get(key)
+            try:
+                value = tags.get(key)
+            except ValueError:  # Vorbis rejects non-ASCII keys belonging to MP4 tags.
+                continue
             if value is None:
                 continue
             value = getattr(value, "text", value)

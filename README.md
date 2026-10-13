@@ -24,6 +24,8 @@ The current source accepts TTF / OTF / WOFF / WOFF2 files up to 50 MiB. Drag a b
 
 Confirm heading, body, or decorative usage before a font enters ready handoff. Read embedded license information, save source/license notes, and export the original bytes. Missing license information remains unknown; manual notes neither replace embedded metadata nor establish commercial rights. HTTP / MCP expose `type=font` and `font_usage`; see the [Agent HTTP contract](docs/AGENT_HTTP_CONTRACT.md).
 
+Font details show mapped-character, CJK, basic Latin-letter, and digit counts. Filter by family to compare weights and formats while keeping the same sample text and size. Web candidates distinguish declared sources from actual rendered use; subset hints and [live-site checks](docs/WEB_FONT_VALIDATION.md) do not establish an accuracy rate. Image details offer up to five approximate main colors to copy. Audio details offer manual playback, pause/resume, and stop; hiding or changing assets stops playback. These controls stay in the existing card and manager.
+
 The current source also discovers webpage covers, images, and site icons in supported formats. Switch fonts and images within the same card, preview one candidate at a time, and choose **Store this image** to save only its original file. See [desktop intake](docs/DESKTOP_INTAKE.md) for limits and static-page scope.
 
 Click the pile to find recent assets, including repeated intakes. Open an item to **Copy original file** or drag its preview into an app that accepts the file; font cards also offer **Export**. GIF, SVG, audio, and font files retain their original bytes. Taking a file does not confirm its usage or change its handoff status.

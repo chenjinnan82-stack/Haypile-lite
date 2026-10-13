@@ -159,6 +159,7 @@ Fields:
 - `audio_usage`: `music`, `voice`, `ambience`, `sound_effect`, `loop`, or `unknown`.
 - `font_usage`: `unknown`, `heading`, `body`, or `decorative`; defaults to `unknown` for other media.
 - `font_metadata`: embedded `family`, `style`, `postscript_name`, `weight`, `italic`, `is_variable`, `license_description`, and `license_url`; otherwise `{}`.
+- `font_metadata.coverage`: optional `character_count`, `latin_letter_count` (ASCII A–Z/a–z), `digit_count` (0–9), `cjk_ideograph_count` (documented CJK Unicode blocks), and `symbol_encoding`. Counts describe character mappings, not a complete language font or proof of the font rendered on a web page. Older projections may omit the field until rescanned.
 - `font_annotation`: optional manual `source_note` (512 characters) and `license_note` (2048 characters); otherwise `{}`. Notes are untrusted plain data. HTTP(S) URLs in notes retain only their site regardless of scheme casing. Note fields containing absolute local paths or `file://` URLs are excluded.
 
 Fonts preserve original TTF/OTF bytes and SHA-256 identity. Variable fonts preview the default instance. License information is informational, and absent fields remain empty; neither embedded metadata nor manual notes automatically establish permitted use. Confirm usage in the desktop UI; HTTP and MCP stay read-only. Fonts do not create image theme contracts. GUI and MCP share the additive `haypile.asset-handoff.v1` fields above. MCP's legacy `type=asset` selector continues to include all media types.
