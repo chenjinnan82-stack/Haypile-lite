@@ -56,6 +56,17 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmpdir = Path(tempfile.mkdtemp())
+        storage = self.tmpdir / "storage"
+        settings_env = patch.dict(os.environ, {
+            "STORAGE_DIR": str(storage), "ASSETS_DIR": str(storage / "assets"),
+            "INDEX_DIR": str(storage / "index"), "THEMES_DIR": str(storage / "themes"),
+            "MANIFEST_PATH": str(storage / "index/assets_manifest.json"),
+            "LOG_DIR": str(self.tmpdir / "logs"), "VISION_CLASSIFIER_ENABLED": "0",
+        })
+        settings_env.start()
+        self.addCleanup(app_gui_module.get_settings.cache_clear)
+        self.addCleanup(settings_env.stop)
+        app_gui_module.get_settings.cache_clear()
         app_gui_module.set_ui_language("auto")
         self.previous_root = os.environ.get("HAYPILE_REAL_PROJECT_ROOT")
         self.previous_haypile_picker_preview_path = os.environ.get("HAYPILE_PROJECT_PICKER_UI_PREVIEW_PATH")

@@ -125,3 +125,24 @@ Regression tests verify that these failures preserve previous suggestions and
 do not confirm a role. All 48 recorded responses from the accepted run and the
 follow-up pass this client check; that replay validates compatibility, not a
 new accuracy improvement.
+
+The final review additionally rejects local replies whose reason, summary, or
+tags contain only blanks/NUL characters, or whose tag list is empty. Ten
+previously accepted cases, including text becoming blank after truncation, now
+preserve existing advice. The inference prompt and request are unchanged.
+
+The reserved 19-image subset was subsequently run once as an additional check
+of that unchanged model, without another prompt candidate. It returned 19/19
+valid results, with 13/19 exact role matches and median/P95 latency of
+8.32/11.60 seconds. Background and icon matched 3/3 each, hero, content, and
+texture 2/3 each, logo 1/3, and unknown 0/1. This is another part of the same
+agent-labelled development collection, not an independent benchmark; its score
+cannot be compared directly to the 24-image subset as an improvement. It
+supports keeping manual role confirmation while prioritizing everyday workflow
+acceptance over further prompt tuning on these same images.
+
+The final truncation checks were completed after those 19 inferences. All 67
+recorded responses (24 accepted-profile, 24 rejected-candidate, and 19 additional)
+were then replayed through the final classifier with identical saved-advice
+values. This verifies the final validation change against those observations
+without claiming another model run or an accuracy improvement.

@@ -580,7 +580,7 @@ class StyleClassifier:
 
     @staticmethod
     def _valid_local_result(payload: dict[str, Any]) -> bool:
-        # Verify the requested schema locally; a successful HTTP response is not enough.
+        # A well-shaped but blank reply must not replace usable saved advice.
         if set(payload) != set(_LOCAL_SORT_SCHEMA["required"]):
             return False
         score, tags = payload["role_confidence"], payload["tags"]
@@ -590,10 +590,12 @@ class StyleClassifier:
             and type(score) in (int, float)
             and 0 <= score <= 1
             and isinstance(payload["reason"], str)
+            and bool(StyleClassifier._short_text(payload["reason"], 80).replace("\x00", "").strip())
             and isinstance(payload["agent_summary"], str)
+            and bool(StyleClassifier._short_text(payload["agent_summary"], 60).replace("\x00", "").strip())
             and isinstance(tags, list)
-            and len(tags) <= 6
-            and all(isinstance(tag, str) for tag in tags)
+            and 1 <= len(tags) <= 6
+            and all(isinstance(tag, str) and bool(tag.strip()[:24].replace("\x00", "").strip()) for tag in tags)
         )
 
     @staticmethod

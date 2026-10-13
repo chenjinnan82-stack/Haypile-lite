@@ -30,7 +30,10 @@ treated as zero.
 Before saving a local result, Haypile also checks the required fields, their
 types, allowed roles, confidence range, and tag limit. Incomplete or malformed
 responses count as failed attempts and preserve the last successful suggestions.
-A valid `unknown` result remains a usable advisory result.
+Reasons and summaries must contain nonblank text, and at least one nonblank tag
+is required after the app's text limits; whitespace or NUL-only text does not
+count as usable advice.
+A valid `unknown` result with this supporting text remains usable advice.
 
 ## API
 

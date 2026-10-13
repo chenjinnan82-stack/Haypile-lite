@@ -58,7 +58,18 @@ class AIStabilityTests(unittest.TestCase):
 
     def test_normal_model_fallbacks_keep_prior_success(self):
         classifier = StyleClassifier(AIProviderConfig(mode="local"), settings=self.settings)
-        for raw in ("", "not JSON", "{}", '{"role":"logo","role_confidence":0.9}'):
+        complete = {"role": "logo", "role_confidence": .9, "reason": "品牌标识",
+                    "tags": ["标志"], "agent_summary": "用于品牌展示"}
+        responses = ["", "not JSON", "{}", '{"role":"logo","role_confidence":0.9}']
+        responses.extend(json.dumps({**complete, **blank}) for blank in (
+            {"reason": ""}, {"reason": " \x00\t "},
+            {"agent_summary": "  \n\t"}, {"agent_summary": "\x00"},
+            {"tags": []}, {"tags": ["  "]}, {"tags": [" \x00\t"]},
+            {"reason": "\x00" * 80 + "说明"},
+            {"agent_summary": "\x00" * 60 + "用途"},
+            {"tags": ["\x00" * 24 + "标签"]},
+        ))
+        for raw in responses:
             with self.subTest(raw=raw):
                 write_asset_provenance(self.path, {"origin_url": "https://example.org/source",
                     "ai_suggestions": self.result.ai_suggestions()})
