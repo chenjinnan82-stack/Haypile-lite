@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import mimetypes
 import os
+import select
 import socket
 import ssl
 import threading
@@ -305,11 +306,14 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self,
         target: ValidatedRemoteURL,
         address: str,
-        timeout: float,
+        deadline: float,
         context: ssl.SSLContext,
+        should_stop: Callable[[], bool],
     ) -> None:
-        super().__init__(target.host, target.port, timeout=timeout, context=context)
+        super().__init__(target.host, target.port, timeout=max(0.001, deadline - time.monotonic()), context=context)
         self._address = address
+        self._deadline = deadline
+        self._should_stop = should_stop
 
     def connect(self) -> None:
         raw_socket = socket.create_connection((self._address, self.port), self.timeout)
@@ -317,7 +321,23 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             self.sock = self._context.wrap_socket(
                 raw_socket, server_hostname=self.host, do_handshake_on_connect=False,
             )
-            self.sock.do_handshake()
+            # Windows shutdown may not wake a blocking SSL handshake promptly.
+            self.sock.setblocking(False)
+            while True:
+                if self._should_stop():
+                    raise SafeFetchError("interrupted")
+                remaining = self._deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SafeFetchError("download_timeout")
+                try:
+                    self.sock.do_handshake()
+                    break
+                except ssl.SSLWantReadError:
+                    readers, writers = [self.sock], []
+                except ssl.SSLWantWriteError:
+                    readers, writers = [], [self.sock]
+                select.select(readers, writers, [], min(0.05, remaining))
+            self.sock.settimeout(max(0.001, self._deadline - time.monotonic()))
         except BaseException:
             raw_socket.close()
             self.close()
@@ -461,8 +481,9 @@ def open_safe_remote(
         connection: http.client.HTTPConnection = _PinnedHTTPSConnection(
             target,
             address,
-            remaining,
+            deadline,
             ssl_context or ssl.create_default_context(),
+            should_stop,
         )
     else:
         connection = _PinnedHTTPConnection(target, address, remaining)

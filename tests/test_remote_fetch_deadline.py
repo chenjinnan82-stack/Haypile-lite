@@ -190,6 +190,7 @@ class RemoteFetchDeadlineTests(unittest.TestCase):
                 started = time.monotonic()
                 try:
                     with patch("app.services.safe_remote_fetcher.socket.create_connection", side_effect=connect), \
+                         patch.object(ssl.SSLSocket, "shutdown", return_value=None), \
                          patch.object(context, "wrap_socket", wraps=context.wrap_socket) as wrap:
                         with self.assertRaisesRegex(SafeFetchError, "interrupted" if cancelled else "download_timeout"):
                             open_safe_remote("https://8.8.8.8/test.png", timeout=2 if cancelled else 0.12,
