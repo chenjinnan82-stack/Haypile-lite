@@ -1,8 +1,10 @@
-# 桌面验收记录 · 2026-10-14
+# 桌面验收记录 · 2026-10-14 至 15
 
-结论：保留当前功能范围，继续小范围试用；本轮代码回归与下列源码验收通过，尚不签署公开发布。没有制作安装包、启用用户 AI、下载模型或修改真实素材库。本记录针对 `codex/font-intake` 当前源码，不代表既有下载包包含这些改动。
+最新源码 `95436a0` 的 [Linux / Windows CI](https://github.com/chenjinnan82-stack/Haypile-lite/actions/runs/38600944584) 全部通过：各运行 605 项，Linux 604 通过、1 项平台跳过；Windows 600 通过、5 项平台跳过。本机 macOS 全量 604 通过、1 项平台跳过，另有 25 项 Cocoa 原生自动检查通过。旧版存储兼容检查已实际执行。
 
-## 最后一轮检查结果
+结论：核心功能及可选 AI 进入小范围实机试用，保留当前功能范围。真实鼠标跨应用点击、悬停观感、Windows 实机交互及最终发行包仍须验收，目前尚未公开发布新版本。本轮没有制作安装包、启用用户 AI、下载模型或修改真实素材库。下文保留历史阶段记录，最新结果见末节；既有下载包不包含本次源码改动。
+
+## 桌面交互阶段记录
 
 最后补查发现：拖动草堆期间隐藏窗口，鼠标松开可能不再送达，残留的拖动状态会干扰重新显示后的下一次外部拖入。隐藏时现在一并清除拖动状态、移动标记和速度；回归先复现失败，再验证下一次外部悬停不被错误取消。只增加这三处状态重置，没有增加界面或依赖。
 
@@ -172,3 +174,25 @@ No model was downloaded or called, no package was built, and no release was publ
 当前源码在 macOS Cocoa 下通过 **25 项原生自动检查**，覆盖 C 环、原生输入读取、窗口及任务退出、备份确认，以及默认关闭 AI、设置不探测模型、切换取消、初始化异常恢复、低功耗偏好和迟到结果丢弃。使用隔离素材库，真实库写入保护零触发；GUI 设置与原安装包摘要未变。证据在 `build/cross-platform-acceptance-20261014/native-tests.log`、`native-guard.json` 与保护文件摘要。物理鼠标和 Windows 人工检查仍保留。
 
 GitHub 实际已发布版本核验为 Alpha.8，README 中不存在的 Alpha.9 下载及视频链接已移除；源码候选与旧包能力明确区分。`OPEN_SOURCE_RELEASE.md` 更新为 Alpha.10 发布草稿，不代表新版本已经发布。
+
+## 跨平台复核与修复 — 2026-10-14 至 15
+
+测试 CI 已与打包拆开：Linux、Windows 使用 Python 3.12.10 和发布依赖约束，获取完整仓库历史以实际执行 Alpha.9 存储兼容检查。此轮只推送开发分支，没有创建版本标签、GitHub Release、网站发布或安装包。
+
+Windows 实际执行及随后的定向复核发现并修复了五处问题：
+
+- **文件身份校验**：CPython 3.12 的 Windows 路径 `stat` 与句柄 `fstat` 的 `ctime` 含义不同，导致正常素材被误判无效、清单为空。跨接口比较改用共同的创建时间，Windows 仍逐次计算文件摘要；读取前后另比较句柄变更时间，保留中途改写保护。实现依据见 [CPython 3.12.10 路径转换](https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L2009)与[句柄时间转换](https://github.com/python/cpython/blob/v3.12.10/Python/fileutils.c#L1026)，回归先复现失败后通过。
+- **备份持久化**：Windows 不接受在只读句柄上执行文件同步，导致备份生成失败。备份临时文件和恢复暂存文件改用可写句柄同步；原始素材读取仍只读，事务、校验和覆盖保护保持不变。
+- **备份编码**：中文备注在非 UTF-8 默认系统编码下可能触发读取异常。备份与恢复的 JSON 元数据明确按 UTF-8 读取；回归模拟 cp1252 默认编码并核对中文备注完整保留。
+- **字体 HTTP 类型**：Windows 系统 MIME 映射可能将 TTF 识别为通用二进制。受清单保护的字体响应现在明确设置字体 MIME，不依赖注册表映射。回归模拟错误映射，核对原字节与 `font/ttf`。
+- **TLS 取消延迟**：Windows 的套接字 shutdown 未立即唤醒阻塞中的 TLS 握手。改用非阻塞握手与最长 50ms 的就绪等待，检查同一个绝对截止时间与取消请求；握手成功后恢复有超时的读取。真实 TLS 测试覆盖超时和主动取消，并模拟 shutdown 不唤醒的情况；修复前取消耗时约 2 秒，修复后须在 350ms 验收阈值内结束。该阈值是测试条件，不作为所有机器上的实时响应保证。
+
+同时修正两处测试夹具：断网测试只放行 Windows asyncio 创建内部 socketpair 的回环连接，其余连接及模型构造仍拒绝；TLS 测试从无超时的模拟 recv 改为真实 SSL 握手。第三轮 Windows 仅剩 TLS 主动取消失败，证明前述备份、字体和无 AI 流程已通过，不将夹具差异混记为产品缺陷。
+
+本机专项检查分别通过 65 项备份/字体/取用/网络检查及 59 项网络与网页检查。备份与字体修复后的 Cocoa 原生检查 25 项通过；真实库写入保护零触发，GUI 设置和既有安装包摘要保持不变。网络成功路径实际请求 `www.python.org` 与 `example.com`，均返回 200；没有使用真实素材库或调用模型。
+
+最终源码 `95436a027e1ca6799d01ae03216cd94be377cdc6` 的 [CI 38600944584](https://github.com/chenjinnan82-stack/Haypile-lite/actions/runs/38600944584) 双平台通过：Windows **605 项，600 通过、5 项预期平台跳过**；Linux **605 项，604 通过、1 项 Windows 专用跳过**。本机最终全量同为 **605 项，604 通过、1 项跳过**，真实库写入保护零触发。另有 25 项 Cocoa 原生自动检查通过。没有使用增加跳过项或放宽时间阈值来通过 Windows 检查。
+
+验收源码与结果固定在上述提交；本节仅补写验收记录。最终证据包括 `windows-final.log`、`linux-final.log`、`ci-result.json`、`full-tests-tls-final.log`、`native-tests-final.log`、`guarded-tests.json`、`native-guard.json`、`tls-live-smoke.json` 和 `result.json`。源码自动验收通过后，下一步是实机操作签收，再从最终源码一次性构建发行包；本轮不继续扩展功能。
+
+证据目录为 `build/cross-platform-acceptance-20261014/`，保留首次及后续 Windows 失败日志、本地修复前复现、专项检查和完整回归；目录日期沿用此次验收启动日。
