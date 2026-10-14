@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +32,17 @@ from backend_host import ControlChannelServer
 
 
 class LocalDataSecurityTests(unittest.TestCase):
+    def test_importing_backend_does_not_create_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env = dict(os.environ, STORAGE_DIR=str(root / "storage"), LOG_DIR=str(root / "logs"))
+            result = subprocess.run(
+                [sys.executable, "-c", "import app.main"], env=env,
+                cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_provenance_removes_secrets_request_data_and_absolute_paths(self) -> None:
         payload = sanitize_provenance(
             {

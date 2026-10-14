@@ -15,7 +15,6 @@ class VaultService:
     def __init__(self, themes_dir: Path | None = None, fallback_theme_id: str = "generic") -> None:
         settings = get_settings()
         self.themes_dir: Path = (themes_dir or settings.THEMES_DIR).resolve()
-        self.themes_dir.mkdir(parents=True, exist_ok=True)
         self.fallback_theme_id: str = self._normalize_theme_id(fallback_theme_id)
 
     def get_theme_payload(self, theme_id: str) -> dict[str, Any]:
@@ -41,7 +40,6 @@ class VaultService:
             return None
 
     def list_themes(self) -> list[str]:
-        self.themes_dir.mkdir(parents=True, exist_ok=True)
         return sorted([f.stem for f in self.themes_dir.glob("*.json")])
 
     def _theme_file_path(self, theme_id: str) -> Path:

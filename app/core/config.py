@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     IPC_CHANNEL: str = f"haypile_service_{getpass.getuser().lower()}"
     IPC_AUTHKEY: str = ""
     HAYPILE_LOW_POWER_MODE: bool = False
-    VISION_CLASSIFIER_ENABLED: bool = True
+    VISION_CLASSIFIER_ENABLED: bool = False
     VISION_CLASSIFIER_TRANSPORT: str = "ollama"
     VISION_CLASSIFIER_MODEL: str = "qwen2.5vl:3b"
     VISION_CLASSIFIER_BASE_URL: str = "http://127.0.0.1:11434"

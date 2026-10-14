@@ -1,5 +1,10 @@
 # AI Sorting
 
+Haypile defaults to **Off**, with no model installation, download, API key, or
+Agent connection required. Intake, preview, keyword search, manual organization,
+original-file reuse, and library backup/restore work without AI. Existing saved
+choices and explicit `VISION_CLASSIFIER_ENABLED=1` opt-in are retained.
+
 Haypile stores and registers assets before AI runs. AI is optional: model
 timeouts, rate limits, and offline services leave images pending but never undo
 intake. A failed retry preserves the last successful suggestions.
@@ -14,7 +19,9 @@ Install [Ollama](https://ollama.com), then pull the default vision model:
 ollama pull qwen2.5vl:3b
 ```
 
-Choose **Local model** and use **Check again**. Images stay on the machine.
+Choose **Local model** to enable this enhancement. **Check installation** only
+reads the local model inventory: it does not enable AI or verify vision ability.
+Opening Settings and refreshing assets do not probe a model. Images stay on the machine.
 
 The existing `qwen2.5vl:3b` remains the default. Local Ollama requests use a
 1024-pixel maximum preview edge, a 4096-token context, and a five-field JSON
@@ -35,10 +42,21 @@ is required after the app's text limits; whitespace or NUL-only text does not
 count as usable advice.
 A valid `unknown` result with this supporting text remains usable advice.
 
+Switching provider, saving API authorization, turning AI off, or enabling
+low-power mode cancels existing sorting and clears queued work. An in-flight
+request may still finish at the provider, but its late result is discarded and
+the old worker does not proceed to another image. These actions do not undo
+previously saved suggestions or manual roles. Invalid API form input does not
+cancel the current configuration's work.
+
 ## API
 
 Haypile supports an OpenAI-compatible `/v1/chat/completions` vision endpoint
 through its existing HTTP client. No provider SDK is required.
+The model must accept image input and return parseable role suggestions.
+Configured credentials or an installed model do not establish these capabilities;
+each real sorting response is validated before its suggestions are saved. A
+text-only or incompatible model leaves the core workflow available.
 
 Enter a base URL, model name, and API key, then click **Save and authorize
 domain**. Security rules are deliberately strict:
@@ -61,6 +79,16 @@ acceptable for the current material.
 Visual AI accepts PNG, JPEG, and WebP. SVG, GIF, audio, and fonts keep their
 existing parser/manual workflows and have no visual-AI retry action. Website
 font discovery reads HTML/CSS declarations; AI does not establish font identity.
+When AI is off, image retry actions are hidden too. Saved suggestions remain
+available and are not erased by turning AI off.
+
+External Agents use the [controlled HTTP/MCP tools](AGENT_RECIPES.md) and their
+own capabilities, independently of Haypile's local/API selection. The current
+tools return metadata and asset URLs, not semantic image search or image-content
+MCP messages. Description-based image selection requires both an Agent with
+vision and a tool host able to retrieve the image. Native system features such
+as OCR remain possible optional implementations; they are not required or
+introduced by this change.
 
 Transparent images receive a contrasting light/dark background only in the
 RGB model preview. Original bytes, transparency, and metadata are preserved.

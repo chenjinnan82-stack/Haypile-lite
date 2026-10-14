@@ -355,7 +355,8 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
         self.assertEqual(after["role"], "unknown")
         self.assertEqual(after["ai_suggestions"]["reason"], "model_call_failed")
         self.assertEqual(finished[-1][2], "failed")
-        self.assertIn("失败", finished[-1][1])
+        self.assertIn("素材已保存", finished[-1][1])
+        self.assertIn("可检查模型或稍后重试", finished[-1][1])
 
     def test_manifest_projection_failure_preserves_asset_and_pauses_agent_access(self) -> None:
         image = self.tmpdir / "saved.svg"
@@ -399,7 +400,8 @@ class HaypileUserFlowSmokeTests(unittest.TestCase):
             worker.run()
 
         self.assertEqual(finished[-1][2], "partial_success")
-        self.assertIn("部分完成", finished[-1][1])
+        self.assertIn("素材已保存", finished[-1][1])
+        self.assertIn("AI 建议 1 项，1 项可稍后重试", finished[-1][1])
 
     def test_ai_batch_reports_cancelled(self) -> None:
         worker = AIBatchWorker("batch-cancel", [{"id": "one", "type": "image", "source_key": "one.png"}], self.assets_dir)

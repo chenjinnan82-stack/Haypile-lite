@@ -76,6 +76,115 @@ class DesktopAssetReuseTests(unittest.TestCase):
     def bundle_for(self, original):
         return self.bundles[hashlib.sha256(original.read_bytes()).hexdigest()]
 
+    def test_provider_switch_stops_real_worker_before_next_asset_and_discards_late_result(self):
+        import threading
+        from app.services.style_classifier import StyleClassificationResult
+
+        second = self.root / "second.png"
+        Image.new("RGB", (64, 48), "blue").save(second)
+        self.assertTrue(self.ingest.ingest([IngestCandidate(second)]).success)
+        bundles = [self.bundle_for(self.png), self.service.get_bundle(hashlib.sha256(second.read_bytes()).hexdigest())]
+        self.ball._set_ai_provider_mode("local")
+        worker = app_gui.AIBatchWorker("old-provider", bundles, self.settings.ASSETS_DIR,
+            self.ball._current_ai_provider_config(), settings=self.settings)
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        async def held_response(path, **kwargs):
+            calls.append(path)
+            entered.set()
+            if not release.wait(4):
+                raise TimeoutError("test release timeout")
+            return StyleClassificationResult(theme_id="generic", theme_confidence=0,
+                role="hero_image", role_confidence=.9, source="model", reason="late response")
+
+        worker.style_classifier.classify_image = held_response
+        self.ball.ai_batch_worker = worker
+        self.ball._ai_batch_result = None
+        self.ball._ai_batch_queue = ["old-queued-batch"]
+        worker.finished_signal.connect(self.ball._remember_ai_batch_result)
+        worker.finished.connect(self.ball._finish_ai_batch)
+        try:
+            worker.start()
+            self.assertTrue(entered.wait(2))
+            self.ball._set_ai_provider_mode("api")
+            self.assertTrue(worker.isInterruptionRequested())
+            self.assertIs(self.ball.ai_batch_worker, worker)
+            self.assertEqual(self.ball._ai_batch_queue, [])
+            release.set()
+            self.assertTrue(worker.wait(2000))
+            deadline = time.monotonic() + 2
+            while self.ball.ai_batch_worker is not None and time.monotonic() < deadline:
+                QTest.qWait(5)
+            self.assertIsNone(self.ball.ai_batch_worker)
+            self.assertEqual(len(calls), 1)
+            for bundle in bundles:
+                current = self.service.get_bundle(bundle["id"])
+                self.assertEqual(current["role"], "unknown")
+                self.assertEqual(current["status"], "pending")
+                self.assertFalse(current.get("ai_suggestions"))
+        finally:
+            release.set()
+            if self.ball.ai_batch_worker is not None:
+                worker.wait(4000)
+                self.ball._shutdown_ai_batch_worker()
+
+    def test_ai_off_full_workflow_with_model_and_network_unavailable(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.v1.bundles import router, get_bundle_service
+        from app.services import library_backup
+        import mcp_server
+
+        original = self.root / "offline.webp"
+        Image.new("RGB", (48, 48), "blue").save(original)
+        source_bytes = original.read_bytes()
+        identifier = hashlib.sha256(source_bytes).hexdigest()
+        with patch("socket.socket.connect", side_effect=AssertionError("network unavailable")), \
+             patch.object(app_gui, "StyleClassifier", side_effect=AssertionError("AI must stay off")), \
+             patch.object(app_gui, "AIBatchWorker", side_effect=AssertionError("AI must stay off")):
+            self.assertFalse(self.ball.ai_enabled)
+            worker = app_gui.IngestWorker([original], self.settings.ASSETS_DIR, settings=self.settings)
+            worker.batch_signal.connect(self.ball._on_ingest_batch)
+            results = []
+            worker.finished_signal.connect(lambda message, ok: results.append(ok))
+            worker.run()
+            self.assertEqual(results, [True])
+            self.assertIsNone(self.ball.ai_batch_worker)
+            self.assertEqual(self.ball._ai_batch_queue, [])
+            self.assertTrue(self.ingest.ingest([IngestCandidate(original)]).duplicate_only)
+
+            bundle = self.service.get_bundle(identifier)
+            self.ball._handle_quick_menu_action("assets")
+            panel = self.ball.material_panel
+            panel.search_input.setText(identifier)
+            panel.refresh()
+            self.assertEqual(len(panel._visible_items), 1)
+            self.card.show_bundle(bundle)
+            self.card._copy_bundle_original()
+            copied = Path(self.app.clipboard().mimeData().urls()[0].toLocalFile())
+            self.assertEqual(copied.read_bytes(), source_bytes)
+            self.service.set_bundle_role(identifier, "hero_image")
+            self.assertEqual(self.service.get_bundle(identifier)["status"], "ready")
+
+            # Exercise the real MCP dispatch and HTTP route in-process, without a network listener.
+            api = FastAPI()
+            api.include_router(router, prefix="/api/v1")
+            api.dependency_overrides[get_bundle_service] = lambda: self.service
+            with TestClient(api) as client, patch.object(mcp_server, "get_json", side_effect=lambda path: client.get(path).json()):
+                listed = mcp_server.call_tool("haypile_list_bundles", {"status": "ready"})
+                self.assertIn(identifier, [item["id"] for item in listed])
+                self.assertEqual(mcp_server.call_tool("haypile_get_bundle", {"bundle_id": identifier})["sha256"], identifier)
+
+            archive = self.root / "offline.haypile.zip"
+            count = library_backup.create_backup(self.settings, archive)
+            restored = Settings(_env_file=None, STORAGE_DIR=self.root / "restored")
+            self.assertEqual(library_backup.restore_backup(restored, archive), count)
+            reopened = app_gui.BundleService(assets_dir=restored.ASSETS_DIR, themes_dir=restored.THEMES_DIR,
+                manifest_path=restored.MANIFEST_PATH, runtime_db_path=restored.INDEX_DIR / "storage_runtime.db")
+            recovered = reopened.get_bundle(identifier)
+            self.assertEqual(recovered["role"], "hero_image")
+            self.assertEqual((restored.ASSETS_DIR / recovered["source_key"]).read_bytes(), source_bytes)
+
     def mouse(self, kind, x, button=Qt.MouseButton.NoButton, buttons=Qt.MouseButton.LeftButton):
         event = QMouseEvent(kind, QPointF(x, 12), QPointF(x, 12), button, buttons, Qt.KeyboardModifier.NoModifier)
         self.app.sendEvent(self.card.preview, event)
@@ -399,8 +508,8 @@ class DesktopAssetReuseTests(unittest.TestCase):
             self.assertEqual(self.card.mode, "bundle")
             return Qt.DropAction.IgnoreAction
         with patch.object(app_gui, "QDrag") as drag_type, \
-             patch.object(self.card, "_desktop_buttons", return_value=(1, 0, 0)) as buttons, \
-             patch.object(self.card, "_desktop_escape", return_value=False), \
+             patch.object(self.card.desktop_input, "buttons", return_value=(1, 0, 0)) as buttons, \
+             patch.object(self.card.desktop_input, "escape", return_value=False), \
              patch.object(app_gui.QCursor, "pos", return_value=QPoint(-10000, -10000)):
             drag_type.return_value.exec.side_effect = during_drag
             self.card._drag_bundle_original()

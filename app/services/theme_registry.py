@@ -13,6 +13,7 @@ from uuid import uuid4
 from app.core.config import get_settings
 from app.core.file_lock import InterProcessFileLock
 from app.services.json_io import atomic_write_json
+from app.services.storage_transactions import TRANSACTION
 
 
 DEFAULT_UI_DEV_INSTRUCTION = (
@@ -45,13 +46,11 @@ class ThemeRegistry:
 
     def __init__(self, themes_dir: Path | None = None) -> None:
         self.themes_dir = themes_dir or get_settings().THEMES_DIR
-        self.themes_dir.mkdir(parents=True, exist_ok=True)
         self.quarantine_dir = self.themes_dir.parent / "quarantine" / "themes"
         self.lock_dir = self.themes_dir.parent / "index" / "theme_locks"
         self.last_recovery: dict[str, str] | None = None
 
     def list_theme_ids(self) -> list[str]:
-        self.themes_dir.mkdir(parents=True, exist_ok=True)
         return sorted(
             [
                 p.stem
@@ -60,10 +59,24 @@ class ThemeRegistry:
             ]
         )
 
+    def read_theme_contract(self, theme_id: str) -> dict[str, Any]:
+        """Normalize for display only; repair is an explicit ensure/upsert operation."""
+        theme_id = self._normalize_theme_id(theme_id)
+        payload = self._read_json(self.themes_dir / f"{theme_id}.json")
+        if payload is None:
+            raise ValueError("unreadable_theme_contract")
+        return self._normalize_theme_payload(payload, theme_id)
+
     def ensure_theme_contract(self, theme_id: str) -> tuple[dict[str, Any], Path, bool]:
         normalized_theme_id = self._normalize_theme_id(theme_id)
         theme_file = self.themes_dir / f"{normalized_theme_id}.json"
-        with self._theme_lock(normalized_theme_id):
+        # Atomic JSON replacement permits ordinary reads during a backup snapshot.
+        payload = self._read_json(theme_file)
+        if payload is not None and self._normalize_theme_payload(payload, normalized_theme_id) == payload:
+            return payload, theme_file, False
+        with InterProcessFileLock(self.lock_dir.parent / "themes.transaction.lock"), self._theme_lock(normalized_theme_id):
+            if (self.themes_dir.parent / TRANSACTION).exists():
+                raise TimeoutError("library_restore_in_progress")
             return self._ensure_theme_contract_unlocked(normalized_theme_id, theme_file)
 
     def _ensure_theme_contract_unlocked(
@@ -107,7 +120,9 @@ class ThemeRegistry:
     ) -> ThemeAssetUpsertResult:
         normalized_theme_id = self._normalize_theme_id(theme_id)
         theme_file = self.themes_dir / f"{normalized_theme_id}.json"
-        with self._theme_lock(normalized_theme_id):
+        with InterProcessFileLock(self.lock_dir.parent / "themes.transaction.lock"), self._theme_lock(normalized_theme_id):
+            if (self.themes_dir.parent / TRANSACTION).exists():
+                raise TimeoutError("library_restore_in_progress")
             payload, theme_file, created_theme_file = self._ensure_theme_contract_unlocked(
                 normalized_theme_id,
                 theme_file,

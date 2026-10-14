@@ -29,14 +29,10 @@ from app.services.storage_runtime import StorageRuntimeDB
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-_ensure_private_directory(settings.STORAGE_DIR)
-settings.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-settings.INDEX_DIR.mkdir(parents=True, exist_ok=True)
-
 
 class ManifestStaticFiles(StaticFiles):
     def __init__(self, *, directory: str, manifest_path: Path, name: str | None = None) -> None:
-        super().__init__(directory=directory)
+        super().__init__(directory=directory, check_dir=False)
         self.manifest_path = manifest_path
         self.dirty_path = manifest_dirty_path(manifest_path)
         self.assets_root = Path(directory).resolve(strict=False)
@@ -117,6 +113,9 @@ class ManifestStaticFiles(StaticFiles):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    _ensure_private_directory(settings.STORAGE_DIR)
+    settings.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    settings.INDEX_DIR.mkdir(parents=True, exist_ok=True)
     service = IngestService(
         storage_dir=settings.STORAGE_DIR,
         assets_dir=settings.ASSETS_DIR,

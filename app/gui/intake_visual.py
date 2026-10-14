@@ -226,6 +226,7 @@ class IntakeEntryRenderer:
             buffer.fill(Qt.GlobalColor.transparent)
             layer_painter = QPainter(buffer)
             layer_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            layer_painter.translate(-canvas_rect.topLeft())
             layer_painter.setClipPath(self._drop_outer_path(panel_rect))
             for leaf_index, angle, radius_scale, width_scale, rotation_offset, opacity in placements:
                 if leaf_index >= len(self._drop_leaf_renderers):

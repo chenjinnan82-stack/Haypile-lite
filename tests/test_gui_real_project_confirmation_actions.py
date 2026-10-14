@@ -17,7 +17,7 @@ from PIL import Image
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("IPC_AUTHKEY", "test-ipc-authkey")
-    from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
+    from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, Qt, QUrl, Signal
     from PySide6.QtGui import (
         QDragEnterEvent,
         QDragLeaveEvent,
@@ -1030,7 +1030,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn("origin https://cdn.example.com", panel.detail_label.text())
             self.assertIn("provenance 已包含", panel.detail_label.text())
             self.assertTrue(panel.item_labels[0].isChecked())
-            self.assertFalse(panel.retry_ai_button.isHidden())
+            self.assertTrue(panel.retry_ai_button.isHidden())
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -1119,7 +1119,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         worker.run()
 
         provenance = read_asset_provenance(asset_path)
-        self.assertEqual(finished, [("hero", "AI 分拣未得到模型结果：model_call_failed", False)])
+        self.assertEqual(finished, [("hero", "素材已保存 · AI 未返回有效建议，可检查模型或稍后重试", False)])
         self.assertEqual(provenance["ai_suggestions"]["source"], "model_fallback")
         self.assertEqual(provenance["ai_suggestions"]["reason"], "model_call_failed")
 
@@ -1156,25 +1156,19 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             "ai_suggestions": {"source": "model_fallback", "reason": "model_call_failed"},
         }
 
-        class FakeSignal:
-            def __init__(self):
-                self.callback = None
+        class FakeWorker(QObject):
+            finished_signal = Signal(str, str, bool)
+            finished = Signal()
 
-            def connect(self, callback):
-                self.callback = callback
-
-            def emit(self, *args):
-                self.callback(*args)
-
-        class FakeWorker:
             def __init__(self, _bundle, _assets_dir, provider=None, *, settings=None):
-                self.finished_signal = FakeSignal()
+                super().__init__()
 
             def isRunning(self):
                 return False
 
             def start(self):
-                self.finished_signal.emit("hero", "AI 分拣未得到模型结果：model_call_failed", False)
+                self.finished_signal.emit("hero", "素材已保存 · AI 未返回有效建议，可检查模型或稍后重试", False)
+                self.finished.emit()
 
             def deleteLater(self):
                 pass
@@ -1205,10 +1199,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
 
             panel.retry_ai_button.click()
 
-            self.assertIn("model_call_failed", panel.detail_label.text())
-            self.assertIn("AI 分拣未得到模型结果：model_call_failed", panel.detail_label.text())
+            self.assertIn("素材已保存 · AI 未返回有效建议，可检查模型或稍后重试", panel.detail_label.text())
             self.assertTrue(panel.retry_ai_button.isEnabled())
-            self.assertEqual(toasts, [("AI 分拣未得到模型结果：model_call_failed", "error")])
+            self.assertEqual(toasts, [("素材已保存 · AI 未返回有效建议，可检查模型或稍后重试", "pending")])
         finally:
             app_gui_module.build_material_panel_summary = previous_builder
             app_gui_module.BundleService = previous_bundle_service
@@ -1233,21 +1226,13 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             "icon": {"id": "icon", "theme_id": "generic", "type": "image", "role": "icon", "status": "ready", "sha256": "b" * 64, "url": "/static/generic/images/icon.png", "access": "manifest_static", "source_key": "generic/images/icon.png"},
         }
 
-        class FakeSignal:
-            def __init__(self):
-                self.callback = None
-
-            def connect(self, callback):
-                self.callback = callback
-
-            def emit(self, *args):
-                self.callback(*args)
-
-        class FakeWorker:
+        class FakeWorker(QObject):
+            finished_signal = Signal(str, str, bool)
+            finished = Signal()
             created = []
 
             def __init__(self, _bundle, _assets_dir, provider=None, *, settings=None):
-                self.finished_signal = FakeSignal()
+                super().__init__()
                 self.running = False
                 FakeWorker.created.append(self)
 
@@ -1288,6 +1273,9 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertFalse(panel.retry_ai_button.isEnabled())
 
             FakeWorker.created[-1].finished_signal.emit("hero", "AI 分拣已更新", True)
+            self.assertFalse(panel.retry_ai_button.isEnabled())
+            FakeWorker.created[-1].running = False
+            FakeWorker.created[-1].finished.emit()
 
             self.assertEqual(panel._selected_bundle_id, "icon")
             self.assertTrue(panel.retry_ai_button.isEnabled())
@@ -1312,7 +1300,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         panel = MaterialPanelWindow()
         panel._bundle_service = lambda: SimpleNamespace(
             list_bundles=lambda **_filters: [],
-            theme_recoveries=[],
+            theme_read_errors=[],
         )
         try:
             panel.refresh()
@@ -1342,7 +1330,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         panel._bundle_service = lambda: SimpleNamespace(
             list_bundles=lambda **_filters: [],
             get_latest_batch=lambda: None,
-            theme_recoveries=[],
+            theme_read_errors=[],
         )
         try:
             panel.refresh()
@@ -1369,7 +1357,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         panel = MaterialPanelWindow()
         panel._bundle_service = lambda: SimpleNamespace(
             list_bundles=lambda **_filters: [],
-            theme_recoveries=[],
+            theme_read_errors=[],
         )
         try:
             panel.refresh()
@@ -1991,6 +1979,11 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.app.processEvents()
             self.assertTrue(ball.material_panel.isVisible())
             point = ball.rect().center()
+            ball.mousePressEvent(QMouseEvent(
+                QEvent.Type.MouseButtonPress, point, ball.mapToGlobal(point),
+                Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ))
             event = QMouseEvent(
                 QEvent.Type.MouseButtonRelease,
                 point,
@@ -2010,19 +2003,18 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             ball.close()
             self.app.processEvents()
 
-    def test_grass_click_opens_only_one_small_card(self) -> None:
+    def test_grass_click_opens_only_shortcut_ring(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
         ball._available_geometry = lambda: app_gui_module.QRect(0, 0, 900, 700)
         try:
             ball.move(300, 220)
             ball._toggle_quick_menu()
             self.app.processEvents()
-            self.assertTrue(ball.intake_card.isVisible())
-            self.assertFalse(ball.quick_menu.isVisible())
-            self.assertEqual(ball.intake_card.size(), app_gui_module.QSize(280, 240))
-            self.assertFalse(ball.intake_card.geometry().intersects(ball.geometry()))
-            ball._toggle_quick_menu()
+            self.assertTrue(ball.quick_ring.isVisible())
             self.assertFalse(ball.intake_card.isVisible())
+            self.assertFalse(ball.quick_menu.isVisible())
+            ball._toggle_quick_menu()
+            self.assertFalse(ball.quick_ring.isVisible())
         finally:
             ball.close()
             self.app.processEvents()
@@ -2051,7 +2043,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIn(("已复制 MCP 配置", "success"), toasts)
 
             initial_ai = ball.ai_enabled
-            ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
+            ball._ai_model_state = lambda: ("installed", "模型已安装 qwen2.5vl:3b")
             ball._ai_status_text = lambda: "AI 分拣已开启" if ball.ai_enabled else "AI 分拣已关闭"
             ball._handle_quick_menu_action("ai_toggle")
             self.assertEqual(ball.ai_enabled, not initial_ai)
@@ -2080,26 +2072,25 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertTrue(ball.quick_menu.isVisible())
             self.assertEqual(ball.quick_menu.current_page(), "ai")
             self.assertIn("模型未安装", ball.quick_menu.ai_status_label.text())
-            self.assertIn(("先安装本地视觉模型", "pending"), toasts)
+            self.assertEqual(toasts, [])
         finally:
             ball.close()
             self.app.processEvents()
 
-    def test_floating_ball_ai_setup_recheck_enables_when_model_ready(self) -> None:
+    def test_floating_ball_ai_setup_recheck_only_reports_installation(self) -> None:
         ball = app_gui_module.HaypileFloatingBall()
         toasts: list[tuple[str, str]] = []
         ball.show_toast = lambda message, tone="success": toasts.append((message, tone))
-        ball._ai_model_state = lambda: ("ready", "模型可用 qwen2.5vl:3b")
-        ball._ai_status_text = lambda: "AI 分拣已开启"
+        status = "模型已安装 · 能力以实际整理结果为准"
+        ball._ai_model_state = lambda: ("installed", status)
         try:
             ball.ai_enabled = False
-            ball._show_ai_setup_panel("模型可用 qwen2.5vl:3b")
-
+            ball._show_ai_setup_panel(status)
             ball._recheck_ai_setup()
-
-            self.assertTrue(ball.ai_enabled)
-            self.assertEqual(ball.quick_menu._ai_enabled, True)
-            self.assertIn(("AI 分拣已开启", "success"), toasts)
+            self.assertFalse(ball.ai_enabled)
+            self.assertFalse(ball.quick_menu._ai_enabled)
+            self.assertEqual(ball.quick_menu.ai_status_label.text(), status)
+            self.assertIn((status, "success"), toasts)
         finally:
             ball.close()
             self.app.processEvents()
@@ -2193,8 +2184,12 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         ball.quick_menu.reposition = lambda anchor, available, allow_flip=False: anchors.append(anchor)
         try:
             ball.setGeometry(120, 140, ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE)
-            ball.drag_offset = app_gui_module.QPoint(12, 14)
-            ball._press_global_pos = app_gui_module.QPoint(130, 150)
+            point = ball.rect().center()
+            ball.mousePressEvent(QMouseEvent(
+                QEvent.Type.MouseButtonPress, point, ball.mapToGlobal(point),
+                Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ))
             event = QMouseEvent(
                 QEvent.Type.MouseMove,
                 app_gui_module.QPointF(0, 0),
@@ -2254,13 +2249,13 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         pending = [{"id": "pending", "source_key": "generic/pending.png"}]
         ball._bundle_service = lambda: SimpleNamespace(
             list_bundles=lambda **_filters: list(pending),
-            list_recent_bundles=lambda: list(pending), _asset_path=lambda key: None
+            list_recent_bundles=lambda: list(pending), asset_path=lambda key: None
         )
         try:
             ball._refresh_pending_badge()
             ball._toggle_quick_menu()
 
-            self.assertTrue(ball.intake_card.isVisible())
+            self.assertTrue(ball.quick_ring.isVisible())
             self.assertFalse(ball.quick_menu.isVisible())
             self.assertTrue(ball._has_pending_assets)
 
@@ -2320,6 +2315,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                     ball.setGeometry(x, y, ball.COLLAPSED_SIZE, ball.COLLAPSED_SIZE)
                     ball._drag_hover = True
                     anchor = ball.mapToGlobal(ball._get_collapsed_circle_rect().center())
+                    origin = app_gui_module.QRect(ball.geometry())
 
                     ball._open_drop_target()
                     ball._drop_open_animation.stop()
@@ -2333,13 +2329,25 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
                     self.assertLessEqual(abs(visible_center.y() - anchor.y()), 1)
 
                     half_offset = ball._drop_visual_offset(0.5)
-                    self.assertLess(abs(half_offset.x()), abs(offset.x()) + 0.01)
-                    self.assertLess(abs(half_offset.y()), abs(offset.y()) + 0.01)
-                    self.assertEqual(ball._drop_visual_offset(1.0), app_gui_module.QPointF())
+                    self.assertEqual(half_offset, offset)
+                    self.assertEqual(ball._drop_visual_offset(1.0), offset)
+                    self.assertEqual(ball._ball_anchor_rect().center(), anchor)
+                    cursor = anchor + app_gui_module.QPoint(20, 0)
+                    ball._update_drag_awareness_target_global(cursor)
+                    self.assertAlmostEqual(ball._drag_awareness_target_angle, 0.0)
+                    self.assertAlmostEqual(ball._drag_awareness_distance, 20.0)
+                    ball._update_drag_awareness_target_local(app_gui_module.QPointF(ball.mapFromGlobal(cursor)))
+                    self.assertAlmostEqual(ball._drag_awareness_target_angle, 0.0)
+                    self.assertAlmostEqual(ball._drag_awareness_distance, 20.0)
+                    panel = ball._drop_panel_rect().translated(offset)
+                    extent = panel.width() * 0.56 + 6
+                    bounds = app_gui_module.QRectF(panel.center().x() - extent, panel.center().y() - extent,
+                                                  2 * extent, 2 * extent)
+                    self.assertTrue(app_gui_module.QRectF(ball.rect()).contains(bounds))
 
                     ball._set_drop_open_progress(0.0)
                     ball._animate_size(ball.COLLAPSED_SIZE)
-                    self.assertEqual(ball.geometry().center(), anchor)
+                    self.assertEqual(ball.geometry(), origin)
                     self.assertIsNone(ball._drop_anchor_global)
         finally:
             ball.close()
@@ -2732,8 +2740,14 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
             self.assertIsNone(ball._gif_suction_animation)
             self.assertEqual(ball._gif_suction_progress, 0.0)
             self.assertEqual(ball._drop_visual_kind, "leaf")
+            self.assertEqual(ball._drop_open_progress, 0.0)
+            self.assertFalse(ball._drag_hover)
+            self.assertFalse(ball._visual_timer.isActive())
 
             ball.show()
+            self.app.processEvents()
+            self.assertFalse(ball.is_expanded)
+            self.assertEqual(ball.size(), app_gui_module.QSize(72, 72))
             ball._begin_programmatic_gif_intake()
             self.assertTrue(ball._gif_open_timer.isActive())
             ball._set_low_power_enabled(True)
@@ -4015,7 +4029,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         queries: list[dict[str, object]] = []
 
         class FakeBundleService:
-            theme_recoveries = []
+            theme_read_errors = []
 
             def __init__(self, **kwargs):
                 constructed.append(kwargs)
@@ -4075,7 +4089,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         )
 
         class DirtyBundleService:
-            theme_recoveries = []
+            theme_read_errors = []
 
             def list_bundles(self, **_filters):
                 raise app_gui_module.ManifestReadinessError("manifest_dirty", "dirty")
@@ -4332,7 +4346,7 @@ class GuiRealProjectConfirmationActionsTests(unittest.TestCase):
         ball.material_panel.ai_refresh_worker = refresh_worker
         try:
             ball._shutdown_worker()
-            ball._shutdown_ai_refresh_worker()
+            ball.material_panel.poll_shutdown()
             self.assertTrue(worker.requested)
             self.assertTrue(refresh_worker.requested)
             self.assertIs(ball.worker, worker)

@@ -312,7 +312,7 @@ class WebFontIntakeTests(unittest.TestCase):
             card = ball.intake_card
             card.show_message("Loading", "progress")
             card._last_buttons = (1, 0, 0)
-            card._desktop_buttons = lambda: (2, 0, 0)
+            card.desktop_input.buttons = lambda: (2, 0, 0)
             with patch.object(app_gui.QCursor, "pos", return_value=QPoint(-100, -100)):
                 card._poll_outside()
             self.assertFalse(card.isVisible())
@@ -323,7 +323,7 @@ class WebFontIntakeTests(unittest.TestCase):
             ball.remote_worker = WaitingWorker([], self.incoming)
             card.show_message("Loading", "progress")
             card._last_escape = False
-            card._desktop_escape = lambda: True
+            card.desktop_input.escape = lambda: True
             card._poll_outside()
             self.assertEqual(interrupted, [True])
             self.assertTrue(ball._remote_request_cancelled)
@@ -416,6 +416,41 @@ class WebFontIntakeTests(unittest.TestCase):
         finally:
             ball.close()
             self.app.processEvents()
+
+    def test_download_cleanup_error_still_delivers_completion(self):
+        self.incoming.mkdir()
+        original_unlink = Path.unlink
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                blocked = self.incoming / "locked.ttf"
+                sidecar = app_gui.provenance_path_for(blocked)
+                other = self.incoming / "other.ttf"
+                for path in (blocked, sidecar, other):
+                    path.write_bytes(b"temporary")
+                worker = app_gui.RemoteDownloadWorker([], self.incoming)
+                results = []
+                worker.finished_signal.connect(lambda *args: results.append(args))
+                def download(downloaded):
+                    downloaded.extend((blocked, other))
+                    if not cancelled:
+                        raise RuntimeError("failed download")
+                def unlink(path, *args, **kwargs):
+                    if path == blocked:
+                        raise PermissionError("locked temporary file")
+                    return original_unlink(path, *args, **kwargs)
+                with patch.object(worker, "_run_downloads", side_effect=download), \
+                     patch.object(worker, "isInterruptionRequested", return_value=cancelled), \
+                     patch.object(Path, "unlink", unlink), \
+                     self.assertLogs(app_gui.logger, level="WARNING"):
+                    worker.run()
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0][0], [])
+                self.assertFalse(results[0][2])
+                self.assertFalse(other.exists())
+                self.assertFalse(sidecar.exists())
+                self.assertTrue(blocked.exists())
+                blocked.unlink()
+                worker.deleteLater()
 
     def test_result_arriving_before_thread_stop_keeps_shutdown_owner(self):
         from app.core.config import Settings

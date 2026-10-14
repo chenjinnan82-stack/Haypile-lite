@@ -3,6 +3,15 @@
 Haypile is the local source of registered assets. Agents should use HTTP or the
 MCP adapter, then keep bundle provenance in their output.
 
+These six tools are read-only and work when Haypile AI is off. Agents use their
+own models; connecting an Agent does not install or enable a model in Haypile.
+Tools provide metadata, filters, and controlled asset URLs, not semantic image
+search or image-content MCP messages. Inspecting image content requires a vision
+capable Agent and a tool host that can retrieve the image. A localhost URL is
+not reachable by a cloud Agent by default; do not expose the backend publicly
+just to make that URL reachable. Text-only Agents can work with available
+metadata but must not claim they have inspected the image.
+
 ## MCP Setup
 
 Start Haypile first:

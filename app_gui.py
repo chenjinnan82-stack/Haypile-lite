@@ -57,6 +57,8 @@ from app.core.config import (
 from app.core.exceptions import ResourceExhaustedError
 from app.core.file_lock import InterProcessFileLock
 from app.gui.backend_runtime import BackendRuntimeController
+from app.gui.quick_ring import QuickRing
+from app.gui.desktop_input import DesktopInputState
 from app.gui.native_drag import execute_copy_drag
 from app.gui.desktop_startup import (
     DesktopStartupResult,
@@ -78,7 +80,7 @@ from app.services.asset_provenance import (
     read_asset_provenance,
     write_asset_provenance,
 )
-from app.services.handoff import build_asset_handoff, build_handoff_asset
+from app.services.handoff import build_handoff_asset, build_agent_recipe, build_catalog_handoff
 from app.services.asset_collections import read_collections, save_collection, dissolve_collection, set_collection_asset, collection_handoff
 from app.services.ai_provider import (
     AIProviderConfig,
@@ -111,6 +113,7 @@ from app.services.intake_route import (
     resolve_intake_route,
 )
 from app.services.json_io import atomic_write_json
+from app.services.library_backup import create_backup, inspect_backup, restore_backup, BackupError
 from app.services.scanner import (
     ManifestReadinessError,
     read_manifest_readiness,
@@ -150,6 +153,7 @@ from PySide6.QtCore import (
     QPoint,
     QPointF,
     QPropertyAnimation,
+    QSignalBlocker,
     QRect,
     QRectF,
     Qt,
@@ -191,6 +195,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QMenu,
     QFileDialog,
+    QMessageBox,
     QFormLayout,
     QButtonGroup,
     QGraphicsOpacityEffect,
@@ -351,6 +356,13 @@ def _plain_tooltip(text: str) -> str:
     return "<qt>" + escape_html(text).replace("\n", "<br>") + "</qt>"
 
 
+def _font_usage_label(usage: str) -> str:
+    return {
+        "heading": ui_text("标题", "Heading"), "body": ui_text("正文", "Body"),
+        "decorative": ui_text("装饰", "Decorative"), "unknown": ui_text("待确认", "Pending"),
+    }.get(usage, usage)
+
+
 def _font_coverage_text(metadata: dict) -> str:
     coverage = metadata.get("coverage") or {}
     counts = ("character_count", "latin_letter_count", "digit_count", "cjk_ideograph_count")
@@ -408,6 +420,15 @@ class DroppedMediaHTMLParser(HTMLParser):
             self._audio_depth -= 1
 
 
+def _delete_remote_temp(path: Path) -> None:
+    for temporary in (path, provenance_path_for(path)):
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as exc:
+            # A leftover temporary copy must not strand intake or safe shutdown.
+            logger.warning("Remote temporary cleanup failed error_type=%s", type(exc).__name__)
+
+
 class RemoteDownloadWorker(QThread):
     finished_signal = Signal(object, str, bool)
     progress_signal = Signal(int, str)
@@ -443,8 +464,7 @@ class RemoteDownloadWorker(QThread):
                 self.font_candidates.clear()
                 self.image_candidates.clear()
                 for path in downloaded:
-                    path.unlink(missing_ok=True)
-                    provenance_path_for(path).unlink(missing_ok=True)
+                    _delete_remote_temp(path)
             if self.isInterruptionRequested():
                 result = ([], "", False)
         self.finished_signal.emit(*result)
@@ -492,8 +512,7 @@ class RemoteDownloadWorker(QThread):
                         web_font_bytes += size
                         downloaded_bytes += size
                         if candidate.sha256 in hashes:
-                            candidate.path.unlink(missing_ok=True)
-                            provenance_path_for(candidate.path).unlink(missing_ok=True)
+                            _delete_remote_temp(candidate.path)
                             downloaded.remove(candidate.path)
                         else:
                             hashes.add(candidate.sha256)
@@ -518,8 +537,7 @@ class RemoteDownloadWorker(QThread):
                                 continue
                         except (OSError, ValueError):
                             image_failed += 1
-                        candidate.path.unlink(missing_ok=True)
-                        provenance_path_for(candidate.path).unlink(missing_ok=True)
+                        _delete_remote_temp(candidate.path)
                         downloaded.remove(candidate.path)
                     if truncated or image_truncated:
                         self.discovery_note = ui_text("已达到网页扫描上限，显示已找到的素材。", "Page scan limit reached; showing assets found so far.")
@@ -608,6 +626,35 @@ class RemoteDownloadWorker(QThread):
     @staticmethod
     def _dedupe_urls(urls: list[str]) -> list[str]:
         return dedupe_remote_urls([urldefrag(url.strip())[0] for url in urls], limit=RemoteDownloadWorker.MAX_URLS)
+
+
+class LibraryBackupWorker(QThread):
+    progress_signal = Signal(str)
+
+    def __init__(self, settings, action, path, expected=None):
+        super().__init__()
+        self.settings, self.action, self.path, self.expected = settings, action, path, expected
+        self.result = None
+        self.error = ""
+
+    def run(self):
+        try:
+            last_report = 0.0
+            def report(value):
+                nonlocal last_report
+                if time.monotonic() - last_report >= 0.1:
+                    last_report = time.monotonic()
+                    self.progress_signal.emit(value)
+            options = {"cancel": self.isInterruptionRequested, "progress": report}
+            if self.action == "backup":
+                self.result = create_backup(self.settings, self.path, **options)
+            elif self.action == "inspect":
+                self.result = inspect_backup(self.path, **options)
+            else:
+                self.result = restore_backup(self.settings, self.path, expected=self.expected, **options)
+        except Exception as exc:
+            self.error = str(exc) if isinstance(exc, BackupError) else "operation_failed"
+            logger.warning("Library operation failed action=%s error_type=%s", self.action, type(exc).__name__)
 
 
 class IngestWorker(QThread):
@@ -720,6 +767,13 @@ class IngestWorker(QThread):
         self.progress_signal.emit(data["percent"], messages.get(stage, stage))
 
     def _error_message(self, code: str | None) -> str:
+        if code == "unsupported_media" and self.files and all(
+            path.suffix.lower() in {".html", ".htm"} for path in self.files
+        ):
+            return ui_text(
+                "这是本地网页文件；请打开原网站，将地址栏的网站链接拖到草堆",
+                "Local HTML file. Open the website and drag its address-bar link here",
+            )
         messages = {
             "ingest_busy": ui_text(
                 "另一个入口正在收纳，请稍后重试",
@@ -897,7 +951,7 @@ class AIRefreshWorker(QThread):
         except InterruptedError:
             self.finished_signal.emit(bundle_id, ui_text("AI 整理已取消", "AI sorting cancelled"), False)
             return
-        except (ResourceExhaustedError, httpx.TimeoutException, OSError, RuntimeError, ValueError) as exc:
+        except (ResourceExhaustedError, httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
             if self.isInterruptionRequested():
                 self.finished_signal.emit(bundle_id, ui_text("AI 整理已取消", "AI sorting cancelled"), False)
                 return
@@ -906,7 +960,7 @@ class AIRefreshWorker(QThread):
                 self.finished_signal.emit(bundle_id, ui_text("AI 整理已取消", "AI sorting cancelled"), False)
                 return
             logger.warning("AI 分拣刷新失败: bundle_id=%s error_type=%s", bundle_id, type(exc).__name__)
-            self.finished_signal.emit(bundle_id, ui_text("AI 分拣失败", "AI sorting failed"), False)
+            self.finished_signal.emit(bundle_id, ui_text("素材已保存 · AI 辅助暂不可用，可稍后重试", "Asset saved · AI assistance unavailable; retry later"), False)
             return
         finally:
             loop.close()
@@ -915,7 +969,6 @@ class AIRefreshWorker(QThread):
         classification, _ = classification
         suggestions = classification.ai_suggestions()
         source = str(suggestions.get("source") or "").strip()
-        reason = str(suggestions.get("reason") or source or "unknown").strip()
         success = source == "model"
         try:
             current = self.bundle_service.get_bundle(bundle_id)
@@ -926,7 +979,7 @@ class AIRefreshWorker(QThread):
             if success and current and current.get("status") == "ready"
             else ui_text("AI 分拣已更新 · 等待确认", "AI sorting updated · review needed")
             if success
-            else ui_text(f"AI 分拣未得到模型结果：{reason}", f"AI sorting did not get a model result: {reason}")
+            else ui_text("素材已保存 · AI 未返回有效建议，可检查模型或稍后重试", "Asset saved · no valid AI suggestions; check the model or retry later")
         )
         if not success and current and (current.get("ai_suggestions") or {}).get("source") == "model":
             message += ui_text(" · 已保留上次成功建议", " · previous successful suggestions retained")
@@ -997,7 +1050,7 @@ class AIBatchWorker(QThread):
                 except InterruptedError:
                     self.finished_signal.emit(self.batch_id, ui_text("AI 整理已取消", "AI sorting cancelled"), "cancelled")
                     return
-                except (ResourceExhaustedError, httpx.TimeoutException, OSError, RuntimeError, ValueError) as exc:
+                except (ResourceExhaustedError, httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
                     if self.isInterruptionRequested():
                         self.finished_signal.emit(self.batch_id, ui_text("AI 整理已取消", "AI sorting cancelled"), "cancelled")
                         return
@@ -1039,15 +1092,15 @@ class AIBatchWorker(QThread):
             status = "partial_success"
             progress_message = ui_text("AI 整理部分完成", "AI sorting partially complete")
             message = ui_text(
-                f"AI 整理部分完成：成功 {classified_count}，失败 {failed_count}",
-                f"AI sorting partially complete: {classified_count} succeeded, {failed_count} failed",
+                f"素材已保存 · AI 建议 {classified_count} 项，{failed_count} 项可稍后重试",
+                f"Assets saved · {classified_count} AI results; retry {failed_count} later",
             )
         else:
             status = "failed"
-            progress_message = ui_text("AI 整理失败", "AI sorting failed")
+            progress_message = ui_text("素材已保存 · AI 辅助暂不可用", "Assets saved · AI assistance unavailable")
             message = ui_text(
-                f"AI 整理失败：{failed_count} 个素材未得到模型结果",
-                f"AI sorting failed: no model result for {failed_count} assets",
+                f"素材已保存 · {failed_count} 项未得到 AI 建议，可检查模型或稍后重试",
+                f"Assets saved · no AI suggestions for {failed_count} items; check the model or retry later",
             )
         self.progress_signal.emit(100, progress_message)
         self.finished_signal.emit(
@@ -1307,7 +1360,7 @@ class MaterialPanelWindow(QWidget):
         self._bundle_by_source_key: dict[str, dict[str, object]] = {}
         self._suggested_ai_role = ""
         self._toast_callback = None
-        self._theme_recovery_notice_pending = False
+        self._theme_read_notice_pending = False
         self._retry_batch_callback = None
         self._ai_provider_factory = None
         self._ai_enabled_callback = None
@@ -2022,12 +2075,12 @@ class MaterialPanelWindow(QWidget):
 
     def set_toast_handler(self, callback) -> None:
         self._toast_callback = callback
-        if self._theme_recovery_notice_pending and self._toast_callback is not None:
-            self._theme_recovery_notice_pending = False
+        if self._theme_read_notice_pending and self._toast_callback is not None:
+            self._theme_read_notice_pending = False
             self._toast_callback(
                 ui_text(
-                    "已隔离损坏的主题记录并创建恢复副本",
-                    "Damaged theme metadata was quarantined and replaced",
+                    "部分主题记录无法读取，原文件已保留，请重新确认用途",
+                    "Some theme metadata is unreadable; originals were kept. Please reconfirm usage.",
                 ),
                 tone="error",
             )
@@ -2180,17 +2233,17 @@ class MaterialPanelWindow(QWidget):
             assets_dir=self.settings.ASSETS_DIR,
             max_items=len(scoped_bundles),
         )
-        if getattr(service, "theme_recoveries", []):
+        if getattr(service, "theme_read_errors", []):
             if self._toast_callback is not None:
                 self._toast_callback(
                     ui_text(
-                        "已隔离损坏的主题记录并创建恢复副本",
-                        "Damaged theme metadata was quarantined and replaced",
+                        "部分主题记录无法读取，原文件已保留，请重新确认用途",
+                        "Some theme metadata is unreadable; originals were kept. Please reconfirm usage.",
                     ),
                     tone="error",
                 )
             else:
-                self._theme_recovery_notice_pending = True
+                self._theme_read_notice_pending = True
         self._bundle_by_source_key = {
             str(bundle.get("source_key") or ""): bundle
             for bundle in scoped_bundles
@@ -2850,7 +2903,7 @@ class MaterialPanelWindow(QWidget):
             metadata = bundle.get("font_metadata") or {}
             license_known = bool(metadata.get("license_description") or metadata.get("license_url"))
             font_detail = (f"{metadata.get('family', '')} · {metadata.get('style', '')}\n"
-                           f"{self._bundle_status_label(str(bundle['status']))} · {self._font_usage_label(str(bundle.get('font_usage', 'unknown')))} · "
+                           f"{self._bundle_status_label(str(bundle['status']))} · {_font_usage_label(str(bundle.get('font_usage', 'unknown')))} · "
                            + ui_text("可变默认实例" if metadata.get("is_variable") else "静态字体",
                                      "Variable default" if metadata.get("is_variable") else "Static font")
                            + "\n" + ui_text("内嵌许可：见来源与许可" if license_known else "许可未知，请核实后使用",
@@ -2866,7 +2919,8 @@ class MaterialPanelWindow(QWidget):
 
     def _refresh_retry_ai_button(self, bundle: dict[str, object]) -> None:
         visible = (
-            str(bundle.get("type") or "").lower() == "image"
+            self._panel_ai_enabled()
+            and str(bundle.get("type") or "").lower() == "image"
             and Path(str(bundle.get("source_key") or "")).suffix.lower() in _AI_IMAGE_SUFFIXES
             and str(bundle.get("status") or "") != "missing"
             and bool(str(bundle.get("source_key") or "").strip())
@@ -2874,7 +2928,7 @@ class MaterialPanelWindow(QWidget):
         self.retry_ai_button.setVisible(visible)
         if not visible:
             return
-        busy = self.ai_refresh_worker is not None and self.ai_refresh_worker.isRunning()
+        busy = self.ai_refresh_active or self._font_preview_closing
         self.retry_ai_button.setEnabled(not busy)
         self.retry_ai_button.setText(
             ui_text("AI 分拣中...", "AI sorting...")
@@ -2884,18 +2938,12 @@ class MaterialPanelWindow(QWidget):
 
     def _retry_ai_classification(self) -> None:
         self._leave_search_input_mode()
-        if self.ai_refresh_worker is not None and self.ai_refresh_worker.isRunning():
+        if self.ai_refresh_active or self._font_preview_closing:
             return
         if not self._selected_bundle_id:
             return
         if not self._panel_ai_enabled():
-            self.detail_label.setText(ui_text("AI 分拣未开启\n请先在设置中开启 AI", "AI sorting is off\nEnable it in Settings"))
-            self.detail_label.show()
-            if self._toast_callback is not None:
-                self._toast_callback(
-                    ui_text("AI 分拣未开启", "AI sorting is off"),
-                    tone="error",
-                )
+            self.retry_ai_button.hide()
             return
         bundle = self._get_bundle_safely(self._selected_bundle_id)
         if bundle is None:
@@ -2907,21 +2955,48 @@ class MaterialPanelWindow(QWidget):
             return
         self.retry_ai_button.setEnabled(False)
         self.retry_ai_button.setText(ui_text("AI 分拣中...", "AI sorting..."))
-        self.ai_refresh_worker = AIRefreshWorker(
-            bundle, self.settings.ASSETS_DIR,
-            self._ai_provider_factory() if self._ai_provider_factory else None,
-            settings=self.settings,
-        )
-        self.ai_refresh_worker.finished_signal.connect(self._on_ai_refresh_finished)
+        try:
+            self.ai_refresh_worker = AIRefreshWorker(
+                bundle, self.settings.ASSETS_DIR,
+                self._ai_provider_factory() if self._ai_provider_factory else AIProviderConfig(
+                    mode="local", base_url=self.settings.VISION_CLASSIFIER_BASE_URL,
+                    model=self.settings.VISION_CLASSIFIER_MODEL,
+                ),
+                settings=self.settings,
+            )
+        except (OSError, RuntimeError, ValueError):
+            self._on_ai_refresh_finished(str(bundle["id"]), ui_text(
+                "素材已保存 · AI 辅助未启动，请检查 AI 设置或稍后重试",
+                "Asset saved · AI assistance could not start; check AI settings or retry later",
+            ), False)
+            return
+        self._ai_refresh_result = None
+        self.ai_refresh_worker.finished_signal.connect(self._remember_ai_refresh_result)
+        self.ai_refresh_worker.finished.connect(self._finish_ai_refresh)
         self.ai_refresh_worker.start()
+
+    def _remember_ai_refresh_result(self, bundle_id: str, message: str, success: bool) -> None:
+        if self.sender() is self.ai_refresh_worker:
+            self._ai_refresh_result = (bundle_id, message, success)
+
+    def _finish_ai_refresh(self) -> None:
+        worker = self.sender()
+        if worker is None or worker is not self.ai_refresh_worker:
+            return
+        result = self._ai_refresh_result
+        if result is None:
+            result = (str(worker.bundle.get("id") or ""), ui_text("AI 整理已取消", "AI sorting cancelled"), False)
+        self._on_ai_refresh_finished(*result)
 
     def _on_ai_refresh_finished(self, bundle_id: str, message: str, success: bool) -> None:
         worker = self.ai_refresh_worker
         self.ai_refresh_worker = None
         if worker is not None:
             worker.deleteLater()
+        if self._font_preview_closing:
+            return
         if self._toast_callback is not None:
-            self._toast_callback(message, tone="success" if success else "error")
+            self._toast_callback(message, tone="success" if success else "pending")
         if bundle_id != self._selected_bundle_id:
             current = self._get_bundle_safely(self._selected_bundle_id) if self._selected_bundle_id else None
             if current is not None:
@@ -2941,16 +3016,16 @@ class MaterialPanelWindow(QWidget):
         if self._ai_enabled_callback is not None:
             return bool(self._ai_enabled_callback())
         settings = self.settings
-        if settings.HAYPILE_LOW_POWER_MODE or not settings.VISION_CLASSIFIER_ENABLED:
+        if self._low_power_enabled:
             return False
-        try:
-            payload = json.loads((settings.INDEX_DIR / "gui_state.json").read_text(encoding="utf-8"))
-        except (OSError, TypeError, json.JSONDecodeError):
-            return True
-        if isinstance(payload, dict) and payload.get("low_power_enabled") is True:
+        payload = read_desktop_gui_state(settings)
+        if payload.get("low_power_enabled", settings.HAYPILE_LOW_POWER_MODE):
             return False
-        stored = payload.get("ai_enabled") if isinstance(payload, dict) else None
-        return bool(stored) if isinstance(stored, bool) else True
+        # Standalone panels have no authorized API provider factory.
+        if payload.get("ai_provider") in ("off", "api"):
+            return False
+        stored = payload.get("ai_enabled")
+        return stored if isinstance(stored, bool) else bool(settings.VISION_CLASSIFIER_ENABLED)
 
     def _set_selected_role(self, role: str) -> None:
         if not self._selected_bundle_id:
@@ -3030,19 +3105,12 @@ class MaterialPanelWindow(QWidget):
         if self._suggested_ai_role:
             self._set_selected_role(self._suggested_ai_role)
 
-    @staticmethod
-    def _font_usage_label(usage: str) -> str:
-        return {
-            "heading": ui_text("标题", "Heading"), "body": ui_text("正文", "Body"),
-            "decorative": ui_text("装饰", "Decorative"), "unknown": ui_text("待确认", "Pending"),
-        }.get(usage, usage)
-
     def _retranslate_font_controls(self) -> None:
         self.font_text_input.setAccessibleName(ui_text("字体预览文字，最多 120 字", "Font preview text, up to 120 characters"))
         self.font_text_input.setToolTip(ui_text("使用当前字体文件预览", "Preview this exact font file"))
         self.font_size_input.setAccessibleName(ui_text("字号，12 到 72 像素", "Font size, 12 to 72 pixels"))
         for usage, button in self.font_usage_buttons.items():
-            button.setText(self._font_usage_label(usage))
+            button.setText(_font_usage_label(usage))
         self.font_notes_button.setText(ui_text("来源与许可", "Source / license"))
         self.font_export_button.setText(ui_text("导出原文件", "Export original"))
 
@@ -3071,7 +3139,7 @@ class MaterialPanelWindow(QWidget):
             self.font_preview_label.adjustSize()
             self.font_missing_label.clear()
             return
-        path = self._bundle_service()._asset_path(str(bundle["source_key"]))
+        path = self._bundle_service().asset_path(str(bundle["source_key"]))
         if path is None:
             return
         self._font_preview_generation += 1
@@ -3187,7 +3255,7 @@ class MaterialPanelWindow(QWidget):
         bundle = self._get_bundle_safely(self._selected_bundle_id)
         if not bundle or bundle.get("type") != "font" or bundle.get("status") == "missing":
             return
-        source = self._bundle_service()._asset_path(str(bundle["source_key"]))
+        source = self._bundle_service().asset_path(str(bundle["source_key"]))
         if source is None:
             return
         target, _filter = QFileDialog.getSaveFileName(
@@ -3272,7 +3340,7 @@ class MaterialPanelWindow(QWidget):
         try:
             service = self._bundle_service()
             bundle = service.get_bundle(self._selected_bundle_id)
-            path = service._asset_path(str(bundle["source_key"])) if bundle else None
+            path = service.asset_path(str(bundle["source_key"])) if bundle else None
             if (bundle and bundle.get("type") == media_type and bundle.get("status") != "missing"
                     and path is not None and bundle.get("sha256")
                     and asset_file_sha256(path) == bundle["sha256"]):
@@ -3610,20 +3678,7 @@ class MaterialPanelWindow(QWidget):
         self.detail_label.show()
 
     def _agent_recipe_text(self) -> str:
-        base_url = self._base_url()
-        return "\n".join(
-            [
-                "Haypile agent recipe",
-                f"Base URL: {base_url}",
-                f"List latest ready assets: GET {base_url}/api/v1/bundles?status=ready&batch_id=latest",
-                'Default batch selector: batch_id="latest".',
-                "Use each bundle's id, sha256, source_key, url, resolved_url, and provenance.",
-                "Also preserve content_type; for image/gif, respect frame_count, duration_seconds, loop_count, and the confirmed role.",
-                "For fonts, preserve font_usage, font_metadata, and font_annotation; verify the license before use.",
-                "Fetch files through resolved_url or the MCP haypile_list_bundles tool.",
-                "Do not read Haypile's local asset directory directly.",
-            ]
-        )
+        return build_agent_recipe(self._base_url())
 
     def _bundle_for_item(self, item) -> dict[str, object]:
         source_key = str(item.source_key or "").strip()
@@ -3666,18 +3721,7 @@ class MaterialPanelWindow(QWidget):
         *,
         batch_id: str = "",
     ) -> dict[str, object]:
-        base_url = self._base_url()
-        try:
-            readiness = read_manifest_readiness(self.settings.MANIFEST_PATH)
-            manifest_generation = str(readiness["manifest_generation"])
-        except ManifestReadinessError:
-            manifest_generation = ""
-        return build_asset_handoff(
-            bundles,
-            base_url=base_url,
-            batch_id=batch_id or None,
-            manifest_generation=manifest_generation,
-        )
+        return build_catalog_handoff(bundles, base_url=self._base_url(), manifest_path=self.settings.MANIFEST_PATH, batch_id=batch_id)
 
     @staticmethod
     def _handoff_asset(item: dict[str, object], base_url: str) -> dict[str, object]:
@@ -3709,6 +3753,31 @@ class MaterialPanelWindow(QWidget):
         if state in {"needs_review", "rollback_incomplete"}:
             return "#A67624"
         return "#666666"
+
+    @property
+    def ai_refresh_active(self) -> bool:
+        return self.ai_refresh_worker is not None
+
+    @property
+    def shutdown_pending(self) -> bool:
+        return self.ai_refresh_active or self.font_preview_worker is not None
+
+    def begin_shutdown(self) -> None:
+        self._font_preview_closing = True
+        self._stop_audio_preview()
+        self._stop_gif_preview(reset_to_first=True, discard=True)
+        self._cancel_font_preview()
+        self.poll_shutdown()
+
+    def poll_shutdown(self) -> None:
+        worker = self.ai_refresh_worker
+        if worker is None:
+            return
+        if worker.isRunning():
+            worker.requestInterruption()
+            return
+        worker.deleteLater()
+        self.ai_refresh_worker = None
 
     def hideEvent(self, event) -> None:
         self._stop_audio_preview()
@@ -3838,9 +3907,12 @@ class QuickMenuWindow(QWidget):
     def set_ai_enabled(self, enabled: bool, status_text: str = "") -> None:
         self._ai_enabled = enabled
 
-    def _emit_action(self, action: str) -> None:
+    def clear_attention_action(self, action: str) -> None:
         if action == self._attention_action:
             self._attention_action = ""
+
+    def _emit_action(self, action: str) -> None:
+        self.clear_attention_action(action)
         if self._action_callback is not None:
             self._action_callback(action)
 
@@ -3899,6 +3971,14 @@ class QuickMenuWindow(QWidget):
         if self.feedback_card is not None and self.feedback_card.isVisible():
             self.feedback_card.reposition()
 
+    def show_operation_progress(self, text: str) -> None:
+        self._feedback_timer.stop()
+        self.feedback_label.setText(text)
+        foreground, background = _FEEDBACK_TONES["progress"]
+        self.feedback_label.setStyleSheet(f"color: {foreground}; background: {background}; padding: 5px;")
+        self.feedback_label.setProperty("feedbackTone", "progress")
+        self.feedback_label.show()
+
     def show_feedback(self, message: str, tone: str, anchor: QRect, available: QRect) -> None:
         self._anchor, self._available = QRect(anchor), QRect(available)
         if self.isVisible():
@@ -3918,8 +3998,8 @@ class QuickMenuWindow(QWidget):
     def set_progress(self, percent: int, text: str) -> None:
         if self.isVisible():
             self.feedback_label.setText(text)
-        elif self.feedback_card is not None and self.feedback_card.mode == "message" and self.feedback_card.isVisible():
-            self.feedback_card.status.setText(text)
+        elif self.feedback_card is not None:
+            self.feedback_card.update_progress(text)
 
     def complete_progress(self, tone: str, message: str) -> None:
         self._progress_active = False
@@ -4065,6 +4145,15 @@ class QuickMenuWindow(QWidget):
         )
         layout.addWidget(self.sound_button)
 
+        library_row = QHBoxLayout()
+        self.backup_button = self._action_button(ui_text("备份素材库", "Back up library"), "library_backup", page)
+        self.restore_button = self._action_button(ui_text("从备份恢复", "Restore backup"), "library_restore", page)
+        self.backup_cancel_button = self._action_button(ui_text("取消", "Cancel"), "library_cancel", page)
+        self.backup_cancel_button.hide()
+        for button in (self.backup_button, self.restore_button, self.backup_cancel_button):
+            library_row.addWidget(button)
+        layout.addLayout(library_row)
+
         self.language_section = self._section_label(ui_text("语言", "Language"), page)
         layout.addWidget(self.language_section)
         language_row = QWidget(page)
@@ -4162,9 +4251,15 @@ class QuickMenuWindow(QWidget):
         layout.addWidget(self.ai_api_save_button)
 
         self.ai_command_button = self._action_button(ui_text("复制模型安装命令", "Copy model install command"), "ai_copy_command", page)
-        self.ai_recheck_button = self._action_button(ui_text("重新检测", "Check again"), "ai_recheck", page)
+        self.ai_recheck_button = self._action_button(ui_text("检查安装状态", "Check installation"), "ai_recheck", page)
         layout.addWidget(self.ai_command_button)
         layout.addWidget(self.ai_recheck_button)
+        self.ai_help_label = QLabel(ui_text(
+            "可选增强，关闭也可完整使用。图片整理需要支持看图和结构化输出的模型；已配置不代表能力已验证。",
+            "Optional; core features work with AI off. Image sorting needs vision and structured output; configuration does not verify capability.",
+        ), page)
+        self.ai_help_label.setWordWrap(True)
+        layout.addWidget(self.ai_help_label)
         layout.addStretch(1)
         return page
 
@@ -4200,11 +4295,14 @@ class QuickMenuWindow(QWidget):
             "ready_handoff": ui_text("复制全部可用素材", "Copy all ready assets"),
             "agent_recipe": ui_text("复制 Agent 配方", "Copy Agent recipe"),
             "ai_setup": ui_text("AI 分拣", "AI sorting"),
+            "library_backup": ui_text("备份素材库", "Back up library"),
+            "library_restore": ui_text("从备份恢复", "Restore backup"),
+            "library_cancel": ui_text("取消", "Cancel"),
             "diagnostics": ui_text("复制诊断摘要", "Copy diagnostic summary"),
             "logs": ui_text("打开日志目录", "Open logs folder"),
             "exit": ui_text("退出 Haypile", "Quit Haypile"),
             "ai_copy_command": ui_text("复制模型安装命令", "Copy model install command"),
-            "ai_recheck": ui_text("重新检测", "Check again"),
+            "ai_recheck": ui_text("检查安装状态", "Check installation"),
             "ai_save_api": ui_text("保存并授权此域名", "Save and authorize domain"),
             "settings": ui_text("返回设置", "Back to settings"),
             "ai_provider:local": ui_text("本地模型", "Local model"),
@@ -4221,6 +4319,11 @@ class QuickMenuWindow(QWidget):
         self.connection_section.setText(ui_text("连接", "Connection"))
         self.delivery_section.setText(ui_text("交付", "Delivery"))
         self.language_section.setText(ui_text("语言", "Language"))
+        self.ai_api_model_input.setPlaceholderText(ui_text("模型名称", "Model name"))
+        self.ai_help_label.setText(ui_text(
+            "可选增强，关闭也可完整使用。图片整理需要支持看图和结构化输出的模型；已配置不代表能力已验证。",
+            "Optional; core features work with AI off. Image sorting needs vision and structured output; configuration does not verify capability.",
+        ))
         self.service_section.setText(ui_text("服务与诊断", "Service & diagnostics"))
         self.diagnostics_button.setAccessibleDescription(
             ui_text(
@@ -4371,9 +4474,20 @@ class QuickMenuWindow(QWidget):
 
 class DesktopIntakeCard(QWidget):
     """One opaque native rectangle, independent of the grass pile."""
-    def __init__(self, ball) -> None:
+    opening = Signal()
+    action_requested = Signal(str)
+    collect_requested = Signal(object)
+    cancel_search_requested = Signal()
+    retry_search_requested = Signal()
+    discard_candidates_requested = Signal()
+    asset_changed = Signal()
+
+    def __init__(self, ball, *, anchor_geometry, available_geometry, bundle_service) -> None:
         super().__init__(ball)
         self.ball = ball
+        self.bundle_service = bundle_service
+        self.anchor_geometry = anchor_geometry
+        self.available_geometry = available_geometry
         self.mode = ""
         self.candidates = []
         self._candidate_groups = {}
@@ -4386,19 +4500,7 @@ class DesktopIntakeCard(QWidget):
         self.font_preview_worker = None
         self._preview_generation = 0
         self._preview_request = None
-        self._click_counter = None
-        self._escape_state = None
-        if sys.platform == "darwin" and os.environ.get("QT_QPA_PLATFORM") != "offscreen":
-            try:
-                framework = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
-                self._click_counter = framework.CGEventSourceCounterForEventType
-                self._click_counter.argtypes = [ctypes.c_int32, ctypes.c_uint32]
-                self._click_counter.restype = ctypes.c_uint32
-                self._escape_state = framework.CGEventSourceKeyState
-                self._escape_state.argtypes = [ctypes.c_int32, ctypes.c_uint16]
-                self._escape_state.restype = ctypes.c_bool
-            except (AttributeError, OSError):
-                logger.debug("Desktop input state is unavailable")
+        self.desktop_input = DesktopInputState()
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
@@ -4540,6 +4642,19 @@ class DesktopIntakeCard(QWidget):
         QApplication.instance().applicationStateChanged.connect(self._application_state_changed)
         self._reset("", "")
 
+    @property
+    def native_operation_active(self) -> bool:
+        return self._dragging or self._exporting
+
+    @property
+    def shutdown_pending(self) -> bool:
+        return self.native_operation_active or self.font_preview_worker is not None
+
+    def begin_shutdown(self) -> None:
+        if not self.native_operation_active:
+            self.dismiss("shutdown")
+        self._cancel_preview()
+
     def _button(self, text: str, callback=None) -> QPushButton:
         button = _MaterialItemButton(text)
         button.setFixedHeight(26)
@@ -4571,7 +4686,7 @@ class DesktopIntakeCard(QWidget):
         self.preview.setAccessibleName(ui_text("原文件样张", "Original file sample"))
         self.details.setAccessibleName(ui_text("来源、缺字与许可", "Source, missing glyphs and license"))
         for usage, button in self.usage_buttons.items():
-            label = MaterialPanelWindow._font_usage_label(usage)
+            label = _font_usage_label(usage)
             button.setText(label)
             button.setAccessibleName(ui_text("字体用途：", "Font usage: ") + label)
         self.title.setText(title)
@@ -4604,21 +4719,22 @@ class DesktopIntakeCard(QWidget):
         self.store_button.show()
 
     def _show(self) -> None:
+        self.opening.emit()
         self.details.setFixedHeight(47 if self.usage_row.isVisibleTo(self.information) else 75)
         height = 320 if self.information.isVisibleTo(self) else 240
         if self.mode == "message":
             height = 140 if self.store_button.isVisibleTo(self) else 100
         self.setFixedSize(280, height)
         self.reposition()
-        self._last_buttons = self._desktop_buttons()
-        self._last_escape = self._desktop_escape()
+        self._last_buttons = self.desktop_input.buttons()
+        self._last_escape = self.desktop_input.escape()
         self.show()
         self.raise_()
         self._outside_timer.start()
 
     def reposition(self) -> None:
-        anchor = self.ball._ball_anchor_rect()
-        available = self.ball._available_geometry().adjusted(8, 8, -8, -8)
+        anchor = self.anchor_geometry()
+        available = self.available_geometry().adjusted(8, 8, -8, -8)
         width, height = self.width(), self.height()
         options = [QPoint(anchor.right() + 12, anchor.center().y() - height // 2),
                    QPoint(anchor.left() - width - 12, anchor.center().y() - height // 2),
@@ -4634,10 +4750,11 @@ class DesktopIntakeCard(QWidget):
                   max(available.top(), min(point.y(), available.bottom() - height + 1)))
 
     def dismiss(self, reason: str) -> None:
-        if reason in {"close", "escape"} and self.mode == "message" and self.ball.remote_worker is not None:
-            self.ball._cancel_remote_download()
+        cancel_search = reason == "management" or (reason in {"close", "escape"} and self.mode == "message")
+        if cancel_search and self.ball.search_active:
+            self.cancel_search_requested.emit()
         if self.mode in {"fonts", "images"} and reason != "store":
-            self.ball._discard_web_candidates()
+            self.discard_candidates_requested.emit()
         self.candidates = []
         self._candidate_groups = {}
         self._candidate_positions = {}
@@ -4653,8 +4770,12 @@ class DesktopIntakeCard(QWidget):
         self.dismiss("close")
         event.accept()
 
+    def update_progress(self, text: str) -> None:
+        if self.mode == "message" and self.isVisible():
+            self.status.setText(text)
+
     def show_message(self, message: str, tone: str) -> None:
-        if self.ball._closing:
+        if self.ball.is_closing:
             return
         if self.isVisible() and self.mode in {"fonts", "images", "bundle", "recent"}:
             return
@@ -4666,7 +4787,7 @@ class DesktopIntakeCard(QWidget):
             foreground = "#7D581B"
         self.status.setStyleSheet(f"color: {foreground}; background: {background}; border-radius: 5px; padding: 0 6px;")
         self.status.setProperty("feedbackTone", tone)
-        self.store_button.setVisible(tone == "progress" and self.ball.remote_worker is not None or tone == "error" and bool(self.ball._last_remote_urls))
+        self.store_button.setVisible(tone == "progress" and self.ball.search_active or tone == "error" and self.ball.can_retry_search)
         self.store_button.setText(ui_text("取消查找", "Cancel search") if tone == "progress" else ui_text("重试", "Retry"))
         self._show()
         if tone != "progress":
@@ -4727,7 +4848,7 @@ class DesktopIntakeCard(QWidget):
         self.previous_button.setEnabled(self.index > 0)
         self.next_button.setEnabled(self.index + 1 < len(self.candidates))
         self.store_button.setText(ui_text("收纳这张", "Store this image") if is_image else ui_text("收纳这款", "Store this font"))
-        self.store_button.setEnabled(self.ball.worker is None)
+        self.store_button.setEnabled(self.ball.can_collect)
         if is_image:
             dimensions = f"{metadata['width']} × {metadata['height']}"
             self.status.setText(dimensions + " · " + metadata["mime_type"].split("/")[-1].replace("svg+xml", "svg").upper())
@@ -4778,16 +4899,16 @@ class DesktopIntakeCard(QWidget):
 
     def _primary_action(self) -> None:
         if self.mode in {"fonts", "images"} and self.candidates:
-            self.ball._collect_web_asset(self.candidates[self.index])
+            self.collect_requested.emit(self.candidates[self.index])
         elif self.mode == "message":
-            if self.ball.remote_worker is not None:
-                self.ball._cancel_remote_download()
-            elif self.ball._last_remote_urls and not self.ball._ingest_busy():
-                self.ball._start_remote_download_worker(self.ball._last_remote_urls)
+            if self.ball.search_active:
+                self.cancel_search_requested.emit()
+            elif self.ball.can_retry_search:
+                self.retry_search_requested.emit()
         elif self.mode == "bundle":
             self._copy_bundle_original()
         elif self.mode == "recent":
-            self.ball._handle_quick_menu_action("assets")
+            self.action_requested.emit("assets")
 
     def show_recent(self) -> None:
         self._reset("recent", ui_text("最近收纳", "Recent assets"))
@@ -4795,7 +4916,7 @@ class DesktopIntakeCard(QWidget):
             item = self.recent_layout.takeAt(0)
             item.widget().deleteLater()
         try:
-            service = self.ball._bundle_service()
+            service = self.bundle_service()
             bundles = service.list_recent_bundles()
             for bundle in bundles[:3]:
                 metadata = bundle.get("font_metadata") or {}
@@ -4805,7 +4926,7 @@ class DesktopIntakeCard(QWidget):
                 label = self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 240)
                 button = self._button(label.replace("&", "&&"), lambda target=bundle: self.show_bundle(target))
                 if bundle.get("type") == "image" and bundle.get("status") != "missing":
-                    path = service._asset_path(str(bundle["source_key"]))
+                    path = service.asset_path(str(bundle["source_key"]))
                     if path is not None:
                         reader = QImageReader(str(path))
                         if reader.size().isValid():
@@ -4839,7 +4960,7 @@ class DesktopIntakeCard(QWidget):
         self.previous_button.setEnabled(True)
         self.store_button.setText(ui_text("复制原文件", "Copy original file"))
         self.store_button.setToolTip(ui_text("粘贴到支持文件的应用或文件夹", "Paste into an app or folder that accepts files"))
-        path = self.ball._bundle_service()._asset_path(str(bundle["source_key"]))
+        path = self.bundle_service().asset_path(str(bundle["source_key"]))
         metadata = bundle.get("font_metadata") or {}
         name = str(metadata.get("family") or Path(str(bundle["source_key"])).name)
         self.title.setText(self.title.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 224))
@@ -4883,12 +5004,12 @@ class DesktopIntakeCard(QWidget):
         self._show()
 
     def _stored_bundle_source(self) -> Path | None:
-        if self.mode != "bundle" or self.ball._closing:
+        if self.mode != "bundle" or self.ball.is_closing:
             return None
         try:
-            service = self.ball._bundle_service()
+            service = self.bundle_service()
             current = service.get_bundle(str(self.bundle["id"]))
-            path = service._asset_path(str(current["source_key"])) if current else None
+            path = service.asset_path(str(current["source_key"])) if current else None
             if current is None or current["status"] == "missing" or path is None or not path.is_file():
                 raise ValueError("asset_unavailable")
             return path
@@ -4927,7 +5048,7 @@ class DesktopIntakeCard(QWidget):
             copied = execute_copy_drag(drag, self)
         finally:
             self._dragging = False
-            self._last_buttons, self._last_escape = self._desktop_buttons(), self._desktop_escape()
+            self._last_buttons, self._last_escape = self.desktop_input.buttons(), self.desktop_input.escape()
         if copied and card_generation == self._preview_generation:
             self.dismiss("drag")
 
@@ -4945,7 +5066,7 @@ class DesktopIntakeCard(QWidget):
                 self, ui_text("导出字体原文件", "Export original font"), source.name,
                 f"{source.suffix.upper()[1:]} (*{source.suffix})",
             )
-            if not target or self.ball._closing:
+            if not target or self.ball.is_closing:
                 return
             settings = self.ball.settings
             export_font_original(source, Path(target), sha256=source_sha256, storage_dir=settings.STORAGE_DIR,
@@ -4958,7 +5079,7 @@ class DesktopIntakeCard(QWidget):
                 self.status.setText(ui_text("已导出字体原文件", "Original font exported"))
         finally:
             self._exporting = False
-            self._last_buttons, self._last_escape = self._desktop_buttons(), self._desktop_escape()
+            self._last_buttons, self._last_escape = self.desktop_input.buttons(), self.desktop_input.escape()
             if card_generation == self._preview_generation:
                 self.status.setToolTip(self.status.text())
 
@@ -4977,15 +5098,15 @@ class DesktopIntakeCard(QWidget):
         if self.mode != "bundle" or self.bundle.get("type") != "font":
             return
         try:
-            updated = self.ball._bundle_service().update_bundle_font(self.bundle["id"], font_usage=usage)
+            updated = self.bundle_service().update_bundle_font(self.bundle["id"], font_usage=usage)
         except (OSError, TimeoutError, ValueError, ManifestReadinessError):
             updated = None
         if updated is None:
             self.status.setText(ui_text("用途保存失败，请重试", "Usage could not be saved; retry"))
         else:
             self.bundle = updated
-            self.status.setText(ui_text("用途已确认：", "Usage confirmed: ") + MaterialPanelWindow._font_usage_label(usage))
-            self.ball._refresh_pending_badge()
+            self.status.setText(ui_text("用途已确认：", "Usage confirmed: ") + _font_usage_label(usage))
+            self.asset_changed.emit()
         self.status.setToolTip(self.status.text())
         self._refresh_usage()
 
@@ -5018,21 +5139,11 @@ class DesktopIntakeCard(QWidget):
         worker.deleteLater()
         self._start_preview()
 
-    def _desktop_buttons(self):
-        if self._click_counter is not None:
-            return tuple(self._click_counter(0, event_type) for event_type in (1, 3, 25))
-        if sys.platform.startswith("win"):
-            return tuple(ctypes.windll.user32.GetAsyncKeyState(key) for key in (1, 2, 4))
-        return ()
-
-    def _desktop_escape(self) -> bool:
-        return bool(self._escape_state and self._escape_state(0, 53))
-
     def _poll_outside(self) -> None:
         if self._exporting or self._dragging:
             return
         # ponytail: poll native counters only while visible; no event tap or input-capturing overlay.
-        buttons, escape = self._desktop_buttons(), self._desktop_escape()
+        buttons, escape = self.desktop_input.buttons(), self.desktop_input.escape()
         outside = not self.frameGeometry().contains(QCursor.pos()) and not self.ball.frameGeometry().contains(QCursor.pos())
         if escape and not self._last_escape:
             self.dismiss("escape")
@@ -5040,7 +5151,7 @@ class DesktopIntakeCard(QWidget):
             self.dismiss("outside")
         self._last_buttons, self._last_escape = buttons, escape
         if self.mode in {"fonts", "images"}:
-            self.store_button.setEnabled(self.ball.worker is None and not self.ball._closing)
+            self.store_button.setEnabled(self.ball.can_collect)
 
     def _application_state_changed(self, state) -> None:
         if not (self._exporting or self._dragging) and state == Qt.ApplicationState.ApplicationInactive and self.isVisible():
@@ -5109,6 +5220,8 @@ class HaypileFloatingBall(QWidget):
         self._haypile_direction_glow_pixmap = self._tinted_haypile_pixmap(QColor("#FFF1B2"))
         self._haypile_exit_glow_pixmap = self._tinted_haypile_pixmap(QColor("#9B4C37"))
         self._intake_renderer = IntakeEntryRenderer(self.project_root / "ui_assets")
+        self.library_worker = None
+        self._library_dialog_active = False
         self._gui_state_path = self.settings.INDEX_DIR / "gui_state.json"
 
         stored_state = dict(initial_state or {})
@@ -5177,6 +5290,7 @@ class HaypileFloatingBall(QWidget):
         self._drag_release_feedback_until = 0.0
         self._has_pending_assets = False
         self._drag_prepare_active = False
+        self._drop_origin_geometry: QRect | None = None
         self._drop_anchor_global: QPoint | None = None
         self._drop_feedback_anchor_global: QRect | None = None
         self._drop_visual_kind = "leaf"
@@ -5207,9 +5321,7 @@ class HaypileFloatingBall(QWidget):
         self._collapse_timer = QTimer(self)
         self._collapse_timer.setSingleShot(True)
         self._collapse_timer.setInterval(170)
-        self._collapse_timer.timeout.connect(
-            lambda: self._animate_size(self.COLLAPSED_SIZE)
-        )
+        self._collapse_timer.timeout.connect(self._finish_drop_close)
         self._drag_prepare_timer = QTimer(self)
         self._drag_prepare_timer.setSingleShot(True)
         self._drag_prepare_timer.setInterval(110)
@@ -5257,7 +5369,23 @@ class HaypileFloatingBall(QWidget):
 
         self.quick_menu = QuickMenuWindow(self.settings)
         self.quick_menu.setParent(self, self.quick_menu.windowFlags())
-        self.intake_card = DesktopIntakeCard(self)
+        self.intake_card = DesktopIntakeCard(
+            self, anchor_geometry=lambda: self._ball_anchor_rect(),
+            available_geometry=lambda: self._available_geometry(),
+            bundle_service=lambda: self._bundle_service(),
+        )
+        self.quick_ring = QuickRing(
+            self, ui_text, anchor_geometry=lambda: self._ball_anchor_rect(),
+            available_geometry=lambda: self._available_geometry(),
+        )
+        self.quick_ring.action_requested.connect(self._handle_quick_menu_action)
+        self.intake_card.action_requested.connect(self._handle_quick_menu_action)
+        self.intake_card.opening.connect(self.quick_ring.hide)
+        self.intake_card.collect_requested.connect(lambda candidate: self._collect_web_asset(candidate))
+        self.intake_card.cancel_search_requested.connect(lambda: self._cancel_remote_download())
+        self.intake_card.retry_search_requested.connect(self._retry_web_search)
+        self.intake_card.discard_candidates_requested.connect(lambda: self._discard_web_candidates())
+        self.intake_card.asset_changed.connect(lambda: self._refresh_pending_badge())
         self.quick_menu.feedback_card = self.intake_card
         self.material_panel = self.quick_menu.material_panel
         self.material_panel.set_toast_handler(self.show_toast)
@@ -5341,13 +5469,12 @@ class HaypileFloatingBall(QWidget):
             progress = self._drop_open_progress
             painter.save()
             painter.translate(self._drop_visual_offset(progress))
-            panel_size = min(self.width(), self.height()) * 0.47
-            panel_rect = QRectF(
-                (self.width() - panel_size) / 2,
-                (self.height() - panel_size) / 2,
-                panel_size,
-                panel_size,
-            )
+            panel_rect = self._drop_panel_rect()
+            panel_size = panel_rect.width()
+            canvas_size = panel_size / 0.47
+            canvas_rect = QRectF(panel_rect.center().x() - canvas_size / 2,
+                                 panel_rect.center().y() - canvas_size / 2,
+                                 canvas_size, canvas_size)
             if self._drag_hover and self._drop_visual_kind != "audio":
                 painter.save()
                 painter.setOpacity(progress)
@@ -5367,7 +5494,7 @@ class HaypileFloatingBall(QWidget):
             )
             self._intake_renderer.paint(
                 painter,
-                QRectF(self.rect()),
+                canvas_rect,
                 panel_rect,
                 IntakeVisualState(
                     kind=self._drop_visual_kind,
@@ -5447,6 +5574,9 @@ class HaypileFloatingBall(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if self.is_expanded and self._drop_open_progress == 0.0:
+            # Let the native show geometry settle before restoring the saved anchor.
+            QTimer.singleShot(0, self, self._finish_drop_close)
         self.setFixedSize(self.size())
         self._configure_window_surface()
         if (
@@ -5459,10 +5589,22 @@ class HaypileFloatingBall(QWidget):
     def hideEvent(self, event) -> None:
         self._drag_awareness_timer.stop()
         self._pointer_press_owned = False
+        self._window_drag_active = False
+        self._drag_moved = False
+        self._drag_velocity = QPointF(0, 0)
+        self._drag_hover = False
+        self._drag_prepare_active = False
+        self._drag_prepare_timer.stop()
+        self._collapse_timer.stop()
+        if self._drop_open_animation is not None:
+            self._drop_open_animation.stop()
+        # Children may already be deleted during shutdown; no repaint/reposition here.
+        self._drop_open_progress = 0.0
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_external_drag_candidate()
         self._reset_drop_visual_state()
         self._drop_feedback_anchor_global = None
+        self._visual_timer.stop()
         super().hideEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -5557,13 +5699,13 @@ class HaypileFloatingBall(QWidget):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self._toggle_quick_menu()
-            event.accept()
+            # Qt replaces the second press with this event; release owns the toggle.
+            self.mousePressEvent(event)
             return
         super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if event.buttons() & Qt.MouseButton.LeftButton:
+        if self._pointer_press_owned and event.buttons() & Qt.MouseButton.LeftButton:
             if (event.globalPosition().toPoint() - self._press_global_pos).manhattanLength() > 5:
                 self._drag_moved = True
                 self._window_drag_active = True
@@ -5579,6 +5721,9 @@ class HaypileFloatingBall(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            if not self._pointer_press_owned:
+                event.ignore()
+                return
             self._pointer_press_owned = False
             self._clear_external_drag_candidate()
             self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -5598,6 +5743,10 @@ class HaypileFloatingBall(QWidget):
         super().mouseReleaseEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if (self._closing or self.library_worker is not None or self.worker is not None or self.remote_worker is not None
+                or self._pending_ingest_finish is not None):
+            event.ignore()
+            return
         if not self._storage_ready:
             event.ignore()
             return
@@ -5613,7 +5762,11 @@ class HaypileFloatingBall(QWidget):
             self._update_drag_awareness_target_local(event.position())
             self._collapse_timer.stop()
             event.acceptProposedAction()
-            self._drag_prepare_timer.start()
+            if self.is_expanded:
+                self._drag_prepare_timer.stop()
+                self._open_drop_target()
+            elif not self._drag_prepare_timer.isActive():
+                self._drag_prepare_timer.start()
             self._sync_visual_timer()
             self.update()
             return
@@ -5642,9 +5795,16 @@ class HaypileFloatingBall(QWidget):
         self.update()
 
     def dropEvent(self, event: QDropEvent) -> None:
+        if (self._closing or self.library_worker is not None or self.worker is not None or self.remote_worker is not None
+                or self._pending_ingest_finish is not None):
+            if self._drag_hover:
+                self._abandon_drag_hover_drop()
+            event.ignore()
+            return
         if not self._ensure_storage_ready():
             event.ignore()
             return
+        self._last_remote_urls = []
         mime_data = event.mimeData()
         route = resolve_intake_route(
             local_files=self._extract_local_files(mime_data),
@@ -5691,12 +5851,13 @@ class HaypileFloatingBall(QWidget):
         if not self._drag_hover:
             return
         self._drag_prepare_active = False
-        if self._drop_visual_kind == "gif":
+        if self._drop_visual_kind == "gif" and self._gif_expand_started_at <= 0.0:
             self._gif_expand_started_at = time.monotonic()
         self._capture_drop_anchors()
+        if not self.is_expanded:
+            self._animate_size(self.EXPANDED_SIZE)
         self._animate_drop_open(True)
         self._sync_visual_timer()
-        self._animate_size(self.EXPANDED_SIZE)
 
     def _poll_external_drag_candidate(self) -> None:
         if self._closing:
@@ -5765,11 +5926,12 @@ class HaypileFloatingBall(QWidget):
             self.update()
 
     def _update_drag_awareness_target_global(self, cursor_pos: QPoint) -> None:
-        center = self.mapToGlobal(self._get_collapsed_circle_rect().center())
+        center = self._drop_anchor_global or self.mapToGlobal(self._get_collapsed_circle_rect().center())
         self._set_drag_awareness_target(QPointF(cursor_pos - center))
 
     def _update_drag_awareness_target_local(self, cursor_pos: QPointF) -> None:
-        center = QPointF(self._get_collapsed_circle_rect().center())
+        center = QPointF(self.mapFromGlobal(self._drop_anchor_global) if self._drop_anchor_global is not None
+                         else self._get_collapsed_circle_rect().center())
         self._set_drag_awareness_target(cursor_pos - center)
 
     def _set_drag_awareness_target(self, direction: QPointF) -> None:
@@ -5897,6 +6059,7 @@ class HaypileFloatingBall(QWidget):
             self.show_toast(ui_text("正在入库中，请稍后", "Import in progress"), tone="progress")
             return
 
+        self._last_remote_urls = []
         route = resolve_intake_route(
             local_files=self._extract_local_files(mime_data),
             remote_urls=self._extract_remote_media_urls(mime_data),
@@ -6071,7 +6234,8 @@ class HaypileFloatingBall(QWidget):
 
     def _ingest_busy(self) -> bool:
         return bool(
-            self.worker is not None
+            self.library_worker is not None
+            or self.worker is not None
             or self.remote_worker is not None
             or bool(self._web_candidates)
             or self._pending_ingest_finish is not None
@@ -6124,10 +6288,7 @@ class HaypileFloatingBall(QWidget):
         )
         self.quick_menu.set_progress(5, ui_text("正在获取网页素材...", "Fetching web assets..."))
 
-    @staticmethod
-    def _delete_remote_temp(path: Path) -> None:
-        path.unlink(missing_ok=True)
-        provenance_path_for(path).unlink(missing_ok=True)
+    _delete_remote_temp = staticmethod(_delete_remote_temp)
 
     def _cleanup_remote_ingest_paths(self) -> None:
         for path in self._remote_ingest_paths:
@@ -6199,6 +6360,8 @@ class HaypileFloatingBall(QWidget):
     def _start_worker(self, files: list[Path]) -> None:
         if self._closing or not self._ensure_storage_ready():
             return
+        if not any(path in self._remote_ingest_paths for path in files):
+            self._last_remote_urls = []
         merged_files: list[Path] = []
         seen: set[str] = set()
         for file_path in files:
@@ -6423,17 +6586,41 @@ class HaypileFloatingBall(QWidget):
                 return
             if not bundles:
                 continue
-            self.ai_batch_worker = AIBatchWorker(
-                batch_id,
-                bundles,
-                self.assets_dir,
-                self._current_ai_provider_config(),
-                settings=self.settings,
-            )
-            self.ai_batch_worker.finished_signal.connect(self._on_ai_batch_finished)
+            try:
+                self.ai_batch_worker = AIBatchWorker(
+                    batch_id,
+                    bundles,
+                    self.assets_dir,
+                    self._current_ai_provider_config(),
+                    settings=self.settings,
+                )
+            except (OSError, RuntimeError, ValueError):
+                self._ai_batch_queue.clear()
+                self.show_toast(ui_text(
+                    "素材已保存 · AI 辅助未启动，请检查 AI 设置或稍后重试",
+                    "Assets saved · AI assistance could not start; check AI settings or retry later",
+                ), tone="pending")
+                self._sync_visual_timer()
+                return
+            self._ai_batch_result = None
+            self.ai_batch_worker.finished_signal.connect(self._remember_ai_batch_result)
+            self.ai_batch_worker.finished.connect(self._finish_ai_batch)
             self.ai_batch_worker.start()
             self._sync_visual_timer()
             return
+
+    def _remember_ai_batch_result(self, batch_id: str, message: str, result_status: str) -> None:
+        if self.sender() is self.ai_batch_worker:
+            self._ai_batch_result = (batch_id, message, result_status)
+
+    def _finish_ai_batch(self) -> None:
+        worker = self.sender()
+        if worker is None or worker is not self.ai_batch_worker:
+            return
+        result = self._ai_batch_result or (
+            worker.batch_id, ui_text("AI 整理已取消", "AI sorting cancelled"), "cancelled",
+        )
+        self._on_ai_batch_finished(*result)
 
     def _on_ai_batch_finished(self, batch_id: str, message: str, result_status: str) -> None:
         if self._closing:
@@ -6450,9 +6637,7 @@ class HaypileFloatingBall(QWidget):
                 message,
                 tone="success"
                 if result_status == "success"
-                else "pending"
-                if result_status == "partial_success"
-                else "error",
+                else "pending",
             )
         self._sync_visual_timer()
         self._start_next_ai_batch()
@@ -6466,7 +6651,8 @@ class HaypileFloatingBall(QWidget):
             self.show_toast(ui_text("请先开启 AI 整理", "Enable AI sorting first"), tone="error")
             return
         self._enqueue_ai_batch(str(latest["id"]))
-        self.show_toast(ui_text("已加入 AI 整理队列", "Added to AI sorting queue"), tone="progress")
+        if self.ai_batch_worker is not None or self._ai_batch_queue:
+            self.show_toast(ui_text("已加入 AI 整理队列", "Added to AI sorting queue"), tone="progress")
 
     def _on_ingest_progress(self, percent: int, text: str) -> None:
         if self._active_ingest_visual_kind == "gif":
@@ -6512,11 +6698,14 @@ class HaypileFloatingBall(QWidget):
             if self._geometry_animation is not None:
                 self._geometry_animation.stop()
             self.is_expanded = target_size > self.COLLAPSED_SIZE
-            self.setGeometry(self._clamped_geometry_for_size(target_size))
+            target = (self._drop_origin_geometry if target_size == self.COLLAPSED_SIZE
+                      and self._drop_origin_geometry is not None else self._clamped_geometry_for_size(target_size))
+            self.setGeometry(target)
             self.setFixedSize(target_size, target_size)
             self._update_window_mask()
             if target_size == self.COLLAPSED_SIZE:
                 self._drop_anchor_global = None
+                self._drop_origin_geometry = None
                 self._drop_feedback_anchor_global = None
                 self._reset_drop_visual_state()
             self.update()
@@ -6571,11 +6760,12 @@ class HaypileFloatingBall(QWidget):
 
     def _capture_drop_anchors(self) -> None:
         if self._drop_anchor_global is None:
+            self._drop_origin_geometry = QRect(self.geometry())
             self._drop_anchor_global = self.mapToGlobal(
                 self._get_collapsed_circle_rect().center()
             )
         if self._drop_feedback_anchor_global is None:
-            target_center = self._clamped_geometry_for_size(self.EXPANDED_SIZE).center()
+            target_center = self._drop_anchor_global
             self._drop_feedback_anchor_global = QRect(
                 target_center.x() - 33,
                 target_center.y() - 33,
@@ -6692,8 +6882,7 @@ class HaypileFloatingBall(QWidget):
             if self._gif_open_timer.isActive() or self._gif_suction_animation is not None:
                 self._cancel_gif_suction()
                 self._close_drop_target()
-            self._ai_batch_queue.clear()
-            self._shutdown_ai_batch_worker()
+            self._cancel_ai_sorting()
         else:
             self.ai_enabled = self._restore_ai_enabled()
             if self.isVisible() and (sys.platform == "darwin" or sys.platform.startswith("win")):
@@ -6753,15 +6942,22 @@ class HaypileFloatingBall(QWidget):
             model=str(self.settings.VISION_CLASSIFIER_MODEL),
         )
 
+    def _cancel_ai_sorting(self) -> None:
+        self._ai_batch_queue.clear()
+        for worker in (self.ai_batch_worker, self.material_panel.ai_refresh_worker):
+            if worker is not None:
+                # Keep ownership until finished; interruption also prevents late result writes.
+                worker.requestInterruption()
+
     def _set_ai_provider_mode(self, mode: str) -> None:
         if mode not in {"local", "api", "off"}:
             return
+        if mode != self.ai_provider_mode or mode == "off" or self.low_power_enabled:
+            self._cancel_ai_sorting()
         self.ai_provider_mode = mode
         self._ai_preference = mode != "off"
         if mode == "off" or self.low_power_enabled:
             self.ai_enabled = False
-            self._ai_batch_queue.clear()
-            self._shutdown_ai_batch_worker()
         elif mode == "local":
             self.ai_enabled = True
         else:
@@ -6805,12 +7001,21 @@ class HaypileFloatingBall(QWidget):
             return
         key = entered_key
         if not key and host == self.ai_api_authorized_host:
-            key = self._session_api_key or SystemCredentialStore.get(host)
+            key = self._session_api_key
+            if not key:
+                try:
+                    key = SystemCredentialStore.get(host)
+                except Exception:
+                    key = ""
         if not key:
             self.show_toast(ui_text("请填写 API 密钥", "Enter an API key"), tone="error")
             return
 
-        stored = SystemCredentialStore.set(host, key)
+        self._cancel_ai_sorting()
+        try:
+            stored = SystemCredentialStore.set(host, key)
+        except Exception:
+            stored = False
         self.ai_provider_mode = "api"
         self.ai_api_base_url = base_url
         self.ai_api_model = model
@@ -6885,23 +7090,12 @@ class HaypileFloatingBall(QWidget):
         self.ai_batch_worker.deleteLater()
         self.ai_batch_worker = None
 
-    def _shutdown_ai_refresh_worker(self) -> None:
-        worker = self.material_panel.ai_refresh_worker
-        if worker is None:
-            return
-        if worker.isRunning():
-            worker.requestInterruption()
-            return
-        worker.deleteLater()
-        self.material_panel.ai_refresh_worker = None
-
     def shutdown(self) -> None:
         if self._cleanup_done or self._closing:
             return
         self._closing = True
-        if not (self.intake_card._dragging or self.intake_card._exporting):
-            self.intake_card.dismiss("shutdown")
-        self.intake_card._cancel_preview()
+        self.quick_ring.hide()
+        self.intake_card.begin_shutdown()
         self._shutdown_started_at = time.monotonic()
         self._shutdown_wait_notice_shown = False
         self._collapse_timer.stop()
@@ -6915,17 +7109,14 @@ class HaypileFloatingBall(QWidget):
         self._sound_feedback.set_enabled(False)
         if self._drop_open_animation is not None:
             self._drop_open_animation.stop()
-        if self._audio_suction_animation is not None:
-            self._audio_suction_animation.stop()
-        if self._gif_suction_animation is not None:
-            self._gif_suction_animation.stop()
+        self._cancel_audio_suction()
+        self._cancel_gif_suction()
+        if self.library_worker is not None:
+            self.library_worker.requestInterruption()
         self._shutdown_remote_worker()
         self._shutdown_worker()
         self._shutdown_ai_batch_worker()
-        self._shutdown_ai_refresh_worker()
-        self.material_panel._font_preview_closing = True
-        self.material_panel._stop_audio_preview()
-        self.material_panel._cancel_font_preview()
+        self.material_panel.begin_shutdown()
         self.shutdown_requested.emit()
         self.show_toast(
             ui_text("正在安全结束当前操作", "Finishing the current operation safely"),
@@ -6938,21 +7129,19 @@ class HaypileFloatingBall(QWidget):
         self._shutdown_remote_worker()
         self._shutdown_worker()
         self._shutdown_ai_batch_worker()
-        self._shutdown_ai_refresh_worker()
+        self.material_panel.poll_shutdown()
         workers_done = all(
             worker is None
             for worker in (
+                self.library_worker,
                 self.remote_worker,
                 self.worker,
                 self.ai_batch_worker,
-                self.material_panel.ai_refresh_worker,
-                self.material_panel.font_preview_worker,
-                self.intake_card.font_preview_worker,
             )
         )
         # Native operations dispatch nested events and still own the card until they return.
-        native_operations_done = not (self.intake_card._dragging or self.intake_card._exporting)
-        if workers_done and native_operations_done:
+        native_operations_done = not (self.intake_card.shutdown_pending or self._library_dialog_active)
+        if workers_done and native_operations_done and not self.material_panel.shutdown_pending:
             self.intake_card.dismiss("shutdown")
             self._shutdown_timer.stop()
             if not self._shutdown_ready_emitted:
@@ -6980,6 +7169,8 @@ class HaypileFloatingBall(QWidget):
         self._cleanup_remote_ingest_paths()
         self._cleanup_done = True
         self._shutdown_timer.stop()
+        self.quick_ring.hide()
+        self.quick_ring.deleteLater()
         self.intake_card.hide()
         self.intake_card.deleteLater()
         self.quick_menu.hide()
@@ -7002,20 +7193,24 @@ class HaypileFloatingBall(QWidget):
         self._reposition_quick_menu()
 
     def _close_attached_ui(self) -> None:
+        self.quick_ring.hide()
         self.intake_card.dismiss("close")
         self.quick_menu.hide_menu()
         QTimer.singleShot(0, self._refresh_pending_badge)
 
     def _toggle_quick_menu(self) -> None:
-        if self.quick_menu.isVisible() or self.intake_card.isVisible():
+        if self.library_worker is not None:
+            self._handle_quick_menu_action("settings")
+            return
+        if self.quick_ring.isVisible() or self.quick_menu.isVisible() or self.intake_card.isVisible():
             self._close_attached_ui()
             return
         if self.remote_worker is not None:
             self.intake_card.show_message(ui_text("正在查找网页素材…", "Finding page assets…"), "progress")
+            self.intake_card.activateWindow()
+            self.intake_card.close_button.setFocus(Qt.FocusReason.MouseFocusReason)
         else:
-            self.intake_card.show_recent()
-        self.intake_card.activateWindow()
-        self.intake_card.close_button.setFocus(Qt.FocusReason.MouseFocusReason)
+            self.quick_ring.open()
         self._sound_feedback.play("nav")
 
     def _show_context_menu(self, point: QPoint) -> None:
@@ -7027,6 +7222,26 @@ class HaypileFloatingBall(QWidget):
             item.triggered.connect(lambda _checked=False, target=action: self.shutdown() if target == "quit" else self._handle_quick_menu_action(target))
         menu.aboutToHide.connect(menu.deleteLater)
         menu.popup(point)
+
+    @property
+    def is_closing(self) -> bool:
+        return self._closing
+
+    @property
+    def search_active(self) -> bool:
+        return self.remote_worker is not None
+
+    @property
+    def can_retry_search(self) -> bool:
+        return bool(self._last_remote_urls)
+
+    @property
+    def can_collect(self) -> bool:
+        return self.worker is None and not self._closing
+
+    def _retry_web_search(self) -> None:
+        if self.can_retry_search and not self._ingest_busy():
+            self._start_remote_download_worker(self._last_remote_urls)
 
     def _discard_web_candidates(self) -> None:
         for candidate in self._web_candidates:
@@ -7049,6 +7264,8 @@ class HaypileFloatingBall(QWidget):
         self.intake_card.dismiss("cancel")
 
     def _reposition_quick_menu(self) -> None:
+        if hasattr(self, "quick_ring") and self.quick_ring.isVisible():
+            self.quick_ring.reposition()
         if hasattr(self, "intake_card") and self.intake_card.isVisible():
             self.intake_card.reposition()
         self.quick_menu.reposition(self._ball_anchor_rect(), self._available_geometry(), allow_flip=False)
@@ -7056,7 +7273,114 @@ class HaypileFloatingBall(QWidget):
     def _align_quick_menu_track_to_ball(self) -> None:
         self._reposition_quick_menu()
 
+    def _run_library_operation(self, action, path=None, expected=None):
+        if self._closing or self.library_worker is not None:
+            return
+        if (self._ingest_busy() or self.ai_batch_worker is not None or
+                self.material_panel.ai_refresh_active or
+                self.intake_card.native_operation_active):
+            self.show_toast(ui_text("请等待当前操作结束后再备份或恢复", "Wait for the current operation to finish"), tone="error")
+            return
+        if not self._ensure_storage_ready():
+            return
+        if path is None:
+            self._library_dialog_active = True
+            try:
+                if action == "backup":
+                    path, _ = QFileDialog.getSaveFileName(self.quick_menu, ui_text("备份素材库", "Back up library"),
+                        str(Path.home() / "Haypile-library.haypile.zip"), "Haypile (*.haypile.zip)")
+                else:
+                    path, _ = QFileDialog.getOpenFileName(self.quick_menu, ui_text("从备份恢复", "Restore backup"),
+                        str(Path.home()), "Haypile (*.haypile.zip)")
+            finally:
+                self._library_dialog_active = False
+            if not path or self._closing:
+                return
+            self._run_library_operation(action, path, expected)
+            return
+        worker = LibraryBackupWorker(self.settings, action, Path(path), expected)
+        self.library_worker = worker
+        self.setAcceptDrops(False)
+        self.material_panel.setEnabled(False)
+        self.quick_menu.backup_button.setEnabled(False)
+        self.quick_menu.restore_button.setEnabled(False)
+        self.quick_menu.backup_cancel_button.setEnabled(True)
+        self.quick_menu.backup_cancel_button.show()
+        label = {"backup": ui_text("正在备份", "Backing up"), "inspect": ui_text("正在校验备份", "Checking backup"),
+                 "restore": ui_text("正在恢复", "Restoring")}[action]
+        self.quick_menu.show_operation_progress(label + "…")
+        worker.progress_signal.connect(lambda value: self.quick_menu.show_operation_progress(label + " · " + value))
+        worker.finished.connect(self._library_operation_finished)
+        worker.start()
+
+    def _library_operation_finished(self):
+        worker = self.library_worker
+        if worker is None:
+            return
+        self.library_worker = None
+        worker.deleteLater()
+        if self._closing:
+            self._poll_shutdown()
+            return
+        self.setAcceptDrops(self._storage_ready)
+        self.material_panel.setEnabled(True)
+        self.quick_menu.backup_button.setEnabled(True)
+        self.quick_menu.restore_button.setEnabled(True)
+        self.quick_menu.backup_cancel_button.hide()
+        if worker.error:
+            messages = {
+                "cancelled": ("已取消", "Cancelled"),
+                "library_busy": ("素材库正在使用，请稍后重试", "Library is busy; try again shortly"),
+                "library_not_empty": ("只能恢复到空素材库，现有素材未被覆盖", "Restore requires an empty library; existing assets were not overwritten"),
+                "insufficient_space": ("磁盘空间不足，请清理空间后重试", "Not enough free disk space"),
+                "destination_inside_library": ("请将备份保存到素材库之外", "Save the backup outside the library"),
+                "custom_storage_layout": ("当前自定义存储布局暂不支持备份恢复", "Custom storage layouts are not supported yet"),
+                "library_changed": ("素材库有变化，请稍后重新备份", "Library changed; please back up again"),
+                "unindexed_assets": ("素材索引不完整，请重启后再备份", "Incomplete asset index; restart before backing up"),
+            }
+            self.show_toast(ui_text(*messages.get(worker.error, ("未能完成，请检查备份文件及磁盘权限后重试", "Could not complete; check the backup and disk permissions"))),
+                            tone="success" if worker.error == "cancelled" else "error")
+            return
+        if worker.action == "inspect":
+            count = worker.result['asset_count']
+            self._library_dialog_active = True
+            try:
+                answer = QMessageBox.question(self.quick_menu, ui_text("恢复素材库", "Restore library"),
+                    ui_text(f"备份校验通过，共 {count} 个素材。仅恢复到空素材库，开始恢复？", f"Backup verified: {count} assets. Restore into this empty library?"),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
+            finally:
+                self._library_dialog_active = False
+            if self._closing:
+                return
+            if answer == QMessageBox.StandardButton.Yes:
+                self._run_library_operation("restore", worker.path, worker.result['fingerprint'])
+            else:
+                self.show_toast(ui_text("已取消恢复", "Restore cancelled"), tone="success")
+            return
+        if worker.action == "restore":
+            self.material_panel.refresh()
+            self._refresh_pending_badge()
+            self._refresh_ai_menu_status()
+        self.show_toast(ui_text(f"已{'备份' if worker.action == 'backup' else '恢复'} {worker.result} 个素材",
+                               f"{'Backed up' if worker.action == 'backup' else 'Restored'} {worker.result} assets"), tone="success")
+
     def _handle_quick_menu_action(self, action: str) -> None:
+        self.quick_ring.hide()
+        if action == "library_cancel":
+            if self.library_worker is not None:
+                self.library_worker.requestInterruption()
+                self.quick_menu.backup_cancel_button.setEnabled(False)
+            return
+        if self.library_worker is not None and action not in {"exit", "settings"}:
+            return
+        if action in {"library_backup", "library_restore"}:
+            self._run_library_operation("backup" if action == "library_backup" else "inspect")
+            return
+        if action == "recent":
+            self.intake_card.show_recent()
+            self.intake_card.activateWindow()
+            self.intake_card.close_button.setFocus(Qt.FocusReason.MouseFocusReason)
+            return
         if action == "assets":
             if self.quick_menu.current_page() != action:
                 self._sound_feedback.play("nav")
@@ -7104,7 +7428,7 @@ class HaypileFloatingBall(QWidget):
                 return
             QApplication.clipboard().setText(
                 json.dumps(
-                    self.material_panel._handoff_for_bundles(bundles, batch_id=batch_id),
+                    build_catalog_handoff(bundles, base_url=self._base_url(), manifest_path=self.settings.MANIFEST_PATH, batch_id=batch_id),
                     ensure_ascii=False,
                     indent=2,
                 )
@@ -7130,18 +7454,18 @@ class HaypileFloatingBall(QWidget):
                 self.show_toast(ui_text("没有可用素材", "No ready assets"), tone="error")
                 return
             QApplication.clipboard().setText(
-                json.dumps(self.material_panel._handoff_for_bundles(bundles), ensure_ascii=False, indent=2)
+                json.dumps(build_catalog_handoff(bundles, base_url=self._base_url(), manifest_path=self.settings.MANIFEST_PATH), ensure_ascii=False, indent=2)
             )
             self.show_toast(ui_text(f"已复制 {len(bundles)} 个可用素材", f"Copied {len(bundles)} ready assets"), tone="success")
             return
         if action == "agent_recipe":
-            QApplication.clipboard().setText(self.material_panel._agent_recipe_text())
+            QApplication.clipboard().setText(build_agent_recipe(self._base_url()))
             self.show_toast(ui_text("已复制 Agent 配方", "Agent recipe copied"), tone="success")
             return
         if action == "ai_setup":
             if self.quick_menu.current_page() != "ai":
                 self._sound_feedback.play("nav")
-            self._show_ai_setup_panel(self._ai_model_status_text())
+            self._show_ai_setup_panel(self._ai_status_text())
             return
         if action.startswith("ai_provider:"):
             self._set_ai_provider_mode(action.partition(":")[2])
@@ -7155,7 +7479,7 @@ class HaypileFloatingBall(QWidget):
                 return
             self.ai_provider_mode = "local"
             state, status_text = self._ai_model_state()
-            if state != "ready":
+            if state != "installed":
                 self.ai_enabled = False
                 self._show_ai_setup_panel(status_text)
                 return
@@ -7238,6 +7562,13 @@ class HaypileFloatingBall(QWidget):
             api_model=self.ai_api_model,
             api_key_present=self.ai_api_key_present,
         )
+        panel = self.material_panel
+        if not self.ai_enabled:
+            panel.retry_ai_button.hide()
+        elif panel._selected_bundle_id:
+            bundle = panel._get_bundle_safely(panel._selected_bundle_id)
+            if bundle is not None:
+                panel._refresh_retry_ai_button(bundle)
 
     def _on_backend_phase_changed(self, phase: str) -> None:
         self._backend_phase = str(phase or "idle").strip().lower()
@@ -7286,21 +7617,18 @@ class HaypileFloatingBall(QWidget):
             return ui_text("AI 分拣已关闭", "AI sorting off")
         if self.ai_provider_mode == "api":
             return (
-                ui_text(f"API 模式 · {self.ai_api_model}", f"API mode · {self.ai_api_model}")
+                ui_text(f"API 已配置 · {self.ai_api_model} · 能力以实际整理结果为准", f"API configured · {self.ai_api_model} · capability depends on actual sorting results")
                 if self.ai_enabled
                 else ui_text("API 模式 · 等待授权", "API mode · authorization needed")
             )
-        return ui_text("本地模型模式", "Local model mode")
-
-    def _ai_model_status_text(self) -> str:
-        return self._ai_model_state()[1]
+        return ui_text("本地模型模式 · 能力以实际整理结果为准", "Local model · capability depends on actual sorting results")
 
     def _ai_model_state(self) -> tuple[str, str]:
         if self.ai_provider_mode == "off":
             return "off", ui_text("AI 分拣已关闭", "AI sorting off")
         if self.ai_provider_mode == "api":
             if self.ai_enabled and self._session_api_key:
-                return "ready", ui_text(f"API 已配置 {self.ai_api_model}", f"API configured {self.ai_api_model}")
+                return "configured", self._ai_status_text()
             return "missing", ui_text("API 等待授权", "API authorization needed")
         model = str(self.settings.VISION_CLASSIFIER_MODEL or "").strip() or "unknown"
         base_url = str(self.settings.VISION_CLASSIFIER_BASE_URL or "").rstrip("/")
@@ -7308,7 +7636,10 @@ class HaypileFloatingBall(QWidget):
             return "missing", ui_text(f"模型未配置 {model}", f"Model not configured {model}")
         try:
             response = httpx.get(f"{base_url}/api/tags", timeout=0.25, trust_env=False)
+            response.raise_for_status()
             payload = response.json()
+            if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+                raise ValueError("invalid_model_inventory")
         except (httpx.HTTPError, ValueError):
             return "offline", ui_text(f"模型离线 {model}", f"Model offline {model}")
         names = {
@@ -7319,30 +7650,17 @@ class HaypileFloatingBall(QWidget):
             if value
         }
         if model in names:
-            return "ready", ui_text(f"模型可用 {model}", f"Model ready {model}")
+            return "installed", ui_text(f"模型已安装 {model} · 能力以实际整理结果为准", f"Model installed {model} · capability depends on actual sorting results")
         return "missing", ui_text(f"模型未安装 {model}", f"Model missing {model}")
 
     def _show_ai_setup_panel(self, status_text: str) -> None:
         self.quick_menu.open_drawer("ai", self._ball_anchor_rect(), self._available_geometry())
         self.quick_menu.ai_status_label.setText(status_text)
-        if self.ai_provider_mode == "local" and self._ai_model_state()[0] != "ready":
-            self.show_toast(ui_text("先安装本地视觉模型", "Install the local vision model first"), tone="pending")
 
     def _recheck_ai_setup(self) -> None:
-        if self.ai_provider_mode == "off":
-            self.ai_provider_mode = "local"
-        if self.ai_provider_mode != "local":
-            self._refresh_ai_menu_status()
-            return
         state, status_text = self._ai_model_state()
-        if state == "ready":
-            self.ai_enabled = True
-            self._ai_preference = True
-            self._save_ai_enabled()
-            self._refresh_ai_menu_status()
-            self.show_toast(self._ai_status_text(), tone="success")
-            return
-        self._show_ai_setup_panel(status_text)
+        self.quick_menu.ai_status_label.setText(status_text)
+        self.show_toast(status_text, tone="success" if state in {"installed", "configured", "off"} else "pending")
 
     def _clear_busy_exit_armed(self) -> None:
         self._busy_exit_armed = False
@@ -7482,14 +7800,22 @@ class HaypileFloatingBall(QWidget):
         if hasattr(self, "quick_menu") and self.quick_menu.isVisible():
             self._reposition_quick_menu()
 
+    def _drop_panel_rect(self) -> QRectF:
+        size = min(self.width(), self.height()) * 0.47
+        if self._drop_anchor_global is not None:
+            anchor = self.mapFromGlobal(self._drop_anchor_global)
+            clearance = min(anchor.x(), anchor.y(), self.width() - anchor.x(), self.height() - anchor.y())
+            # Leaf outline reaches 0.56 of the panel width; keep its glow inside the edge.
+            size = min(size, max(1.0, (clearance - 6) / 0.56))
+        center = QRectF(self.rect()).center()
+        return QRectF(center.x() - size / 2, center.y() - size / 2, size, size)
+
     def _drop_visual_offset(self, progress: float) -> QPointF:
         if self._drop_anchor_global is None:
             return QPointF()
-        progress = max(0.0, min(float(progress), 1.0))
-        eased = progress * progress * (3.0 - 2.0 * progress)
         center = QRectF(self.rect()).center()
         anchor = QPointF(self.mapFromGlobal(self._drop_anchor_global))
-        return (anchor - center) * (1.0 - eased)
+        return anchor - center
 
     def _get_audio_suction_progress(self) -> float:
         return self._audio_suction_progress
@@ -7514,7 +7840,7 @@ class HaypileFloatingBall(QWidget):
         animation.setStartValue(0.0)
         animation.setEndValue(1.0)
         animation.finished.connect(self._finish_audio_suction)
-        animation.start()
+        animation.start(QVariantAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def _finish_audio_suction(self) -> None:
         self._audio_suction_animation = None
@@ -7547,7 +7873,7 @@ class HaypileFloatingBall(QWidget):
         animation.setStartValue(0.0)
         animation.setEndValue(1.0)
         animation.finished.connect(self._finish_gif_suction)
-        animation.start()
+        animation.start(QVariantAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def _finish_gif_suction(self) -> None:
         self._gif_suction_animation = None
@@ -7563,14 +7889,21 @@ class HaypileFloatingBall(QWidget):
             return
         self._capture_drop_anchors()
         self._collapse_timer.stop()
+        if not self.is_expanded:
+            self._animate_size(self.EXPANDED_SIZE)
         self._animate_drop_open(True)
-        self._animate_size(self.EXPANDED_SIZE)
         self._gif_open_timer.start()
         self._sync_visual_timer()
 
     def _close_drop_target(self) -> None:
         self._animate_drop_open(False)
         self._collapse_timer.start()
+
+    def _finish_drop_close(self) -> None:
+        if self._drag_hover or self._drop_open_progress > 0.0:
+            return
+        self._collapse_timer.stop()
+        self._animate_size(self.COLLAPSED_SIZE)
 
     def _reset_drop_visual_state(self) -> None:
         self._cancel_audio_suction()
@@ -7581,17 +7914,24 @@ class HaypileFloatingBall(QWidget):
     def _animate_drop_open(self, opened: bool) -> None:
         target = 1.0 if opened else 0.0
         if self._drop_open_animation is not None and self._drop_open_animation.state() == QVariantAnimation.State.Running:
+            if self._drop_open_animation.endValue() == target:
+                return
             self._drop_open_animation.stop()
         if abs(self._drop_open_progress - target) < 0.01:
             self._set_drop_open_progress(target)
             return
-        animation = QVariantAnimation(self)
-        self._drop_open_animation = animation
-        animation.valueChanged.connect(self._set_drop_open_progress)
-        animation.setDuration(210 if opened else 170)
-        animation.setEasingCurve(QEasingCurve.Type.OutCubic if opened else QEasingCurve.Type.InOutCubic)
-        animation.setStartValue(self._drop_open_progress)
-        animation.setEndValue(target)
+        if self._drop_open_animation is None:
+            self._drop_open_animation = QVariantAnimation(self)
+            self._drop_open_animation.valueChanged.connect(self._set_drop_open_progress)
+            self._drop_open_animation.finished.connect(self._finish_drop_close)
+        animation = self._drop_open_animation
+        # Retiming a reused animation emits intermediate values unless signals are blocked.
+        with QSignalBlocker(animation):
+            animation.setDuration(210 if opened else 170)
+            animation.setEasingCurve(QEasingCurve.Type.OutCubic if opened else QEasingCurve.Type.InOutCubic)
+            animation.setStartValue(self._drop_open_progress)
+            animation.setEndValue(target)
+            animation.setCurrentTime(0)
         animation.start()
 
     def _tinted_haypile_pixmap(self, color: QColor) -> QPixmap:
@@ -8004,8 +8344,8 @@ class HaypileFloatingBall(QWidget):
         except (ManifestReadinessError, OSError, ValueError):
             logger.debug("Failed to refresh Haypile pending badge")
             self._has_pending_assets = False
-        if not self._has_pending_assets and self.quick_menu._attention_action == "assets":
-            self.quick_menu.set_attention_action("")
+        if not self._has_pending_assets:
+            self.quick_menu.clear_attention_action("assets")
         self.update()
 
     def _busy_breath_icon_rect(self, rect: QRectF, pulse: float) -> QRectF:

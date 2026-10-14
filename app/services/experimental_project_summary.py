@@ -3,12 +3,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
-import time
-import urllib.error
-import urllib.request
 
 from app.services.asset_provenance import read_asset_provenance
 from app.services.real_project_binding import resolve_haypile_real_project_root
@@ -154,7 +150,7 @@ def build_material_panel_summary(
         classification_label = "分类：有待确认"
     else:
         classification_label = "分类：可用"
-    recognition_status = f"{classification_label} · {_classifier_status(settings)}"
+    recognition_status = classification_label
     rehearsal_status, rehearsal_status_label = _rehearsal_status(rehearsal_root)
     binding = resolve_haypile_real_project_root(binding_path=real_project_binding_path)
     resolved_real_project_root = real_project_root or (binding.project_root if binding is not None else None)
@@ -343,43 +339,6 @@ def _build_items(
         )
 
     return items
-
-
-def _classifier_status(settings) -> str:
-    return _classifier_status_cached(
-        bool(settings.VISION_CLASSIFIER_ENABLED),
-        str(settings.VISION_CLASSIFIER_MODEL or "").strip() or "unknown",
-        str(settings.VISION_CLASSIFIER_BASE_URL or "").rstrip("/"),
-        int(time.monotonic() // 5),
-    )
-
-
-@lru_cache(maxsize=2)
-def _classifier_status_cached(
-    enabled: bool,
-    model: str,
-    base_url: str,
-    _ttl_bucket: int | None = None,
-) -> str:
-    _ = _ttl_bucket
-    if not enabled:
-        return "模型：关闭"
-    if not base_url:
-        return f"模型：未配置 {model}"
-    try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(base_url + "/api/tags", timeout=0.25) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
-        return f"模型：离线 {model}"
-    names = {
-        str(value).strip()
-        for item in payload.get("models", [])
-        if isinstance(item, dict)
-        for value in (item.get("name"), item.get("model"))
-        if value
-    }
-    return f"模型：可用 {model}" if model in names else f"模型：未安装 {model}"
 
 
 def _read_theme_assets(themes_dir: Path) -> dict[str, dict[str, Any]]:

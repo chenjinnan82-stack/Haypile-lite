@@ -648,8 +648,8 @@ class FontSupportTests(unittest.TestCase):
             all_bundles = [dict(bundle, id=f"item{index}", type="image", source_key=f"image{index:03}.png")
                            for index in range(201)] + [bundle]
             with patch.object(panel, "_bundle_service", return_value=types.SimpleNamespace(
-                list_bundles=lambda **_kwargs: all_bundles, theme_recoveries=[], get_latest_batch=lambda: None,
-                _asset_path=self.bundles._asset_path)):
+                list_bundles=lambda **_kwargs: all_bundles, theme_read_errors=[], get_latest_batch=lambda: None,
+                asset_path=self.bundles.asset_path)):
                 panel.refresh()
                 self.assertEqual(len(panel._all_recent_items), 202)
                 self.assertEqual(len(panel._recent_items), 1)

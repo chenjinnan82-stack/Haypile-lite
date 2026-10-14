@@ -6,7 +6,7 @@ import os
 import shutil
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from uuid import uuid4
@@ -34,12 +34,12 @@ class StorageRuntimeDB:
     def __init__(self, db_path: Path | None = None) -> None:
         self.db_path = db_path or (get_settings().INDEX_DIR / "storage_runtime.db")
         self.format_path = self.db_path.parent / "storage_format.json"
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_lock = Lock()
         self._initialized = False
         self._upgraded_from_version: int | None = None
 
     def get_connection(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(
             str(self.db_path),
             timeout=8.0,
@@ -50,6 +50,49 @@ class StorageRuntimeDB:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
+
+    def has_asset_records(self) -> bool:
+        """Check recorded state, including links whose files may be missing."""
+        with closing(self.get_connection()) as conn:
+            return conn.execute("SELECT 1 FROM vfs_asset_links LIMIT 1").fetchone() is not None
+
+    def checkpoint(self) -> bool:
+        """Flush WAL before moving the database; false means an active reader blocked it."""
+        with closing(self.get_connection()) as conn:
+            return conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+
+    def prepare_restored_library(
+        self, staged_assets: Path, destination_assets: Path, recent: list[str],
+    ) -> None:
+        """Rebase a freshly rebuilt staging database and restore its recent ordering.
+
+        Call only before installation, while the staging database is exclusively owned.
+        Paths intentionally point to the future destination after this call.
+        """
+        paths = self.asset_hash_index(staged_assets)
+        if len(set(recent)) != len(recent) or not set(recent).issubset(paths):
+            raise ValueError("invalid_restored_recent_assets")
+        now = datetime.now(timezone.utc)
+        with closing(self.get_connection()) as conn, conn:
+            for digest, path in paths.items():
+                destination = destination_assets / path.relative_to(staged_assets)
+                conn.execute(
+                    "UPDATE vfs_asset_links SET dst_path=?,src_path=? WHERE sha256=?",
+                    (str(destination), destination.name, digest),
+                )
+            for index, digest in enumerate(recent):
+                timestamp = (now - timedelta(seconds=index)).isoformat()
+                batch = f"restored-{index}"
+                conn.execute(
+                    "INSERT INTO ingest_batches (id,created_at,completed_at,state,accepted_count) "
+                    "VALUES (?,?,?,'completed',1)", (batch, timestamp, timestamp),
+                )
+                conn.execute(
+                    "INSERT INTO ingest_batch_assets (batch_id,sha256,ordinal) VALUES (?,?,0)",
+                    (batch, digest),
+                )
+        if not self.checkpoint():
+            raise TimeoutError("restored_library_busy")
 
     def ensure_ready(self) -> None:
         with self._init_lock:
@@ -397,23 +440,29 @@ class StorageRuntimeDB:
             )
             conn.commit()
 
+    def _read_rows(self, query: str, parameters: tuple = ()) -> list[tuple]:
+        """Queries never initialize or migrate storage; startup owns that work."""
+        if not self.db_path.exists():
+            return []
+        with closing(sqlite3.connect(f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=8.0)) as conn:
+            return conn.execute(query, parameters).fetchall()
+
     def latest_batch(self) -> dict[str, object] | None:
-        self.ensure_ready()
-        with closing(self.get_connection()) as conn:
-            row = conn.execute(
-                """
-                SELECT b.id, b.created_at, b.completed_at, b.accepted_count,
-                       b.duplicate_count, b.rejected_count, COUNT(a.sha256)
-                FROM ingest_batches AS b
-                JOIN ingest_batch_assets AS a ON a.batch_id = b.id
-                WHERE b.state = 'completed' AND b.completed_at IS NOT NULL
-                GROUP BY b.id
-                ORDER BY b.completed_at DESC, b.created_at DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        if row is None:
+        rows = self._read_rows(
+            """
+            SELECT b.id, b.created_at, b.completed_at, b.accepted_count,
+                   b.duplicate_count, b.rejected_count, COUNT(a.sha256)
+            FROM ingest_batches AS b
+            JOIN ingest_batch_assets AS a ON a.batch_id = b.id
+            WHERE b.state = 'completed' AND b.completed_at IS NOT NULL
+            GROUP BY b.id
+            ORDER BY b.completed_at DESC, b.created_at DESC
+            LIMIT 1
+            """
+        )
+        if not rows:
             return None
+        row = rows[0]
         return {
             "id": str(row[0]),
             "created_at": str(row[1]),
@@ -431,25 +480,21 @@ class StorageRuntimeDB:
         if requested == "latest":
             latest = self.latest_batch()
             return str(latest["id"]) if latest else ""
-        self.ensure_ready()
-        with closing(self.get_connection()) as conn:
-            row = conn.execute(
-                "SELECT id FROM ingest_batches WHERE id = ? AND state = 'completed'",
-                (requested,),
-            ).fetchone()
-        return requested if row else ""
+        rows = self._read_rows(
+            "SELECT id FROM ingest_batches WHERE id = ? AND state = 'completed'",
+            (requested,),
+        )
+        return requested if rows else ""
 
     def batch_hashes(self, batch_id: str) -> list[str]:
-        self.ensure_ready()
-        with closing(self.get_connection()) as conn:
-            rows = conn.execute(
-                """
-                SELECT sha256 FROM ingest_batch_assets
-                WHERE batch_id = ?
-                ORDER BY ordinal, sha256
-                """,
-                (batch_id,),
-            ).fetchall()
+        rows = self._read_rows(
+            """
+            SELECT sha256 FROM ingest_batch_assets
+            WHERE batch_id = ?
+            ORDER BY ordinal, sha256
+            """,
+            (batch_id,),
+        )
         return [str(row[0]) for row in rows]
 
     @staticmethod

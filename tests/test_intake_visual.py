@@ -87,6 +87,25 @@ class IntakeEntryRendererTests(unittest.TestCase):
         self.assertGreaterEqual(max(colored_x) - min(colored_x) + 1, 68)
         self.assertGreater(max(colored_x) - min(colored_x) + 1, 52)
 
+    def test_audio_layers_follow_an_offset_canvas_at_screen_edges(self) -> None:
+        def draw(offset, dpr):
+            image = QImage(300 * dpr, 300 * dpr, QImage.Format.Format_ARGB32_Premultiplied)
+            image.setDevicePixelRatio(dpr)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self.renderer.paint(painter, QRectF(offset, offset, 120, 120),
+                                QRectF(offset + 32, offset + 32, 56, 56),
+                                IntakeVisualState(kind="audio", open_progress=1.0), device_pixel_ratio=dpr)
+            painter.end()
+            return image.copy(offset * dpr, offset * dpr, 120 * dpr, 120 * dpr)
+        for dpr in (1, 2):
+            with self.subTest(dpr=dpr):
+                origin, shifted = draw(0, dpr), draw(80, dpr)
+                self.assertTrue(any(origin.pixelColor(x, y).alpha()
+                                    for x in range(origin.width()) for y in range(origin.height())))
+                self.assertEqual(origin, shifted)
+
     def test_gif_rhythm_uses_relative_time_and_coral_gold_green_order(self) -> None:
         lifted = []
         for step in range(3):

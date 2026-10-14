@@ -28,39 +28,28 @@
 
 当前源码也会查找网页封面、图片和支持格式的站点图标。字体与图片在同一张卡片内切换，一次预览一个候选，点击“收纳这张”只保存当前图片原文件；图片上限、格式和静态网页边界见[桌面收纳设计](docs/DESKTOP_INTAKE.md)。
 
-点击草堆可找回最近收纳，重复收纳也会更新排序。打开条目即可“复制原文件”或将预览拖到支持该文件的应用，字体卡片还提供“导出”。GIF、SVG、音频和字体均保留原始字节；取用不会自动确认用途或改变交接状态。
+点击草堆展开 C 型快捷环，再选“最近收纳”找回素材，重复收纳也会更新排序。打开条目即可“复制原文件”或将预览拖到支持该文件的应用，字体卡片还提供“导出”。GIF、SVG、音频和字体均保留原始字节；取用不会自动确认用途或改变交接状态。
 
 需要搭配使用时，可在原有“全部素材”管理页新建素材组合，选中素材后用“加入组合…”勾选或取消成员，再选择该组“复制这组可用素材”。组合可跨收纳批次，只保存引用，不复制原文件，关闭后仍会保留。交接清单只包含已确认的可用成员，并显示未交付数量；日常收纳步骤不增加。详见[桌面收纳设计](docs/DESKTOP_INTAKE.md)与 [Agent 使用流程](docs/AGENT_RECIPES.md)。
 
-这是本地验收候选版本，下面的 Alpha.9 历史下载不含字体功能。暂不支持 TTC / OTC、内嵌 SVG 字形、脚本动态创建的样式、字体安装和可变轴编辑。单独拖选中文字需要提供网页地址；页面只声明系统字体时没有可下载文件。详见 [字体收纳与范围](docs/FONT_INTAKE.md)。
+设置中的“备份素材库 / 从备份恢复”支持完整素材库的手动备份和空库迁移恢复，保留原文件、用途、备注、组合和最近顺序。详见[备份恢复说明](docs/LIBRARY_BACKUP.md)。
+
+这是源码验收候选版本，下面的 Alpha.8 历史下载不含字体、网页提取或备份恢复功能。暂不支持 TTC / OTC、内嵌 SVG 字形、脚本动态创建的样式、字体安装和可变轴编辑。单独拖选中文字需要提供网页地址；页面只声明系统字体时没有可下载文件。详见 [字体收纳与范围](docs/FONT_INTAKE.md)。
 
 ## 桌面版下载
 
-`v0.3.0-alpha.9` 是面向知情测试用户的清理版预览。
+目前已发布的下载版本为 `v0.3.0-alpha.8`，面向知情测试用户。上面的 Alpha.10 新功能仍在源码验收阶段，尚未进入下载包。
 
 | 平台 | 下载 | 校验 |
 | --- | --- | --- |
-| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip.sha256) |
-| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-windows-x64.zip.sha256) |
+| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip.sha256) |
+| Windows x64 | [便携 ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-windows-x64.zip.sha256) |
 
-[版本说明](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.9)
-
-> **Alpha.9 清理版：** 本版不增加产品能力，只统一中英文发布信息与可复现构建
-> 元数据，删除一个未使用的媒体识别依赖，并移除 macOS 部署配置中冗余的 Qt
-> DBus 显式请求；图片、原字节 GIF、剪贴板、音频、HTTP、MCP 与 handoff
-> 行为保持不变。
+[版本说明](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.8)
 
 macOS 包采用临时签名且尚未公证，首次启动请右键应用并选择“打开”。Windows
 包尚未签名，请先解压再运行 `Haypile.exe`。Haypile 会保存受控的本地副本，但
 Alpha 版本不应成为不可替代素材的唯一备份。
-
-## Alpha.9 私测产品片（40 秒）
-
-[![观看 Haypile Alpha.9 私测产品片](docs/haypile-alpha9-pilot-poster.webp)](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-pilot-zh-40s.mp4)
-
-本片使用 Alpha.9 当前组件和仓库自有测试素材，展示图片、GIF、音频收纳、重复
-识别、用途确认、最新批次 handoff 与本地 MCP 连接。测试入口会在双平台包、CI
-和项目所有者验收完成后开放。
 
 ## 品牌概念片（60 秒）
 
@@ -74,7 +63,7 @@ Alpha 版本不应成为不可替代素材的唯一备份。
 
 ![Haypile 桌面工作流](docs/haypile-demo.gif)
 
-草堆留在桌面，左键打开最近收纳的小卡片；右键进入“全部素材、Agent、设置、退出”。把文件或网页链接直接拖到草堆上即可开始收纳。卡片宽 280 点，字体信息在卡片内展开；点击原网页时卡片收起，点击继续执行。完整管理在主动选择入口后打开。详见[桌面收纳设计](docs/DESKTOP_INTAKE.md)。
+草堆留在桌面，左键展开 C 型环，再选“最近收纳、全部素材、Agent、设置”；右键菜单保留管理与退出入口。把文件或网页链接直接拖到草堆上即可开始收纳。卡片宽 280 点，字体信息在卡片内展开；点击原网页时卡片收起，点击继续执行。完整管理在主动选择入口后打开。详见[桌面收纳设计](docs/DESKTOP_INTAKE.md)。
 示意图只使用仓库自有示例素材，没有读取用户素材。
 
 ## 三步使用
@@ -121,7 +110,7 @@ Haypile 的本地优先不是一句口号：
   可使用。关闭时只停止本 GUI 拥有的后端。
 - 素材面板、待确认金点与服务状态共用同一份显式存储配置和 manifest
   fail-close 目录；真实项目实验功能不进入常规素材面板启动链路。
-- 日常操作使用草堆与一张非模态卡片，字体候选不再使用大选择框，管理入口移到右键菜单。
+- 日常操作使用草堆、C 型快捷环与一张非模态卡片；环与卡片互斥，字体候选不再使用大选择框，完整管理仅在主动选择后打开。
 - 卡片和管理页保留原生键盘焦点、选中状态与无障碍信息；卡片之外没有透明连接区拦截网页操作。
 - Settings 读取不再准备产品存储或创建 IPC 密钥；CI 与双平台发布构建使用同一
   组精确 Python 和依赖约束。
@@ -133,7 +122,10 @@ Haypile 的本地优先不是一句口号：
 - 图片用途包括背景、主视觉、Logo、图标、内容图和纹理。
 - 技术质量由本地确定性规则判断，不让模型评价审美。
 - Agent 页默认复制最新批次，而不是整个长期素材仓库。
-- AI 可选择“本地模型 / API / 关闭”。音频元数据和手动用途确认不依赖 AI。
+- AI 默认关闭，可自选本地模型或 API；不自动安装或下载模型。收纳、预览、关键词搜索、
+  手动整理、原文件复用和备份恢复均不依赖 AI，已有明确选择会保留。
+- 外部 Agent 通过只读 HTTP/MCP 工具访问素材，使用自身能力。现有工具提供素材信息与
+  受控地址，不承诺任意模型都支持描述找图；看图需要视觉能力及实际图片访问。
 
 ## Agent 接入
 

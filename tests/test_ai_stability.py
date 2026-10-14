@@ -133,6 +133,26 @@ class AIStabilityTests(unittest.TestCase):
         self.service.set_bundle_role(self.bundle["id"], "logo")
         self.assertEqual(self.service.get_bundle(self.bundle["id"])["status"], "ready")
 
+    def test_unavailable_ai_keeps_saved_asset_and_reports_only_assistance_failure(self):
+        import app_gui
+        app_gui.set_ui_language("zh")
+        self.addCleanup(app_gui.set_ui_language, "auto")
+        before = self.path.read_bytes()
+        self.service.set_bundle_role(self.bundle["id"], "logo")
+        for failure in (httpx.ConnectError("offline"), httpx.TimeoutException("timeout"), ValueError("bad response")):
+            for worker_type in (AIRefreshWorker, AIBatchWorker):
+                with self.subTest(failure=type(failure).__name__, worker=worker_type.__name__):
+                    args = (self.bundle,) if worker_type is AIRefreshWorker else ("batch", [self.bundle])
+                    worker = worker_type(*args, self.settings.ASSETS_DIR, settings=self.settings)
+                    worker.style_classifier = SimpleNamespace(classify_image=AsyncMock(side_effect=failure))
+                    signals = []
+                    worker.finished_signal.connect(lambda *values: signals.append(values))
+                    worker.run()
+                    self.assertIn("素材已保存", signals[-1][1])
+                    self.assertEqual(signals[-1][2], False if worker_type is AIRefreshWorker else "failed")
+                    self.assertEqual(self.path.read_bytes(), before)
+                    self.assertEqual(self.service.get_bundle(self.bundle["id"])["role"], "logo")
+
     def test_cancelled_or_changed_inference_does_not_persist(self):
         for mode in ("cancel", "change"):
             with self.subTest(mode=mode):
@@ -192,7 +212,7 @@ class AIStabilityTests(unittest.TestCase):
 
     def test_unsupported_types_have_no_retry_and_do_not_enter_batch(self):
         button = Mock()
-        panel = SimpleNamespace(retry_ai_button=button, ai_refresh_worker=None)
+        panel = SimpleNamespace(retry_ai_button=button, ai_refresh_active=False, _font_preview_closing=False, _panel_ai_enabled=lambda: True)
         for suffix, kind in ((".svg", "image"), (".gif", "image"), (".woff2", "font"), (".mp3", "audio"),
                              (".png", "image"), (".jpg", "image"), (".webp", "image")):
             with self.subTest(suffix=suffix):

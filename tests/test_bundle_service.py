@@ -45,7 +45,7 @@ class BundleServiceTests(unittest.TestCase):
             )
             self.assertEqual(service.list_bundles(role="icon"), [])
 
-    def test_bundle_service_reports_quarantined_theme_recovery(self) -> None:
+    def test_unreadable_theme_is_reported_without_repair_until_explicit_write(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             service = _bundle_service(root)
@@ -54,9 +54,57 @@ class BundleServiceTests(unittest.TestCase):
             bundles = service.list_bundles()
 
             self.assertTrue(bundles)
-            self.assertEqual(len(service.theme_recoveries), 1)
-            self.assertEqual(service.theme_recoveries[0]["theme_id"], "generic")
+            self.assertEqual(service.theme_read_errors, [{"theme_id": "generic"}])
+            self.assertEqual((root / "themes/generic.json").read_text(), "{broken")
+            self.assertFalse((root / "quarantine").exists())
+            service.list_bundles()
+            self.assertEqual(service.theme_read_errors, [{"theme_id": "generic"}])
+            # Confirming a role is an explicit write and retains the original damaged metadata.
+            updated = service.set_bundle_role("generic_img_unknown_eeee", "hero_image")
+            self.assertEqual(updated["role"], "hero_image")
             self.assertTrue(any((root / "quarantine" / "themes").iterdir()))
+            self.assertEqual(service.theme_read_errors, [])
+
+    def test_catalog_queries_do_not_initialize_storage_or_normalize_files_on_disk(self) -> None:
+        from app.services.theme_registry import ThemeRegistry
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            service = _bundle_service(root)
+            theme = root / "themes/generic.json"
+            previous = theme.read_bytes()
+            runtime = StorageRuntimeDB(service.runtime_db_path)
+            batch = runtime.begin_batch()
+            runtime.record_batch_asset(batch, hashlib.sha256(b"hero").hexdigest(), 0)
+            runtime.complete_batch(batch, accepted_count=1, duplicate_count=0, rejected_count=0)
+            with patch.object(StorageRuntimeDB, "ensure_ready", side_effect=AssertionError("query initializes storage")), \
+                 patch.object(StorageRuntimeDB, "get_connection", side_effect=AssertionError("query opens write connection")), \
+                 patch.object(ThemeRegistry, "_write_json", side_effect=AssertionError("query writes theme")), \
+                 patch.object(Path, "mkdir", side_effect=AssertionError("query creates directory")):
+                self.assertTrue(service.list_bundles())
+                self.assertEqual(service.get_latest_batch()["id"], batch)
+                self.assertEqual(len(service.list_bundles(batch_id="latest")), 1)
+                self.assertEqual(service.list_bundles(batch_id=batch), service.list_bundles(batch_id="latest"))
+                self.assertTrue(service.list_recent_bundles())
+                service.runtime_db_path = root / "absent/index/runtime.db"
+                self.assertIsNone(service.get_latest_batch())
+                self.assertEqual(service.list_bundles(batch_id="latest"), [])
+                self.assertEqual(service.list_bundles(batch_id="unknown"), [])
+                self.assertEqual(StorageRuntimeDB(service.runtime_db_path).batch_hashes("unknown"), [])
+                vault = VaultService(themes_dir=root / "absent/themes")
+                self.assertEqual(vault.list_themes(), [])
+                self.assertTrue(vault.get_theme_payload("generic"))
+            self.assertEqual(theme.read_bytes(), previous)
+            self.assertFalse((root / "absent").exists())
+
+    def test_audio_confirmation_respects_library_snapshot_lock(self) -> None:
+        from app.services.storage_transactions import library_snapshot_lock
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            service = _bundle_service(root)
+            before = (root / "themes/generic.json").read_bytes()
+            with library_snapshot_lock(root), self.assertRaisesRegex(TimeoutError, "audio_update_busy"):
+                service.set_bundle_audio_usage("generic_aud_unknown_ffff", "voice")
+            self.assertEqual((root / "themes/generic.json").read_bytes(), before)
 
     def test_bundle_service_can_set_bundle_role(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

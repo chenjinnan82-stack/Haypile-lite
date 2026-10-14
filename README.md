@@ -28,42 +28,29 @@ Font details show mapped-character, CJK, basic Latin-letter, and digit counts. F
 
 The current source also discovers webpage covers, images, and site icons in supported formats. Switch fonts and images within the same card, preview one candidate at a time, and choose **Store this image** to save only its original file. See [desktop intake](docs/DESKTOP_INTAKE.md) for limits and static-page scope.
 
-Click the pile to find recent assets, including repeated intakes. Open an item to **Copy original file** or drag its preview into an app that accepts the file; font cards also offer **Export**. GIF, SVG, audio, and font files retain their original bytes. Taking a file does not confirm its usage or change its handoff status.
+Click the pile to open its C-shaped shortcut ring, then choose Recent assets, including repeated intakes. Open an item to **Copy original file** or drag its preview into an app that accepts the file; font cards also offer **Export**. GIF, SVG, audio, and font files retain their original bytes. Taking a file does not confirm its usage or change its handoff status.
 
 Optional asset groups live in the existing **All assets** management page. Create a named group, select an asset and use **Add to group…** to check or uncheck membership, then choose the group to **Copy ready group assets**. Groups span intake batches, keep references without duplicating files, and persist locally. The copied handoff contains only ready members and reports how many were omitted; collecting an asset still takes the same steps. See [desktop intake](docs/DESKTOP_INTAKE.md) and [Agent recipes](docs/AGENT_RECIPES.md).
 
-This is a local acceptance candidate. The historical Alpha.9 downloads below do not include fonts. TTC / OTC, fonts with embedded SVG glyphs, script-created styles, system installation, and variable-axis controls are outside this version. Selected text needs a page URL; system-only fonts cannot be downloaded from a page. See [font intake and its limits](docs/FONT_INTAKE.md).
+Settings offers **Back up library / Restore backup** for portable manual backups and restoration into an empty library, preserving originals, usage, notes, collections, and recent order. See [backup and restore](docs/LIBRARY_BACKUP.md) for scope and limits.
+
+This is a source acceptance candidate. The historical Alpha.8 downloads below do not include fonts, webpage extraction, or library backup/restore. TTC / OTC, fonts with embedded SVG glyphs, script-created styles, system installation, and variable-axis controls are outside this version. Selected text needs a page URL; system-only fonts cannot be downloaded from a page. See [font intake and its limits](docs/FONT_INTAKE.md).
 
 ## Desktop Downloads
 
-`v0.3.0-alpha.9` is a cleanup prerelease for informed testing.
+The currently published download is `v0.3.0-alpha.8`, a prerelease for informed testing. The Alpha.10 features above are still undergoing source acceptance and are not in these packages.
 
 | Platform | Download | Verify |
 | --- | --- | --- |
-| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-macos-arm64.app.zip.sha256) |
-| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-windows-x64.zip.sha256) |
+| macOS Apple Silicon | [Haypile.app.zip](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-macos-arm64.app.zip.sha256) |
+| Windows x64 | [Portable ZIP](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-windows-x64.zip) | [SHA-256](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.8/Haypile-v0.3.0-alpha.8-windows-x64.zip.sha256) |
 
-[Release notes](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.9)
-
-> **Alpha.9 cleanup:** this release adds no product capability. It aligns the
-> bilingual release pages and reproducible build metadata, removes one unused
-> media-detection dependency, removes a redundant explicit Qt DBus request from
-> the macOS deployment spec, and retains Alpha.8's image, true-GIF, clipboard,
-> audio, HTTP, MCP, and handoff behavior.
+[Release notes](https://github.com/chenjinnan82-stack/Haypile-lite/releases/tag/v0.3.0-alpha.8)
 
 The macOS build is ad-hoc signed and not notarized; right-click the app and
 choose **Open** on first launch. The Windows build is unsigned and portable;
 unzip it before running `Haypile.exe`. Haypile keeps controlled local copies,
 but an Alpha build must not be the only backup of material you cannot replace.
-
-## Alpha.9 Pilot Product Film (40 seconds)
-
-[![Watch the Haypile Alpha.9 pilot product film](docs/haypile-alpha9-pilot-poster.webp)](https://github.com/chenjinnan82-stack/Haypile-lite/releases/download/v0.3.0-alpha.9/Haypile-v0.3.0-alpha.9-pilot-zh-40s.mp4)
-
-This Chinese-captioned film uses current Alpha.9 components and repository-owned
-test assets. It shows image, GIF, and audio intake, duplicate feedback, role
-confirmation, latest-batch handoff, and a local MCP connection. The pilot entry
-opens only after both platform packages, CI, and project-owner acceptance pass.
 
 ## Brand Concept Film (60 seconds)
 
@@ -78,7 +65,7 @@ repository's offscreen visual smoke commands.
 
 ![Haypile desktop workflow](docs/haypile-demo.gif)
 
-The pile stays on the desktop. Click for a recent-assets card; right-click for **All assets**, **Agent**, **Settings**, or **Quit**. Drag a file or webpage link onto it for intake. The card is 280 points wide, with font details expanded inline. An outside click closes the card and still reaches the original page. Full management opens through its explicit entry. See [desktop intake design](docs/DESKTOP_INTAKE.md).
+The pile stays on the desktop. Click for the C-shaped ring, then choose **Recent assets**, **All assets**, **Agent**, or **Settings**; the context menu also retains management and **Quit**. Drag a file or webpage link onto it for intake. The card is 280 points wide, with font details expanded inline. An outside click closes the card and still reaches the original page. Full management opens through its explicit entry. See [desktop intake design](docs/DESKTOP_INTAKE.md).
 The illustration uses repository-owned sample assets and does not read user material.
 
 ## Three Steps
@@ -127,7 +114,7 @@ See [Security Policy](SECURITY.md) or [report privately on GitHub](https://githu
 - The Assets drawer, pending badge, and service status share the same explicit
   storage configuration and manifest fail-close catalog. Experimental
   real-project workflows stay outside normal drawer startup.
-- Daily intake uses the pile and one nonmodal card. Font candidates no longer open a large picker, and management entries live in the native context menu.
+- Daily intake uses the pile, a C-shaped shortcut ring, and one nonmodal card. The ring and card are mutually exclusive; font candidates no longer open a large picker, and full management opens only when explicitly selected.
 - Cards and management retain native keyboard focus, checked state, and accessible descriptions; there is no transparent connector area intercepting page input.
 - Settings lookup no longer prepares product storage or creates IPC secrets;
   release CI and both package builds use the same exact Python and dependency
@@ -142,8 +129,13 @@ See [Security Policy](SECURITY.md) or [report privately on GitHub](https://githu
 - Image roles include background, hero, logo, icon, content image, and texture.
 - Local technical quality gates decide readiness; the model does not judge aesthetics.
 - The Agent drawer can copy the latest batch instead of the whole asset library.
-- AI modes are **Local model**, **API**, or **Off**. Audio metadata and manual
-  usage confirmation continue to work without AI.
+- AI defaults to **Off**; local/API modes are optional, with no automatic model
+  installation or download. Existing explicit choices are retained. Intake,
+  preview, keyword search, manual organization, original-file reuse, and library
+  backup/restore work without AI.
+- External Agents use read-only HTTP/MCP tools and their own capabilities. Tools
+  return metadata and controlled URLs; description-based image selection requires
+  vision and actual image access and is not promised for arbitrary models.
 
 ## Agent Access
 

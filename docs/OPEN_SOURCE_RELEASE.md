@@ -1,156 +1,95 @@
-# v0.3.0-alpha.9 Open Source Release Notes
+# v0.3.0-alpha.10 release draft
 
-Release copy for `v0.3.0-alpha.9`. This is a cleanup-only prerelease: it adds
-no product capability and keeps the Alpha.8 storage, HTTP, MCP, handoff, image,
-true-GIF, clipboard, and audio behavior unchanged. Publish only after both tag
-workflows, package checks, and compatibility smoke tests pass.
+This is release preparation, not a published release. GitHub currently provides
+Alpha.8 packages; README download links must keep pointing to those verified
+assets until Alpha.10 is published. Existing local Alpha.10 archives predate
+the final fixes and must not be uploaded as the accepted build.
 
-## Release procedure
+## Release title
 
-The tag workflows upload assets to an existing GitHub Release; they do not
-create one. Create a **draft prerelease** for the exact Alpha.9 tag before its
-release jobs reach the upload step, and keep that draft private while the two
-platform builds run. A tag without the draft Release is not sufficient.
+Haypile v0.3.0-alpha.10 · Fonts, compact webpage intake, and optional AI
 
-Publish only after CI, macOS, and Windows are green; both archives and both
-checksum files are present; their embedded commit matches the tag; package
-sizes and SHA-256 values are recorded; and the project owner accepts the
-release. Do not announce or open the pilot before that acceptance.
+## Release body
 
-### Local package comparison
+Haypile collects local assets through a small desktop pile. Core intake,
+preview, keyword search, manual organization, original-file reuse, and library
+backup/restore work without AI or an installed model.
 
-A same-environment rebuild at cleanup commit `68b16b6` produced:
+- **Fonts:** collect TTF, OTF, WOFF, and WOFF2; preview the actual file, inspect
+  character coverage and embedded license information, compare family members,
+  and confirm heading/body/decorative usage before Agent handoff.
+- **Webpage intake:** drag a browser address or page link onto the pile. One
+  compact card lets you browse font and image candidates and save the selected
+  original. Static HTML/CSS discovery does not identify every rendered font,
+  execute JavaScript, or access signed-in pages.
+- **Simple reuse:** click the pile for the C-shaped ring, open recent assets,
+  then copy or drag an original file. Cross-batch groups stay in All assets;
+  ready-group handoff excludes pending members. Images expose approximate main
+  colors; audio supports manual preview.
+- **Portable backups:** Settings can save a `.haypile.zip` archive and restore
+  it into an empty library after validation. Originals, uses, notes, groups,
+  and recent order are retained. GUI preferences, AI credentials, and historical
+  batch IDs are excluded; this is manual backup, not cloud sync or library merge.
+- **Optional AI:** AI defaults to Off. Existing explicit choices are retained;
+  local and authorized API modes provide advisory image suggestions. Intake
+  completes first, and unavailable AI does not prevent core operations. Switching
+  it off cancels queued work and discards late results. No model is installed
+  automatically. An installed/configured model is not a verified vision model.
+- **External Agents:** six read-only MCP tools and the existing HTTP endpoints
+  provide metadata and controlled URLs. Agents use their own capabilities;
+  inspecting images requires both image access and vision support. Arbitrary
+  models are not promised description-based image search.
 
-| Package | ZIP bytes | Expanded bytes | ZIP entries |
-| --- | ---: | ---: | ---: |
-| Alpha.8 comparison build | 70,582,478 | 192,201,111 | 285 |
-| Alpha.9 candidate | 70,582,503 | 192,201,111 | 285 |
-
-The 25-byte ZIP increase came from archive metadata; the package tree and
-expanded size did not grow. Both builds still contain the same QtDBus runtime
-because QtGui links it, so the spec change removes only a redundant explicit
-request. The published Alpha.8 ZIP is 70,057,790 bytes; its difference from the
-same-source local Alpha.8 rebuild is build-environment drift, not an Alpha.9
-source addition. Repeat and record the comparison using the official Alpha.9
-workflow assets before publishing, and explain any unexplained growth.
-
-## GitHub About
-
-Collect local images, true GIFs, and audio, organize the latest batch, and hand
-ready assets to agents without exposing your disk.
-
-## Suggested Topics
-
-```text
-local-first
-agent-tools
-mcp
-fastapi
-pyside6
-asset-management
-ollama
-python
-desktop-app
-local-ai
-provenance
-```
-
-## Release Title
-
-Haypile v0.3.0-alpha.9 · Cleanup release for local Agent asset handoff
-
-## GitHub Release Body
-
-Haypile is a local-first asset intake for AI creators and independent
-developers.
-
-Alpha.9 is deliberately small. It synchronizes the English and Chinese release
-pages and build metadata, removes the unused `filetype` dependency, stops
-making a redundant explicit Qt DBus request in the macOS deployment spec, and
-documents an exact Python 3.12.10 local build path.
-
-There are no storage, API, MCP, handoff, or user-flow changes. Images, true GIFs,
-clipboard intake, audio, manual role confirmation, optional image suggestions,
-and read-only Agent access behave as in Alpha.8. Experimental real-project
-selection, apply, and rollback helpers remain disabled and outside the normal
-desktop product path.
-
-### Compatibility and safety
-
-- Storage format and `haypile.asset-handoff.v1` are unchanged.
-- HTTP and MCP remain read-only and loopback-only by default.
-- Static files remain manifest-gated; missing or untrusted projections fail closed.
-- True GIFs retain original bytes and verified animation metadata.
-- Pixel-only clipboard images remain explicit static-PNG fallbacks.
-- App-private animated emoji formats remain unsupported.
-- The full Python 3.12 regression suite and packaged backend/MCP checks remain
-  release gates.
-
-### Install
-
-Attach these files only after both platform builds pass:
-
-```text
-Haypile-v0.3.0-alpha.9-macos-arm64.app.zip
-Haypile-v0.3.0-alpha.9-windows-x64.zip
-matching .sha256 files
-```
-
-Source users can run `python3 app_gui.py` after installing
-`requirements-desktop.txt`.
-
-### Agent access
-
-```text
-GET http://127.0.0.1:8010/api/v1/bundles?status=ready&batch_id=latest
-```
-
-MCP hosts can run `mcp_server.py` with
-`HAYPILE_BASE_URL=http://127.0.0.1:8010`.
-
-### Distribution notes
-
-This is a prerelease for informed testing. The macOS Apple Silicon app is
-ad-hoc signed and not notarized. Right-click it and choose **Open** on first
-launch. The Windows x64 portable build is unsigned; unzip it before running
-`Haypile.exe`. Verify the published SHA-256 before running either package.
-
-Haypile keeps controlled local copies, but an Alpha build must not be the only
-backup of material that cannot be replaced.
-
-## Short Launch Post
-
-Haypile Alpha.9 is a cleanup release for the local-first asset intake.
-
-It adds no feature: image, true-GIF, clipboard, audio, HTTP, MCP, and
-`asset-handoff.v1` behavior stay unchanged. The release aligns bilingual
-downloads and build metadata, removes one unused dependency and one redundant
-macOS Qt module request, and preserves the existing local trust boundary.
-
-Repo: https://github.com/chenjinnan82-stack/Haypile-lite
+Storage remains version 2 and handoff remains `haypile.asset-handoff.v1`, with
+additive font metadata. Local files stay manifest-gated and HTTP binds to
+loopback by default. Experimental real-project apply/rollback stays disabled.
+See [font limits](FONT_INTAKE.md), [backup scope](LIBRARY_BACKUP.md),
+[AI boundaries](LOCAL_AI.md), and [desktop acceptance](DESKTOP_ACCEPTANCE.md).
 
 ## 中文发布文案
 
-Haypile · 冬藏 Alpha.9 是一次不增加功能的清理版发布。
+草堆 Alpha.10 将字体、网页候选和素材库备份接入原来的桌面流程：拖入草堆，
+在一张小卡片中预览与收纳，之后通过 C 型环找回并复制或拖出原文件。
 
-本版统一中英文下载信息与构建元数据，删除一个未使用的媒体识别依赖和 macOS
-部署配置中冗余的 Qt DBus 显式请求，并补齐精确 Python 3.12.10 的本地构建
-路径。图片、原字节 GIF、剪贴板、音频、HTTP、MCP 与 `asset-handoff.v1`
-行为均保持不变。
+支持 TTF / OTF / WOFF / WOFF2 字体、静态网页中的字体与图片候选、跨批次素材
+组合，以及设置页的手动备份和空库恢复。网页候选不等于具体文字的实际用字，
+内嵌许可与个人备注也不等于商用授权；详细范围见上述说明。
 
-HTTP 与 MCP 继续只读，素材文件继续受 manifest 限制。实验性的真实项目选择、
-投放和回滚能力仍默认关闭，也不进入正常桌面产品路径。
+核心功能完整独立于 AI。AI 默认关闭，本地模型和经授权的 API 都是可选增强，
+不会自动安装模型；关闭或不可用时仍能正常收纳、搜索、手动整理和取用素材。
+外部 Agent 通过只读工具使用自己的能力，不要求绑定草堆模型，也不承诺任意
+模型都能描述找图。
 
-macOS Apple Silicon 包采用临时签名且尚未公证；Windows x64 便携包尚未签名。
-运行前请核对发布页提供的 SHA-256。
+## Publication gates
 
-Repo: https://github.com/chenjinnan82-stack/Haypile-lite
+1. Commit the accepted source. The test-only CI matrix runs Linux and Windows
+   with Python 3.12.10 and `constraints-release.txt`; it does not produce packages.
+   Both jobs must pass for that commit. Keep native macOS and physical-pointer
+   results separate from offscreen CI; outstanding checks are recorded in
+   [desktop acceptance](DESKTOP_ACCEPTANCE.md).
+2. Complete the outstanding native Windows and physical-pointer checks before
+   public desktop release. Keep the scope a prerelease; large-library performance
+   and arbitrary-model accuracy have not been certified.
+3. Build once from the final clean commit. Create a draft prerelease for
+   `v0.3.0-alpha.10` before the tag workflows reach their upload step. Both build
+   workflows must finish; they validate that the tag matches the build commit.
+   The workflows upload assets but do not create the Release.
+4. Verify both archives and checksum files, embedded `BUILD_INFO.json` commit,
+   package startup, backend/MCP/font smoke checks, and clean shutdown in isolated
+   libraries. Record sizes and SHA-256 values from the actual final archives.
+5. Publish the draft, then update README and both website download entries to
+   the published files. Do not advertise draft or nonexistent download URLs.
 
-## Pilot boundary
+Expected release assets:
 
-After release, invite 6–8 people through the maintainer's private network and
-aim for four completed sessions, with three as the minimum usable sample.
-Include at least one AI coding-tool user and one design or content creator.
-Participants work from a short task card before a follow-up interview. Keep raw
-notes private; publish only anonymized findings and reproducible defects. Use
-the [Alpha.9 pilot task card](ALPHA9_PILOT.md) for the session.
+```text
+Haypile-v0.3.0-alpha.10-macos-arm64.app.zip
+Haypile-v0.3.0-alpha.10-macos-arm64.app.zip.sha256
+Haypile-v0.3.0-alpha.10-windows-x64.zip
+Haypile-v0.3.0-alpha.10-windows-x64.zip.sha256
+```
+
+The macOS Apple Silicon app is ad-hoc signed and not notarized; Windows x64 is
+an unsigned portable build. State the actual signing status in the release and
+verify package checksums. An Alpha library should not be the only copy of
+irreplaceable material.

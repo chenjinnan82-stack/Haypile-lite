@@ -49,7 +49,7 @@ class BundleService:
         self.manifest_path = manifest_path or settings.MANIFEST_PATH  # type: ignore[union-attr]
         self.themes_dir = themes_dir or settings.THEMES_DIR  # type: ignore[union-attr]
         self.runtime_db_path = runtime_db_path or (settings.INDEX_DIR / "storage_runtime.db")  # type: ignore[union-attr]
-        self.theme_recoveries: list[dict[str, str]] = []
+        self.theme_read_errors: list[dict[str, str]] = []
         self.manifest_generation = ""
 
     def list_bundles(
@@ -81,7 +81,7 @@ class BundleService:
 
             theme_asset = theme_assets.get(url, {})
             item_role = "font" if item_type == "font" else self._role_from(source_key=source_key, theme_asset=theme_asset)
-            source_path = self._asset_path(source_key)
+            source_path = self.asset_path(source_key)
             if source_path is None:
                 continue
             asset_exists = source_path.is_file() and not source_path.is_symlink()
@@ -199,7 +199,7 @@ class BundleService:
             digest = bundle["sha256"]
             if digest in order:
                 return (0, order[digest], bundle["source_key"])
-            path = self._asset_path(bundle["source_key"])
+            path = self.asset_path(bundle["source_key"])
             try:
                 modified = path.stat().st_mtime_ns if path is not None else 0
             except OSError:
@@ -268,22 +268,28 @@ class BundleService:
         normalized_usage = str(audio_usage or "").strip().lower()
         if normalized_usage not in ALLOWED_AUDIO_USAGES:
             raise ValueError("unsupported audio usage")
-        bundle = self.get_bundle(bundle_id)
-        if bundle is None or bundle["status"] == "missing" or bundle["type"] != "audio":
-            return None
-
-        if self.set_bundle_role(bundle_id, "audio") is None:
-            return None
-        asset_path = self._asset_path(bundle["source_key"])
-        if asset_path is None:
-            return None
-        provenance = read_asset_provenance(asset_path)
-        provenance["audio_usage"] = normalized_usage
+        lock = InterProcessFileLock(self.runtime_db_path.parent / "ingest.transaction.lock")
+        if not lock.acquire(timeout=0):
+            raise TimeoutError("audio_update_busy")
         try:
-            write_asset_provenance(asset_path, provenance)
-        except OSError:
-            return None
-        return self.get_bundle(bundle_id)
+            bundle = self.get_bundle(bundle_id)
+            if bundle is None or bundle["status"] == "missing" or bundle["type"] != "audio":
+                return None
+
+            if self.set_bundle_role(bundle_id, "audio") is None:
+                return None
+            asset_path = self.asset_path(bundle["source_key"])
+            if asset_path is None:
+                return None
+            provenance = read_asset_provenance(asset_path)
+            provenance["audio_usage"] = normalized_usage
+            try:
+                write_asset_provenance(asset_path, provenance)
+            except OSError:
+                return None
+            return self.get_bundle(bundle_id)
+        finally:
+            lock.release()
 
     def update_bundle_font(
         self, bundle_id: str, *, font_usage: str | None = None,
@@ -301,7 +307,7 @@ class BundleService:
             bundle = self.get_bundle(bundle_id)
             if bundle is None or bundle["status"] == "missing" or bundle["type"] != "font":
                 return None
-            asset_path = self._asset_path(bundle["source_key"])
+            asset_path = self.asset_path(bundle["source_key"])
             if asset_path is None:
                 return None
             provenance = read_asset_provenance(asset_path)
@@ -316,15 +322,14 @@ class BundleService:
 
     def _theme_assets_by_url(self) -> dict[str, dict[str, Any]]:
         assets: dict[str, dict[str, Any]] = {}
+        self.theme_read_errors.clear()
         registry = ThemeRegistry(self.themes_dir)
         for theme_file in sorted(self.themes_dir.glob("*.json")):
             try:
-                payload, _path, _created = registry.ensure_theme_contract(theme_file.stem)
-            except (OSError, TimeoutError, ValueError):
+                payload = registry.read_theme_contract(theme_file.stem)
+            except (OSError, ValueError):
+                self.theme_read_errors.append({"theme_id": theme_file.stem})
                 continue
-            if registry.last_recovery is not None:
-                self.theme_recoveries.append(dict(registry.last_recovery))
-                registry.last_recovery = None
             physical_assets = payload.get("physical_assets")
             if not isinstance(physical_assets, dict):
                 continue
@@ -399,7 +404,7 @@ class BundleService:
             ).items()
         }
 
-    def _asset_path(self, source_key: str) -> Path | None:
+    def asset_path(self, source_key: str) -> Path | None:
         root = self.assets_dir.resolve(strict=False)
         candidate = self.assets_dir / Path(str(source_key).replace("\\", "/"))
         if candidate.is_symlink():

@@ -6,12 +6,10 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
 
-from app.services import experimental_project_summary as material_summary_module
 from app.services.asset_provenance import write_asset_provenance
 from app.services.bundle_service import BundleService
 from app.services.experimental_project_summary import build_material_panel_summary
@@ -249,36 +247,13 @@ class MaterialSummaryTests(unittest.TestCase):
         self.assertEqual(summary.confirmation_title, "")
         self.assertEqual(summary.confirmation_summary, "")
 
-    def test_classifier_status_reports_missing_model_from_tags(self) -> None:
-        class FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def read(self) -> bytes:
-                return b'{"models":[{"name":"other:latest"}]}'
-
-        settings = SimpleNamespace(
-            VISION_CLASSIFIER_ENABLED=True,
-            VISION_CLASSIFIER_MODEL="qwen3-vl:8b",
-            VISION_CLASSIFIER_BASE_URL="http://127.0.0.1:11434",
-        )
-        material_summary_module._classifier_status_cached.cache_clear()
-        class FakeOpener:
-            def open(self, *_args, **_kwargs):
-                return FakeResponse()
-
-        with patch.object(
-            material_summary_module.urllib.request,
-            "build_opener",
-            return_value=FakeOpener(),
-        ) as build_opener:
-            status = material_summary_module._classifier_status(settings)
-
-        self.assertEqual(status, "模型：未安装 qwen3-vl:8b")
-        self.assertEqual(build_opener.call_count, 1)
+    def test_summary_does_not_probe_models(self) -> None:
+        with patch("urllib.request.OpenerDirector.open", side_effect=AssertionError("no model probe")):
+            summary = build_material_panel_summary(
+                assets_dir=self.assets_dir, manifest_path=self.manifest_path,
+                themes_dir=self.themes_dir, real_project_binding_path=self.binding_path,
+            )
+        self.assertEqual(summary.recognition_status, "分类：可用")
 
     def test_summary_shows_ready_rehearsal_as_one_plain_status(self) -> None:
         rehearsal_root = self.tmpdir / "rehearsal"

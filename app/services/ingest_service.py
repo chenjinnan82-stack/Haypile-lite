@@ -22,6 +22,7 @@ from app.services.media_validator import (
 from app.services.font_service import MAX_FONT_BYTES
 from app.services.scanner import AssetScanner, mark_manifest_dirty
 from app.services.storage_runtime import StorageRuntimeDB
+from app.services.storage_transactions import recover_interrupted_restore
 from app.services.theme_registry import ThemeRegistry
 from app.services.vfs_storage import VFSStorage
 
@@ -432,6 +433,7 @@ class IngestService:
             lock.release()
 
     def _recover(self, runtime: StorageRuntimeDB) -> None:
+        recover_interrupted_restore(self.storage_dir)
         runtime.ensure_ready()
         runtime.recover_incomplete_ingest(
             assets_dir=self.assets_dir,
