@@ -54,6 +54,7 @@ jobs:
           python -m unittest
           tests.test_attached_hub.AttachedHubTests.test_ring_has_native_hole_and_keeps_all_actions_on_screen
           tests.test_attached_hub.AttachedHubTests.test_ring_outside_click_closes_without_consuming_the_button_action
+          tests.test_attached_hub.AttachedHubTests.test_windows_consumed_click_bit_does_not_dismiss_new_ring_or_card
           tests.test_attached_hub.AttachedHubTests.test_ring_action_opens_recent_card_and_closes_ring
           tests.test_attached_hub.AttachedHubTests.test_ring_keyboard_navigation_and_repeated_window_transitions
           tests.test_attached_hub.AttachedHubTests.test_card_and_management_keep_grass_origin

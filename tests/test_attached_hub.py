@@ -347,6 +347,28 @@ class AttachedHubTests(unittest.TestCase):
         finally:
             outside.close()
 
+    def test_windows_consumed_click_bit_does_not_dismiss_new_ring_or_card(self) -> None:
+        from unittest.mock import Mock
+        from app.gui.desktop_input import DesktopInputState
+
+        state = {1: 1, 2: 0, 4: 0}
+        windll = Mock()
+        windll.user32.GetAsyncKeyState.side_effect = lambda key: state[key]
+        with patch("app.gui.desktop_input.sys.platform", "win32"), \
+             patch("app.gui.desktop_input.ctypes.windll", windll, create=True), \
+             patch.object(app_gui.QCursor, "pos", return_value=QPoint(-100, -100)):
+            for window, show in ((self.ball.quick_ring, self.ball.quick_ring.open),
+                                 (self.ball.intake_card, self.ball.intake_card.show_recent)):
+                window.desktop_input = DesktopInputState()
+                state[1] = 1  # The click that opened this window has already been released.
+                show()
+                state[1] = 0  # Reading GetAsyncKeyState consumes its low "pressed since" bit.
+                window._poll_outside()
+                self.assertTrue(window.isVisible())
+                state[1] = -32768  # A new, currently held outside click must still dismiss it.
+                window._poll_outside()
+                self.assertFalse(window.isVisible())
+
     def test_ring_action_opens_recent_card_and_closes_ring(self) -> None:
         self.ball._toggle_quick_menu()
         QTest.keyClick(self.ball.quick_ring.buttons["recent"], Qt.Key.Key_Space)

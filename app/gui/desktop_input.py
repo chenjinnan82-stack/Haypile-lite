@@ -27,7 +27,8 @@ class DesktopInputState:
         if self._click_counter is not None:
             return tuple(self._click_counter(0, event_type) for event_type in (1, 3, 25))
         if sys.platform.startswith("win"):
-            return tuple(ctypes.windll.user32.GetAsyncKeyState(key) for key in (1, 2, 4))
+            # The low "pressed since" bit is consumed on read; it is not a new click.
+            return tuple(bool(ctypes.windll.user32.GetAsyncKeyState(key) & 0x8000) for key in (1, 2, 4))
         return ()
 
     def escape(self) -> bool:
