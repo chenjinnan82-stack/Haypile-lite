@@ -546,6 +546,8 @@ class AttachedHubTests(unittest.TestCase):
             self.app.processEvents()
 
     def test_ring_keyboard_navigation_and_repeated_window_transitions(self) -> None:
+        self.ball.show()
+        self.app.processEvents()
         ring = self.ball.quick_ring
         for _round in range(3):
             for index, action in enumerate(("recent", "assets", "agent", "settings")):
