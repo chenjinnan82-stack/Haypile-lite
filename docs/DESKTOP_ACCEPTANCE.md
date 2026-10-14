@@ -1,6 +1,6 @@
 # 桌面验收记录 · 2026-10-14 至 15
 
-最新源码 `95436a0` 的 [Linux / Windows CI](https://github.com/chenjinnan82-stack/Haypile-lite/actions/runs/38600944584) 全部通过：各运行 605 项，Linux 604 通过、1 项平台跳过；Windows 600 通过、5 项平台跳过。本机 macOS 全量 604 通过、1 项平台跳过，另有 25 项 Cocoa 原生自动检查通过。旧版存储兼容检查已实际执行。
+最新源码 `6cee5a7` 的 [Linux / Windows CI](https://github.com/chenjinnan82-stack/Haypile-lite/actions/runs/38608409415) 全部通过：各运行 606 项，Linux 605 通过、1 项平台跳过；Windows 601 通过、5 项平台跳过。本机 macOS 全量 605 通过、1 项平台跳过；本轮 macOS Cocoa 和 Windows 原生窗口自动检查各 10 项通过。旧版存储兼容检查已实际执行。
 
 结论：核心功能及可选 AI 进入小范围实机试用，保留当前功能范围。真实鼠标跨应用点击、悬停观感、Windows 实机交互及最终发行包仍须验收，目前尚未公开发布新版本。本轮没有制作安装包、启用用户 AI、下载模型或修改真实素材库。下文保留历史阶段记录，最新结果见末节；既有下载包不包含本次源码改动。
 
@@ -196,3 +196,17 @@ Windows 实际执行及随后的定向复核发现并修复了五处问题：
 验收源码与结果固定在上述提交；本节仅补写验收记录。最终证据包括 `windows-final.log`、`linux-final.log`、`ci-result.json`、`full-tests-tls-final.log`、`native-tests-final.log`、`guarded-tests.json`、`native-guard.json`、`tls-live-smoke.json` 和 `result.json`。源码自动验收通过后，下一步是实机操作签收，再从最终源码一次性构建发行包；本轮不继续扩展功能。
 
 证据目录为 `build/cross-platform-acceptance-20261014/`，保留首次及后续 Windows 失败日志、本地修复前复现、专项检查和完整回归；目录日期沿用此次验收启动日。
+
+## 原生窗口补验 — 2026-10-15
+
+CI 在原有离屏全量测试之外增加 Windows 原生 Qt 窗口检查，覆盖 C 环遮罩、键盘切换、窗口互斥和悬停生命周期。测试使用 `QT_QPA_PLATFORM=windows`，不生成安装包；Qt 程序事件仍不等于真实鼠标跨应用操作。首次键盘切换失败来自未显示主浮窗的测试夹具；补齐真实操作前提后，[CI 38607501006](https://github.com/chenjinnan82-stack/Haypile-lite/actions/runs/38607501006) 的 9 项 Windows 原生检查全部通过，与下述独立发现的产品问题分开记录。
+
+复核发现 Windows 鼠标状态中的低位“上次查询后按过”标记会在读取后清零。原来直接比较完整返回值，会把标记清零误当成新点击，导致刚打开的环或卡片收起。现在只读取当前按下的高位；回归分别验证环和卡片不被清零误关，并确认新的外部按下仍会关闭。修复前回归失败，修复后通过。接口语义见 [Microsoft GetAsyncKeyState 文档](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getasynckeystate)。
+
+后续 Windows 全量检查还实际捕获到首次并发启动的文件锁竞争：两个进程都观察到空文件，其中一个已写入并锁定首字节，另一个再写入时触发权限错误，尚未进入重试。删除锁定前的占位写入，直接使用系统支持的空文件字节锁。已有互斥测试增加过期空文件状态的模拟，并保留 12 进程、10 轮密钥一致性检查；IPC、入库、备份等 71 项专项检查通过（其中 1 项平台跳过）。空文件加锁依据见 [Microsoft `_locking` 文档](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/locking?view=msvc-170)。
+
+最终源码 `6cee5a7e0b7dc64b5fe0d84ad70dac548717f4db` 的 [CI 38608409415](https://github.com/chenjinnan82-stack/Haypile-lite/actions/runs/38608409415) 全部通过：Windows 全量 **606 项，601 通过、5 项平台跳过**，另有 **10 项原生窗口检查全部通过**；Linux 全量 **606 项，605 通过、1 项平台跳过**。本机 macOS 全量 **606 项，605 通过、1 项 Windows 专用跳过**，另有 **10 项 Cocoa 原生检查全部通过**。真实素材库写入保护零触发，用户设置及已有安装包摘要保持不变。
+
+CUA 在独立测试库中实际操作了草堆展开、设置入口、AI 默认关闭及能力说明、Escape 收起、再次展开并用空格键打开最近收纳卡片，结果正常；验收进程退出码 0、清理完成、启动器已还原。浏览器工具禁止打开本地验收页，未绕过该限制，也未将网页穿透测试记为通过。首次跨应用点击、悬停观感和 Windows 人工签收仍保留。
+
+本机证据在 `build/native-window-acceptance-20261015/`：`windows-native-first.log`、`windows-click-bit-before.log`、`windows-click-bit-ci.log`、`lock-targeted-tests.log` 保留复现与专项结果；最终结果见 `windows-final.log`、`linux-final.log`、`ci-result.json`、`native-tests-final.log`、`full-tests-final.log`、`guarded-tests.json`、`native-guard.json`、`cua-result.json`、`result.json` 与保护文件摘要。本轮仅修复输入状态读取及锁竞争并加强现有验收，没有添加功能、模型或安装包。
