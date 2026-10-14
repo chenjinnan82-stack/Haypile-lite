@@ -19,9 +19,30 @@ from app.services.asset_collections import save_collection, collection_handoff
 from app.services.bundle_service import BundleService
 from app.services.ingest_service import IngestService, IngestCandidate
 from app.services.scanner import AssetScanner
+import app.services.asset_integrity as integrity
 
 
 class AssetIntegrityTests(unittest.TestCase):
+    def test_windows_path_and_handle_ctime_can_differ_for_the_same_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "sample.svg"
+            source.write_bytes(b'<svg width="12" height="8"></svg>')
+            expected = hashlib.sha256(source.read_bytes()).hexdigest()
+            info = source.stat()
+            fields = {name: getattr(info, name) for name in (
+                "st_mode", "st_dev", "st_ino", "st_size", "st_mtime_ns")}
+            # CPython 3.12 Windows stat uses creation time for ctime; fstat uses change time.
+            path_stat = SimpleNamespace(**fields, st_birthtime_ns=10, st_ctime_ns=10)
+            handle_stat = SimpleNamespace(**fields, st_birthtime_ns=10, st_ctime_ns=20)
+            changed_stat = SimpleNamespace(**fields, st_birthtime_ns=10, st_ctime_ns=30)
+            with patch.object(Path, "stat", return_value=path_stat), patch.object(
+                integrity, "os", SimpleNamespace(name="nt", fstat=lambda _fd: handle_stat),
+            ):
+                self.assertEqual(integrity.asset_file_sha256(source), expected)
+                # A change during hashing must still fail, even if size and mtime match.
+                with patch.object(integrity.os, "fstat", side_effect=[handle_stat, changed_stat]):
+                    self.assertEqual(integrity.asset_file_sha256(source), "")
+
     def test_changed_committed_bytes_keep_identity_but_cannot_be_handed_off_or_served(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

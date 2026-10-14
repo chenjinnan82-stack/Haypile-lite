@@ -206,7 +206,7 @@ python3 -m unittest discover -s tests
 
 Build notes live in [macOS internal build](docs/MACOS_INTERNAL_BUILD.md) and the
 platform scripts under `scripts/`. The
-[alpha.9 release notes](docs/OPEN_SOURCE_RELEASE.md) record the exact feature
+[Alpha.10 release draft](docs/OPEN_SOURCE_RELEASE.md) records the exact feature
 and support boundary; the private release gate is documented in
 [AI evaluation](docs/AI_EVALUATION.md).
 

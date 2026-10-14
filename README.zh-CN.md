@@ -195,7 +195,7 @@ python3 -m unittest discover -s tests
 ```
 
 macOS 构建说明见 [MACOS_INTERNAL_BUILD.md](docs/MACOS_INTERNAL_BUILD.md)，平台脚本位于
-`scripts/`。[alpha.9 发布说明](docs/OPEN_SOURCE_RELEASE.md)记录了准确的功能与
+`scripts/`。[Alpha.10 发布草稿](docs/OPEN_SOURCE_RELEASE.md)记录了准确的功能与
 支持边界；私有评估与发布门槛见 [AI_EVALUATION.md](docs/AI_EVALUATION.md)。
 
 ## 项目边界

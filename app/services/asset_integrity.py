@@ -11,20 +11,25 @@ from app.services.media_validator import MediaValidationError, validate_media
 
 
 def _signature(value: os.stat_result) -> tuple[int, ...]:
-    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    # CPython 3.12 Windows stat/fstat disagree on ctime; birthtime agrees.
+    stamp = value.st_birthtime_ns if os.name == "nt" else value.st_ctime_ns
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, stamp)
 
 
 @lru_cache(maxsize=512)
 def _snapshot_digest(path: Path, signature: tuple[int, ...], legacy_type: str | None) -> str:
     with path.open("rb") as source:
-        if _signature(os.fstat(source.fileno())) != signature:
+        opened = os.fstat(source.fileno())
+        if _signature(opened) != signature:
             return ""
         if legacy_type is not None:
             media = validate_media(path)
             if legacy_type and media.kind != legacy_type:
                 return ""
         digest = hashlib.file_digest(source, "sha256").hexdigest()
-        if (_signature(os.fstat(source.fileno())) != signature
+        finished = os.fstat(source.fileno())
+        if (_signature(finished) != signature
+                or finished.st_ctime_ns != opened.st_ctime_ns
                 or _signature(path.stat(follow_symlinks=False)) != signature):
             return ""
         return digest
