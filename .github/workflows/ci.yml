@@ -46,3 +46,18 @@ jobs:
       - run: python scripts/render_hub_visuals.py --out "${{ runner.temp }}/haypile-hub-visuals"
       - run: python -m unittest tests/test_agent_examples.py tests/test_mcp_server.py
       - run: python -m unittest discover -s tests
+      - name: Windows native window checks
+        if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: windows
+        run: >-
+          python -m unittest
+          tests.test_attached_hub.AttachedHubTests.test_ring_has_native_hole_and_keeps_all_actions_on_screen
+          tests.test_attached_hub.AttachedHubTests.test_ring_outside_click_closes_without_consuming_the_button_action
+          tests.test_attached_hub.AttachedHubTests.test_ring_action_opens_recent_card_and_closes_ring
+          tests.test_attached_hub.AttachedHubTests.test_ring_keyboard_navigation_and_repeated_window_transitions
+          tests.test_attached_hub.AttachedHubTests.test_card_and_management_keep_grass_origin
+          tests.test_attached_hub.AttachedHubTests.test_hover_reentry_resumes_opening_without_another_dwell
+          tests.test_attached_hub.AttachedHubTests.test_hover_animation_is_reused_and_repeated_open_does_not_restart
+          tests.test_attached_hub.AttachedHubTests.test_hide_during_window_drag_allows_next_external_drop_hover
+          tests.test_attached_hub.AttachedHubTests.test_double_click_toggles_once_per_release
