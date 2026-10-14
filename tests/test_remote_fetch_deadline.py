@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import http.client
 from pathlib import Path
 import socket
+import ssl
 import tempfile
 import threading
 import time
@@ -177,36 +178,31 @@ class RemoteFetchDeadlineTests(unittest.TestCase):
             open_safe_remote("http://public.example/test.png", resolver=resolver, should_stop=lambda: stopped)
 
     def test_tls_handshake_is_watched_after_socket_is_available(self):
-        client, server = socket.socketpair()
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                client, server = socket.socketpair()
+                context = ssl.create_default_context()
 
-        class TLSSocket:
-            def do_handshake(self):
-                client.recv(1)
-                raise OSError("handshake interrupted")
+                def connect(_address, timeout):
+                    client.settimeout(timeout)  # Match socket.create_connection's contract.
+                    return client
 
-            def __getattr__(self, name):
-                return getattr(client, name)
-
-        class TLSContext:
-            def wrap_socket(self, raw, *, server_hostname, do_handshake_on_connect):
-                self.server_hostname = server_hostname
-                self.do_handshake_on_connect = do_handshake_on_connect
-                return raw
-
-        context = TLSContext()
-        started = time.monotonic()
-        try:
-            with patch("app.services.safe_remote_fetcher.socket.create_connection", return_value=TLSSocket()):
-                with self.assertRaisesRegex(SafeFetchError, "download_timeout"):
-                    open_safe_remote("https://8.8.8.8/test.png", timeout=0.12, ssl_context=context)
-            self.assertLess(time.monotonic() - started, 0.35)
-            self.assertEqual(context.server_hostname, "8.8.8.8")
-            self.assertFalse(context.do_handshake_on_connect)
-            self.assertEqual(client.fileno(), -1)
-            self.assertFalse(any(thread.name == "HaypileRemoteFetch" for thread in threading.enumerate()))
-        finally:
-            client.close()
-            server.close()
+                started = time.monotonic()
+                try:
+                    with patch("app.services.safe_remote_fetcher.socket.create_connection", side_effect=connect), \
+                         patch.object(context, "wrap_socket", wraps=context.wrap_socket) as wrap:
+                        with self.assertRaisesRegex(SafeFetchError, "interrupted" if cancelled else "download_timeout"):
+                            open_safe_remote("https://8.8.8.8/test.png", timeout=2 if cancelled else 0.12,
+                                ssl_context=context,
+                                should_stop=lambda: cancelled and time.monotonic() - started >= 0.10)
+                    self.assertLess(time.monotonic() - started, 0.35)
+                    self.assertEqual(wrap.call_args.kwargs["server_hostname"], "8.8.8.8")
+                    self.assertFalse(wrap.call_args.kwargs["do_handshake_on_connect"])
+                    self.assertEqual(client.fileno(), -1)
+                    self.assertFalse(any(thread.name == "HaypileRemoteFetch" for thread in threading.enumerate()))
+                finally:
+                    client.close()
+                    server.close()
 
 
 if __name__ == "__main__":

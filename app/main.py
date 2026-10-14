@@ -25,6 +25,7 @@ from app.services.ingest_service import IngestService
 from app.services.scanner import manifest_dirty_path
 from app.services.asset_integrity import asset_file_sha256
 from app.services.storage_runtime import StorageRuntimeDB
+from app.services.media_types import SUPPORTED_FONT_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -63,6 +64,10 @@ class ManifestStaticFiles(StaticFiles):
 
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)
+        suffix = Path(path).suffix.lower()
+        if response.status_code == 200 and suffix in SUPPORTED_FONT_EXTENSIONS:
+            response.media_type = f"font/{suffix[1:]}"
+            response.headers["Content-Type"] = response.media_type
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"

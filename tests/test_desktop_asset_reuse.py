@@ -129,6 +129,8 @@ class DesktopAssetReuseTests(unittest.TestCase):
                 self.ball._shutdown_ai_batch_worker()
 
     def test_ai_off_full_workflow_with_model_and_network_unavailable(self):
+        import socket
+        import threading
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from app.api.v1.bundles import router, get_bundle_service
@@ -139,7 +141,25 @@ class DesktopAssetReuseTests(unittest.TestCase):
         Image.new("RGB", (48, 48), "blue").save(original)
         source_bytes = original.read_bytes()
         identifier = hashlib.sha256(source_bytes).hexdigest()
-        with patch("socket.socket.connect", side_effect=AssertionError("network unavailable")), \
+        real_connect, real_pair = socket.socket.connect, socket.socketpair
+        runtime_pipe = threading.local()
+
+        def socketpair(*args, **kwargs):
+            # Windows asyncio creates its private wakeup pipe over loopback TCP.
+            runtime_pipe.creating = True
+            try:
+                return real_pair(*args, **kwargs)
+            finally:
+                runtime_pipe.creating = False
+
+        def offline_connect(sock, address):
+            if (getattr(runtime_pipe, "creating", False) and isinstance(address, tuple)
+                    and address[0] in {"127.0.0.1", "::1"}):
+                return real_connect(sock, address)
+            raise AssertionError("network unavailable")
+
+        with patch("socket.socket.connect", new=offline_connect), \
+             patch("socket.socketpair", side_effect=socketpair), \
              patch.object(app_gui, "StyleClassifier", side_effect=AssertionError("AI must stay off")), \
              patch.object(app_gui, "AIBatchWorker", side_effect=AssertionError("AI must stay off")):
             self.assertFalse(self.ball.ai_enabled)

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -75,6 +77,26 @@ class LibraryBackupTests(unittest.TestCase):
             backup.restore_backup(self.source,self.archive)
         self.assertEqual(previous,self.source.MANIFEST_PATH.read_bytes())
         self.assertEqual(len(self.bundle(self.source).list_bundles()),2)
+
+    def test_backup_and_restore_use_portable_file_io(self):
+        real_fsync = os.fsync
+        real_open = Path.open
+
+        def ansi_default(path, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+            if 'b' not in mode and encoding in (None, 'locale'):
+                encoding = 'cp1252'
+            return real_open(path, mode, buffering, encoding, errors, newline)
+
+        def require_writable(descriptor):
+            if stat.S_ISREG(os.fstat(descriptor).st_mode):
+                os.write(descriptor, b'')  # Windows _commit rejects read-only handles.
+            real_fsync(descriptor)
+
+        self.bundle(self.source).update_bundle_font(self.font_id, annotation={'license_note': '不可商用'})
+        with patch.object(backup.os, 'fsync', side_effect=require_writable), patch.object(Path, 'open', new=ansi_default):
+            self.assertEqual(backup.create_backup(self.source, self.archive), 2)
+            self.assertEqual(backup.restore_backup(self.destination, self.archive), 2)
+        self.assertEqual(self.bundle(self.destination).get_bundle(self.font_id)['font_annotation']['license_note'], '不可商用')
 
     def test_restore_preserves_unrecognized_theme_files(self):
         for name in ('notes.txt', 'saved/custom.json', 'generic.json.backup'):

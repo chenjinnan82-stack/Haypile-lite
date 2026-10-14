@@ -539,7 +539,8 @@ class FontSupportTests(unittest.TestCase):
             response = client.get("/api/v1/bundles", params={"type": "font", "font_usage": "heading"})
             self.assertEqual(response.status_code, 200)
             font, = response.json()
-            original = client.get(font["url"])
+            with patch("starlette.responses.guess_type", return_value=("application/octet-stream", None)):
+                original = client.get(font["url"])
             self.assertEqual(original.content, self.ttf.read_bytes())
             self.assertEqual(original.headers["content-type"], "font/ttf")
             with patch.object(mcp_server, "get_json", side_effect=lambda url: client.get(url).json()):

@@ -76,7 +76,7 @@ def recover_interrupted_restore(root, *, locked=False):
         return
     if transaction.is_symlink():
         raise StorageTransactionError('unsafe_library_path')
-    journal = json.loads((transaction/'journal.json').read_text())
+    journal = json.loads((transaction/'journal.json').read_text(encoding='utf-8'))
     if set(journal) != set(TARGETS) or any(type(v) is not bool for v in journal.values()):
         raise StorageTransactionError('invalid_restore_journal')
     for name in reversed(TARGETS):

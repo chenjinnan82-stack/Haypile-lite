@@ -136,7 +136,7 @@ def create_backup(settings, destination, *, cancel=lambda: False, progress=lambd
                 for number, name in enumerate(before, 1):
                     _check_cancel(cancel)
                     if name.endswith('.json'):
-                        if before[name][0] > MAX_METADATA or not isinstance(json.loads((root/name).read_text()), dict):
+                        if before[name][0] > MAX_METADATA or not isinstance(json.loads((root/name).read_text(encoding='utf-8')), dict):
                             raise BackupError('invalid_library_metadata')
                     progress(f'{number}/{len(before)}')
                     with (root/name).open('rb') as source, archive.open(name, 'w', force_zip64=True) as output:
@@ -159,7 +159,7 @@ def create_backup(settings, destination, *, cancel=lambda: False, progress=lambd
             if before != _inventory(root):
                 raise BackupError('library_changed')
             _check_cancel(cancel)
-            with temporary.open('rb') as stream:
+            with temporary.open('r+b') as stream:
                 os.fsync(stream.fileno())
             os.replace(temporary, destination)
             temporary = None
@@ -247,7 +247,7 @@ def _empty(root):
             continue
         if theme.suffix != '.json':
             raise BackupError('library_not_empty')
-        payload = json.loads(theme.read_text())
+        payload = json.loads(theme.read_text(encoding='utf-8'))
         if not isinstance(payload, dict) or any(payload.get(key) for key in ('physical_assets', 'css_variables', 'tailwind_extend', 'fonts')):
             raise BackupError('library_not_empty')
         if (set(payload) - {'schema_version', 'revision', 'theme_name', 'physical_assets', 'css_variables', 'tailwind_extend', 'fonts', 'ui_dev_instruction'} or
@@ -278,7 +278,7 @@ def restore_backup(settings, archive, *, expected=None, cancel=lambda: False, pr
             if name.startswith('assets/') and not name.endswith('.provenance.json'):
                 validate_media(new/name)
             else:
-                payload = json.loads((new/name).read_text())
+                payload = json.loads((new/name).read_text(encoding='utf-8'))
                 if not isinstance(payload, dict):
                     raise BackupError('invalid_archive')
         read_collections(new/'collections.json')
@@ -299,7 +299,7 @@ def restore_backup(settings, archive, *, expected=None, cancel=lambda: False, pr
             if path.is_dir():
                 _sync(path)
             else:
-                with path.open('rb') as file:
+                with path.open('r+b') as file:
                     os.fsync(file.fileno())
         _sync(new)
         with _locks(root):
