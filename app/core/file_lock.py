@@ -13,8 +13,7 @@ class InterProcessFileLock:
     def acquire(self, timeout: float = 8.0) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
-        if os.name == "nt" and os.fstat(descriptor).st_size == 0:
-            os.write(descriptor, b"0")
+        # Windows permits locking past EOF. Writing first races another lock owner.
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
             try:

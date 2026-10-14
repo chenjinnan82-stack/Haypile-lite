@@ -724,11 +724,15 @@ class IpcMcpAndRollbackTests(unittest.TestCase):
     def test_interprocess_lock_rejects_second_owner(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "instance.lock"
+            path.touch()
+            empty_stat = path.stat()
             first = InterProcessFileLock(path)
             second = InterProcessFileLock(path)
             self.assertTrue(first.acquire(timeout=0.01))
             try:
-                self.assertFalse(second.acquire(timeout=0.01))
+                # A contender may have seen the empty file before the first owner locked it.
+                with patch("app.core.file_lock.os.fstat", return_value=empty_stat):
+                    self.assertFalse(second.acquire(timeout=0.01))
             finally:
                 first.release()
             self.assertTrue(second.acquire(timeout=0.01))
