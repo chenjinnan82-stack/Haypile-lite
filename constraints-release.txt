@@ -17,7 +17,7 @@ idna==3.18
 mutagen==1.48.1
 Nuitka==4.0
 packaging==26.2
-pillow==12.3.0
+pillow==13.0.0
 pydantic==2.13.4
 pydantic-core==2.46.4
 pydantic-settings==2.14.2
