@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 from typing import Any
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.file_lock import InterProcessFileLock
 from app.services.font_service import FONT_USAGES
 from app.services.asset_integrity import asset_file_sha256
 from app.services.asset_provenance import public_origin_url, read_asset_provenance, write_asset_provenance
-from app.services.scanner import read_manifest_snapshot
+from app.services.scanner import manifest_dirty_path, read_manifest_snapshot
 from app.services.storage_runtime import StorageRuntimeDB
 from app.services.theme_registry import ThemeRegistry
 
@@ -31,6 +33,37 @@ GIF_ONLY_ROLES = {"reaction", "sticker", "ui_animation"}
 ALLOWED_BUNDLE_ROLES = {*ALLOWED_IMAGE_ROLES, "audio", "font"}
 ALLOWED_AUDIO_USAGES = {"music", "voice", "ambience", "sound_effect", "loop", "unknown"}
 MAX_BUNDLE_PAGE_SIZE = 100
+
+
+def catalog_search_stamp(settings: Settings, collections_path: Path) -> dict[str, tuple[int, ...]] | None:
+    # Stat metadata only. A read-only search must also notice changes made
+    # outside this window, including an original overwritten in place.
+    db = settings.INDEX_DIR / "storage_runtime.db"
+    wal = db.with_name(db.name + "-wal")
+    paths = [settings.MANIFEST_PATH, manifest_dirty_path(settings.MANIFEST_PATH),
+             collections_path, db, wal]
+    paths.extend(settings.THEMES_DIR.glob("*.json"))
+    for directory, subdirs, names in os.walk(settings.ASSETS_DIR):
+        # The normal library contains plain directories. Re-read unusual
+        # linked trees so that a retargeted link cannot reuse an old view.
+        if any(os.path.islink(os.path.join(directory, name)) for name in subdirs):
+            return None
+        paths.extend(os.path.join(directory, name) for name in names)
+    stamp = {}
+    for path in paths:
+        try:
+            info = os.stat(path, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        if stat.S_ISLNK(info.st_mode):
+            return None
+        # A read-only SQLite connection can recreate an empty WAL.
+        if path == wal and not info.st_size:
+            continue
+        stamp[os.fspath(path)] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    return stamp
 
 
 class BundleService:
@@ -65,13 +98,71 @@ class BundleService:
         limit: int | None = None,
         cursor: str | None = None,
     ) -> list[dict[str, Any]]:
+        bundles = self._project_bundles(self._read_manifest(), self._recorded_sha_by_dst_path())
+        resolved_batch_id = StorageRuntimeDB(self.runtime_db_path).resolve_batch_id(batch_id)
+        batch_order: dict[str, int] = {}
+        if batch_id is not None:
+            if not resolved_batch_id:
+                return []
+            batch_order = {
+                sha256: index
+                for index, sha256 in enumerate(
+                    StorageRuntimeDB(self.runtime_db_path).batch_hashes(resolved_batch_id)
+                )
+            }
+            bundles = [bundle for bundle in bundles if bundle["sha256"] in batch_order]
+
+        filters = {
+            "status": status,
+            "type": asset_type,
+            "role": role,
+            "theme_id": theme_id,
+            "audio_usage": audio_usage,
+            "font_usage": font_usage,
+        }
+        filtered = [
+            bundle
+            for bundle in bundles
+            if all(value is None or bundle[key] == value for key, value in filters.items())
+        ]
+        ordered = sorted(
+            filtered,
+            key=(
+                (lambda bundle: (batch_order.get(bundle["sha256"], len(batch_order)), bundle["id"], bundle["source_key"]))
+                if batch_order
+                else (lambda bundle: (bundle["source_key"], bundle["id"]))
+            ),
+        )
+        if cursor:
+            if batch_order:
+                cursor_index = next(
+                    (
+                        index
+                        for index, bundle in enumerate(ordered)
+                        if bundle["source_key"] == cursor
+                    ),
+                    -1,
+                )
+                ordered = ordered[cursor_index + 1 :] if cursor_index >= 0 else []
+            else:
+                # ponytail: source_key is the stable cursor for the default lexical order.
+                ordered = [bundle for bundle in ordered if bundle["source_key"] > cursor]
+        if limit is None:
+            return ordered
+        return ordered[: max(1, min(int(limit), MAX_BUNDLE_PAGE_SIZE))]
+
+    def _read_manifest(self) -> dict[str, Any]:
         manifest, readiness = read_manifest_snapshot(self.manifest_path)
         self.manifest_generation = str(readiness["manifest_generation"])
+        return manifest
+
+    def _project_bundles(
+        self, manifest: dict[str, Any], recorded_sha_by_path: dict[str, str],
+    ) -> list[dict[str, Any]]:
         theme_assets = self._theme_assets_by_url()
-        recorded_sha_by_path = self._recorded_sha_by_dst_path()
         bundles: list[dict[str, Any]] = []
 
-        for source_key, item in sorted(manifest.items()):
+        for source_key, item in manifest.items():
             if not isinstance(item, dict):
                 continue
             url = str(item.get("url_path") or "").strip()
@@ -85,7 +176,7 @@ class BundleService:
             if source_path is None:
                 continue
             asset_exists = source_path.is_file() and not source_path.is_symlink()
-            resolved_source = str(source_path.resolve(strict=False))
+            resolved_source = str(source_path)
             recorded_sha = recorded_sha_by_path.get(resolved_source, "").lower()
             projected_sha = str(item.get("sha256") or "").lower()
             expected_sha = recorded_sha or projected_sha
@@ -136,64 +227,34 @@ class BundleService:
                     "font_annotation": provenance.get("font_annotation", {}) if item_type == "font" else {},
                 }
             )
-
-        resolved_batch_id = StorageRuntimeDB(self.runtime_db_path).resolve_batch_id(batch_id)
-        batch_order: dict[str, int] = {}
-        if batch_id is not None:
-            if not resolved_batch_id:
-                return []
-            batch_order = {
-                sha256: index
-                for index, sha256 in enumerate(
-                    StorageRuntimeDB(self.runtime_db_path).batch_hashes(resolved_batch_id)
-                )
-            }
-            bundles = [bundle for bundle in bundles if bundle["sha256"] in batch_order]
-
-        filters = {
-            "status": status,
-            "type": asset_type,
-            "role": role,
-            "theme_id": theme_id,
-            "audio_usage": audio_usage,
-            "font_usage": font_usage,
-        }
-        filtered = [
-            bundle
-            for bundle in bundles
-            if all(value is None or bundle[key] == value for key, value in filters.items())
-        ]
-        ordered = sorted(
-            filtered,
-            key=(
-                (lambda bundle: (batch_order.get(bundle["sha256"], len(batch_order)), bundle["id"]))
-                if batch_order
-                else (lambda bundle: (bundle["source_key"], bundle["id"]))
-            ),
-        )
-        if cursor:
-            if batch_order:
-                cursor_index = next(
-                    (
-                        index
-                        for index, bundle in enumerate(ordered)
-                        if bundle["source_key"] == cursor
-                    ),
-                    -1,
-                )
-                ordered = ordered[cursor_index + 1 :] if cursor_index >= 0 else []
-            else:
-                # ponytail: source_key is the stable cursor for the default lexical order.
-                ordered = [bundle for bundle in ordered if bundle["source_key"] > cursor]
-        if limit is None:
-            return ordered
-        return ordered[: max(1, min(int(limit), MAX_BUNDLE_PAGE_SIZE))]
+        return bundles
 
     def list_recent_bundles(self, limit: int = 3) -> list[dict[str, Any]]:
-        bundles = self.list_bundles()
+        manifest = self._read_manifest()
+        limit = max(0, min(int(limit), MAX_BUNDLE_PAGE_SIZE))
+        if not limit:
+            self.theme_read_errors.clear()
+            return []
+        recorded = self._recorded_sha_by_dst_path()
         order = {digest: index for index, digest in enumerate(
             StorageRuntimeDB.read_recent_asset_hashes(self.runtime_db_path)
         )}
+
+        # Current libraries record canonical paths. Historical or partial catalogs
+        # can need a file digest or mtime to establish their order.
+        if order:
+            root = self.assets_dir.resolve()
+            by_key = {key: recorded.get(str(root / key.replace("\\", "/"))) for key in manifest}
+            ranked = sorted((order[digest], key) for key, digest in by_key.items() if digest in order)
+            if all(by_key.values()) and len(ranked) >= limit:
+                candidates = {key: manifest[key] for _, key in ranked[:limit]}
+                bundles = self._project_bundles(candidates, recorded)
+                if len(bundles) == limit and all(
+                    bundle["sha256"] == by_key[bundle["source_key"]] for bundle in bundles
+                ):
+                    return bundles
+
+        bundles = self._project_bundles(manifest, recorded)
 
         def recent_key(bundle):
             digest = bundle["sha256"]
@@ -207,7 +268,7 @@ class BundleService:
             return (1, -modified, bundle["source_key"])
 
         bundles.sort(key=recent_key)
-        return bundles[:max(0, min(int(limit), MAX_BUNDLE_PAGE_SIZE))]
+        return bundles[:limit]
 
     def get_latest_batch(self) -> dict[str, object] | None:
         return StorageRuntimeDB(self.runtime_db_path).latest_batch()

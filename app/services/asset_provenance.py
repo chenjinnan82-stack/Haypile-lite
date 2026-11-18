@@ -17,7 +17,7 @@ def provenance_path_for(asset_path: Path) -> Path:
 def read_asset_provenance(asset_path: Path) -> dict[str, Any]:
     try:
         parsed = json.loads(provenance_path_for(asset_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
     return sanitize_provenance(parsed) if isinstance(parsed, dict) else {}
 

@@ -88,7 +88,7 @@ from app.services.ai_provider import (
     api_authority,
     normalize_api_base_url,
 )
-from app.services.bundle_service import BundleService
+from app.services.bundle_service import BundleService, catalog_search_stamp
 from app.services.asset_integrity import asset_file_sha256
 from app.services.image_palette import dominant_colors
 from PIL import Image
@@ -1345,6 +1345,8 @@ class MaterialPanelWindow(QWidget):
         self._confirmation_available = False
         self._recent_items = []
         self._all_recent_items = []
+        self._catalog_unavailable = True
+        self._search_stamp = None
         self._visible_items = []
         self._page_index = 0
         self._filter_mode = "all"
@@ -1583,7 +1585,7 @@ class MaterialPanelWindow(QWidget):
         self._search_refresh_timer = QTimer(self)
         self._search_refresh_timer.setSingleShot(True)
         self._search_refresh_timer.setInterval(180)
-        self._search_refresh_timer.timeout.connect(self.refresh)
+        self._search_refresh_timer.timeout.connect(self._refresh_search)
         self.search_input.textChanged.connect(self._on_search_changed)
         layout.addWidget(self.search_input)
 
@@ -2212,8 +2214,10 @@ class MaterialPanelWindow(QWidget):
             self.hide()
 
     def refresh(self) -> None:
-        self._stop_audio_preview()
-        self._stop_gif_preview(reset_to_first=True, discard=True)
+        self._search_refresh_timer.stop()
+        self._search_stamp = (
+            catalog_search_stamp(self.settings, self._collections_path()) if self._embedded else None
+        )
         self._refresh_collections()
         service = self._bundle_service()
         catalog_unavailable = False
@@ -2252,6 +2256,118 @@ class MaterialPanelWindow(QWidget):
         scoped_items = [] if catalog_unavailable else list(summary.recent_items)
         self._all_recent_items = scoped_items
         self._refresh_font_families(scoped_bundles)
+        self._catalog_unavailable = catalog_unavailable
+        project_summary = None
+        if not self._embedded:
+            from app.services.experimental_project_summary import (
+                build_material_panel_summary as build_experimental_project_summary,
+            )
+
+            project_summary = build_experimental_project_summary(
+                assets_dir=self.settings.ASSETS_DIR,
+                manifest_path=self.settings.MANIFEST_PATH,
+                themes_dir=self.settings.THEMES_DIR,
+            )
+            if project_summary.project_display_label:
+                self.project_label.setText(project_summary.project_display_label)
+                self.project_label.setToolTip(project_summary.real_project_root)
+                self.project_label.setStyleSheet(
+                    "QLabel { "
+                    f"color: {self._project_display_color(project_summary.project_display_state)}; "
+                    "font-size: 11px; background: transparent; border: none; }"
+                )
+            else:
+                self.project_label.setText("")
+                self.project_label.setToolTip("")
+        else:
+            self.project_label.setText("")
+            self.project_label.setToolTip("")
+        self.project_label.hide()
+
+        total_count = len(scoped_bundles)
+        recognized_count = sum(1 for bundle in scoped_bundles if bundle.get("status") == "ready")
+        pending_count = sum(1 for bundle in scoped_bundles if bundle.get("status") == "pending")
+        if self._embedded:
+            summary_text = ui_text(
+                f"{total_count} 个素材 · 可用 {recognized_count}\n待确认 {pending_count}",
+                f"{total_count} assets · Ready {recognized_count}\nPending {pending_count}",
+            )
+        else:
+            summary_text = ui_text(
+                f"{summary.total_count} 个 bundle · 可用 {summary.recognized_count} · 待确认 {summary.pending_count}",
+                f"{summary.total_count} bundles · Ready {summary.recognized_count} · Pending {summary.pending_count}",
+            )
+        self.summary_label.setText(summary_text)
+        self.collection_actions.setVisible(self._embedded and bool(self._collection_id))
+        self.collection_copy.setEnabled(self._collections_ready and not catalog_unavailable and recognized_count > 0)
+        if self._collection_id:
+            collection = next((item for item in self._collections if item["id"] == self._collection_id), None)
+            member_count = len(collection["asset_ids"]) if collection else 0
+            omitted = member_count - recognized_count
+            self.collection_summary.setText(ui_text(
+                f"{member_count} 项 · 可用 {recognized_count} · 未交付 {omitted}",
+                f"{member_count} items · Ready {recognized_count} · Omitted {omitted}",
+            ) if self._collections_ready and collection else ui_text("组合记录暂不可用", "Group record unavailable"))
+        if summary.pending_count and not self._embedded:
+            self.pending_label.setText(ui_text(f"{summary.pending_count} 个待确认用途", f"{summary.pending_count} roles need review"))
+            self.pending_label.show()
+        else:
+            self.pending_label.setText("")
+            self.pending_label.hide()
+
+        service_lines = [summary.recognition_status, summary.service_status]
+        if project_summary is not None and project_summary.project_picker_status_line:
+            service_lines.append(project_summary.project_picker_status_line)
+        self.service_label.setText("\n".join(line for line in service_lines if line))
+        if project_summary is not None and project_summary.panel_display_text:
+            self.rehearsal_label.setText(project_summary.panel_display_text)
+            self.rehearsal_label.setToolTip(
+                project_summary.project_picker_tooltip or project_summary.panel_status_text
+            )
+        else:
+            self.rehearsal_label.setText("")
+            self.rehearsal_label.setToolTip("")
+        self.rehearsal_label.hide()
+        self.service_label.hide()
+        self._confirmation_available = bool(
+            project_summary is not None and project_summary.confirmation_available
+        )
+        latest = (
+            service.get_latest_batch()
+            if not catalog_unavailable and hasattr(service, "get_latest_batch")
+            else None
+        )
+        self.retry_batch_button.setEnabled(
+            self._batch_scope == "latest" and latest is not None and bool(scoped_bundles)
+        )
+        if self.confirmation_preview is not None and project_summary is not None:
+            self.confirmation_preview.update_prompt(
+                title=project_summary.confirmation_title,
+                body=project_summary.confirmation_body,
+                summary=project_summary.confirmation_summary,
+                warning=project_summary.confirmation_warning,
+                action=project_summary.confirmation_action,
+                project_root=project_summary.real_project_root,
+                primary_label=project_summary.confirmation_primary_label,
+            )
+            if not self._confirmation_available:
+                self.confirmation_preview.hide()
+
+        self._render_search_results()
+
+    def _refresh_search(self) -> None:
+        if self._search_stamp is None or self._search_stamp != catalog_search_stamp(
+            self.settings, self._collections_path()
+        ):
+            self.refresh()
+            return
+        self._render_search_results()
+
+    def _render_search_results(self) -> None:
+        self._stop_audio_preview()
+        self._stop_gif_preview(reset_to_first=True, discard=True)
+        scoped_items = self._all_recent_items
+        catalog_unavailable = self._catalog_unavailable
         self._recent_items = self._filter_recent_items(scoped_items)
         page_size = len(self.item_labels)
         page_count = max(1, math.ceil(len(self._recent_items) / page_size))
@@ -2325,64 +2441,6 @@ class MaterialPanelWindow(QWidget):
             )
             self.empty_state_label.setAccessibleDescription(empty_text.replace("\n", " "))
             self.empty_state_label.show()
-        project_summary = None
-        if not self._embedded:
-            from app.services.experimental_project_summary import (
-                build_material_panel_summary as build_experimental_project_summary,
-            )
-
-            project_summary = build_experimental_project_summary(
-                assets_dir=self.settings.ASSETS_DIR,
-                manifest_path=self.settings.MANIFEST_PATH,
-                themes_dir=self.settings.THEMES_DIR,
-            )
-            if project_summary.project_display_label:
-                self.project_label.setText(project_summary.project_display_label)
-                self.project_label.setToolTip(project_summary.real_project_root)
-                self.project_label.setStyleSheet(
-                    "QLabel { "
-                    f"color: {self._project_display_color(project_summary.project_display_state)}; "
-                    "font-size: 11px; background: transparent; border: none; }"
-                )
-            else:
-                self.project_label.setText("")
-                self.project_label.setToolTip("")
-        else:
-            self.project_label.setText("")
-            self.project_label.setToolTip("")
-        self.project_label.hide()
-
-        total_count = len(scoped_bundles)
-        recognized_count = sum(1 for bundle in scoped_bundles if bundle.get("status") == "ready")
-        pending_count = sum(1 for bundle in scoped_bundles if bundle.get("status") == "pending")
-        if self._embedded:
-            summary_text = ui_text(
-                f"{total_count} 个素材 · 可用 {recognized_count}\n待确认 {pending_count}",
-                f"{total_count} assets · Ready {recognized_count}\nPending {pending_count}",
-            )
-        else:
-            summary_text = ui_text(
-                f"{summary.total_count} 个 bundle · 可用 {summary.recognized_count} · 待确认 {summary.pending_count}",
-                f"{summary.total_count} bundles · Ready {summary.recognized_count} · Pending {summary.pending_count}",
-            )
-        self.summary_label.setText(summary_text)
-        self.collection_actions.setVisible(self._embedded and bool(self._collection_id))
-        self.collection_copy.setEnabled(self._collections_ready and not catalog_unavailable and recognized_count > 0)
-        if self._collection_id:
-            collection = next((item for item in self._collections if item["id"] == self._collection_id), None)
-            member_count = len(collection["asset_ids"]) if collection else 0
-            omitted = member_count - recognized_count
-            self.collection_summary.setText(ui_text(
-                f"{member_count} 项 · 可用 {recognized_count} · 未交付 {omitted}",
-                f"{member_count} items · Ready {recognized_count} · Omitted {omitted}",
-            ) if self._collections_ready and collection else ui_text("组合记录暂不可用", "Group record unavailable"))
-        if summary.pending_count and not self._embedded:
-            self.pending_label.setText(ui_text(f"{summary.pending_count} 个待确认用途", f"{summary.pending_count} roles need review"))
-            self.pending_label.show()
-        else:
-            self.pending_label.setText("")
-            self.pending_label.hide()
-
         selected_item = None
         for idx, label in enumerate(self.item_labels):
             if idx >= len(self._visible_items):
@@ -2421,44 +2479,6 @@ class MaterialPanelWindow(QWidget):
             selected_bundle = self._bundle_for_item(selected_item)
             self._show_preview_for_item(selected_item, selected_bundle)
             self._show_detail_for_bundle(selected_bundle)
-
-        service_lines = [summary.recognition_status, summary.service_status]
-        if project_summary is not None and project_summary.project_picker_status_line:
-            service_lines.append(project_summary.project_picker_status_line)
-        self.service_label.setText("\n".join(line for line in service_lines if line))
-        if project_summary is not None and project_summary.panel_display_text:
-            self.rehearsal_label.setText(project_summary.panel_display_text)
-            self.rehearsal_label.setToolTip(
-                project_summary.project_picker_tooltip or project_summary.panel_status_text
-            )
-        else:
-            self.rehearsal_label.setText("")
-            self.rehearsal_label.setToolTip("")
-        self.rehearsal_label.hide()
-        self.service_label.hide()
-        self._confirmation_available = bool(
-            project_summary is not None and project_summary.confirmation_available
-        )
-        latest = (
-            service.get_latest_batch()
-            if not catalog_unavailable and hasattr(service, "get_latest_batch")
-            else None
-        )
-        self.retry_batch_button.setEnabled(
-            self._batch_scope == "latest" and latest is not None and bool(scoped_bundles)
-        )
-        if self.confirmation_preview is not None and project_summary is not None:
-            self.confirmation_preview.update_prompt(
-                title=project_summary.confirmation_title,
-                body=project_summary.confirmation_body,
-                summary=project_summary.confirmation_summary,
-                warning=project_summary.confirmation_warning,
-                action=project_summary.confirmation_action,
-                project_root=project_summary.real_project_root,
-                primary_label=project_summary.confirmation_primary_label,
-            )
-            if not self._confirmation_available:
-                self.confirmation_preview.hide()
 
     def _set_filter_mode(self, mode: str) -> None:
         self._leave_search_input_mode()
@@ -3618,30 +3638,31 @@ class MaterialPanelWindow(QWidget):
 
     @staticmethod
     def _role_label(role: str) -> str:
-        return {
-            "main_background": ui_text("背景", "Background"),
-            "hero_image": ui_text("主视觉", "Hero"),
-            "logo": "Logo",
-            "icon": ui_text("图标", "Icon"),
-            "content_image": ui_text("内容图", "Content image"),
-            "texture": ui_text("纹理", "Texture"),
-            "reaction": ui_text("反应", "Reaction"),
-            "sticker": ui_text("贴纸", "Sticker"),
-            "ui_animation": ui_text("界面动画", "UI animation"),
-            "audio": ui_text("音频", "Audio"),
-            "font": ui_text("字体", "Font"),
-            "unknown": ui_text("未确定", "Unknown"),
-            "参考图": ui_text("参考图", "Reference"),
-            "未确定": ui_text("未确定", "Unknown"),
-            "标题字体": ui_text("标题字体", "Heading font"),
-            "正文字体": ui_text("正文字体", "Body font"),
-            "装饰字体": ui_text("装饰字体", "Decorative font"),
-            "字体待确认": ui_text("字体待确认", "Font pending"),
-            "背景": ui_text("背景", "Background"),
-            "主视觉": ui_text("主视觉", "Hero"),
-            "图标": ui_text("图标", "Icon"),
-            "纹理": ui_text("纹理", "Texture"),
-        }.get(role, role)
+        labels = {
+            "main_background": ("背景", "Background"),
+            "hero_image": ("主视觉", "Hero"),
+            "logo": ("Logo", "Logo"),
+            "icon": ("图标", "Icon"),
+            "content_image": ("内容图", "Content image"),
+            "texture": ("纹理", "Texture"),
+            "reaction": ("反应", "Reaction"),
+            "sticker": ("贴纸", "Sticker"),
+            "ui_animation": ("界面动画", "UI animation"),
+            "audio": ("音频", "Audio"),
+            "font": ("字体", "Font"),
+            "unknown": ("未确定", "Unknown"),
+            "参考图": ("参考图", "Reference"),
+            "未确定": ("未确定", "Unknown"),
+            "标题字体": ("标题字体", "Heading font"),
+            "正文字体": ("正文字体", "Body font"),
+            "装饰字体": ("装饰字体", "Decorative font"),
+            "字体待确认": ("字体待确认", "Font pending"),
+            "背景": ("背景", "Background"),
+            "主视觉": ("主视觉", "Hero"),
+            "图标": ("图标", "Icon"),
+            "纹理": ("纹理", "Texture"),
+        }.get(role)
+        return ui_text(*labels) if labels else role
 
     @classmethod
     def _display_role_label(cls, role: str) -> str:

@@ -45,6 +45,18 @@ class BundleServiceTests(unittest.TestCase):
             )
             self.assertEqual(service.list_bundles(role="icon"), [])
 
+    def test_invalid_utf8_in_source_metadata_keeps_original_available(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            service = _bundle_service(Path(raw))
+            key = "generic/images/generic_img_hero_image_abcd.png"
+            metadata = service.assets_dir / (key + ".provenance.json")
+            metadata.write_bytes(b"\xff")
+            bundle = next(item for item in service.list_bundles() if item["source_key"] == key)
+            self.assertEqual(bundle["status"], "ready")
+            self.assertEqual(bundle["sha256"], hashlib.sha256(b"hero").hexdigest())
+            self.assertEqual(bundle["origin_url"], "")
+            self.assertEqual(metadata.read_bytes(), b"\xff")
+
     def test_unreadable_theme_is_reported_without_repair_until_explicit_write(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

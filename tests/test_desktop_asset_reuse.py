@@ -240,6 +240,16 @@ class DesktopAssetReuseTests(unittest.TestCase):
         self.assertEqual(self.card.store_button.text(), "复制原文件")
         self.assertFalse(self.ball.quick_menu.isVisible())
 
+    def test_recent_verifies_only_displayed_files_and_keeps_the_recorded_identity(self):
+        source = self.bundle_for(self.png)
+        self.assertTrue(self.ingest.ingest([IngestCandidate(self.png)]).duplicate_only)
+        stored = self.settings.ASSETS_DIR / source["source_key"]
+        stored.write_bytes(b"replaced original")
+        with patch("app.services.bundle_service.asset_file_sha256", wraps=app_gui.asset_file_sha256) as verify:
+            recent = self.service.list_recent_bundles(limit=1)
+        self.assertEqual([call.args[0] for call in verify.call_args_list], [stored.resolve()])
+        self.assertEqual([(item["id"], item["status"]) for item in recent], [(source["id"], "missing")])
+
     def test_copy_original_files_with_keyboard_preserves_formats_and_pending_state(self):
         for original in self.originals:
             with self.subTest(format=original.suffix):
@@ -812,6 +822,35 @@ class DesktopAssetReuseTests(unittest.TestCase):
                 panel.search_input.setText(query)
                 panel.refresh()
                 self.assertEqual([item.source_key for item in panel._visible_items], [audio["source_key"]])
+
+    def test_search_reuses_the_open_catalog_and_refreshes_after_storage_changes(self):
+        panel = self.ball.material_panel
+        panel.set_batch_scope("all")
+        font = self.bundle_for(self.font)
+        stored = self.settings.ASSETS_DIR / font["source_key"]
+
+        def find(query):
+            panel.search_input.setText(query)
+            panel._search_refresh_timer.stop()
+            panel._search_refresh_timer.timeout.emit()
+            return [item.source_key for item in panel._recent_items]
+
+        with patch.object(app_gui.BundleService, "list_bundles", side_effect=AssertionError("reread catalog")):
+            self.assertEqual(find(font["sha256"]), [font["source_key"]])
+            self.assertEqual(find("no-such-asset"), [])
+        write_asset_provenance(stored, {"font_annotation": {"license_note": "regression-note"}})
+        self.assertEqual(find("regression-note"), [font["source_key"]])
+        stored.write_bytes(b"changed")
+        self.assertEqual(find(font["sha256"]), [font["source_key"]])
+        self.assertEqual(panel._bundle_for_item(panel._recent_items[0])["status"], "missing")
+        mark_manifest_dirty(self.settings.MANIFEST_PATH)
+        self.assertEqual(find(""), [])
+        self.assertTrue(panel._catalog_unavailable)
+        manifest_dirty_path(self.settings.MANIFEST_PATH).unlink()
+        self.assertEqual(find(font["sha256"]), [font["source_key"]])
+        panel.set_batch_scope("latest")
+        self.assertTrue(self.ingest.ingest([IngestCandidate(self.png)]).duplicate_only)
+        self.assertEqual(find(""), [self.bundle_for(self.png)["source_key"]])
 
     def test_search_combines_font_source_and_usage_without_changing_group_members(self):
         panel = self.ball.material_panel
