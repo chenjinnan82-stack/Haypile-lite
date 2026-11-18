@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest] # setup-python provides release Python 3.12.10 on 24.04.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
