@@ -809,10 +809,8 @@ class StorageRuntimeDB:
     @classmethod
     def read_asset_hash_index(cls, db_path: Path, assets_dir: Path) -> dict[str, Path]:
         """Read verified cache entries without initializing or changing storage."""
-        if not db_path.is_file():
-            return {}
         try:
-            with closing(sqlite3.connect(str(db_path))) as conn:
+            with closing(sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
                 rows = conn.execute(
                     "SELECT sha256, dst_path, dst_size, dst_mtime_ns FROM vfs_asset_links"
                 ).fetchall()
@@ -823,10 +821,8 @@ class StorageRuntimeDB:
     @classmethod
     def read_recorded_asset_hash_index(cls, db_path: Path, assets_dir: Path) -> dict[str, Path]:
         """Read recorded identities for reporting missing committed assets."""
-        if not db_path.is_file():
-            return {}
         try:
-            with closing(sqlite3.connect(str(db_path))) as conn:
+            with closing(sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
                 rows = conn.execute(
                     """
                     SELECT sha256, dst_path FROM vfs_asset_links

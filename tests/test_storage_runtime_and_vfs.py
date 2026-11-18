@@ -181,6 +181,24 @@ class StorageRuntimeDBTests(unittest.TestCase):
             time.sleep(0.05)
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+    def test_index_lookup_during_library_replacement_does_not_recreate_the_database(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            db_path = root / "old library #1.db"
+            connect = sqlite3.connect
+
+            def move_before_open(*args, **kwargs):
+                db_path.rename(root / "saved.db")
+                return connect(*args, **kwargs)
+
+            for read in (StorageRuntimeDB.read_asset_hash_index, StorageRuntimeDB.read_recorded_asset_hash_index):
+                with self.subTest(read=read.__name__):
+                    db_path.touch()
+                    with patch("sqlite3.connect", side_effect=move_before_open):
+                        self.assertEqual(read(db_path, root / "assets"), {})
+                    self.assertFalse(db_path.exists())
+                    (root / "saved.db").unlink()
+
     def test_storage_runtime_adds_cache_columns_to_legacy_database(self) -> None:
         tmpdir = Path(tempfile.mkdtemp())
         try:
