@@ -2778,6 +2778,7 @@ class MaterialPanelWindow(QWidget):
                 bundle["status"],
                 bundle["type"],
                 bundle.get("audio_usage", ""),
+                self._audio_usage_label(bundle.get("audio_usage", "")) if item.asset_type == "audio" else "",
                 bundle.get("audio_tags", {}),
                 suggestions.get("tags", []),
                 suggestions.get("agent_summary", ""),

@@ -54,7 +54,12 @@ class StorageRuntimeDB:
     def has_asset_records(self) -> bool:
         """Check recorded state, including links whose files may be missing."""
         with closing(self.get_connection()) as conn:
-            return conn.execute("SELECT 1 FROM vfs_asset_links LIMIT 1").fetchone() is not None
+            return conn.execute("""
+                SELECT 1 FROM vfs_asset_links
+                UNION ALL
+                SELECT 1 FROM ingest_batch_items WHERE state IN ('discovered', 'staged', 'committed')
+                LIMIT 1
+            """).fetchone() is not None
 
     def checkpoint(self) -> bool:
         """Flush WAL before moving the database; false means an active reader blocked it."""

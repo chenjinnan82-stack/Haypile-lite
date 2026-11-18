@@ -802,6 +802,17 @@ class DesktopAssetReuseTests(unittest.TestCase):
         self.assertFalse(self.card.isVisible())
         self.assertEqual(self.ball.quick_menu.size(), app_gui.QSize(620, 520))
 
+    def test_search_finds_audio_by_its_displayed_usage(self):
+        audio = self.bundle_for(self.audio)
+        self.service.set_bundle_audio_usage(audio["id"], "sound_effect")
+        self.ball._handle_quick_menu_action("assets")
+        panel = self.ball.material_panel
+        for language, query in (("zh", "音效"), ("en", "SFX")):
+            with self.subTest(language=language), patch.object(app_gui, "ui_language", return_value=language):
+                panel.search_input.setText(query)
+                panel.refresh()
+                self.assertEqual([item.source_key for item in panel._visible_items], [audio["source_key"]])
+
     def test_search_combines_font_source_and_usage_without_changing_group_members(self):
         panel = self.ball.material_panel
         font = self.bundle_for(self.font)

@@ -150,12 +150,22 @@ class PageFontHTMLParser(HTMLParser):
     def __init__(self, page_url: str) -> None:
         super().__init__(convert_charrefs=True)
         self.base = page_url
-        self.references: list[FontReference] = []
-        self.stylesheets: list[str] = []
+        self._font_links: list[tuple[str, str]] = []
+        self._stylesheet_links: list[str] = []
         self.styles: list[str] = []
         self._style = False
         self._base_seen = False
         self._template_depth = 0
+
+    @property
+    def references(self) -> list[FontReference]:
+        # The first active <base href> also applies to links earlier in the document.
+        return [FontReference(((url, extension),)) for href, extension in self._font_links
+                if (url := _url(self.base, href))]
+
+    @property
+    def stylesheets(self) -> list[str]:
+        return [url for href in self._stylesheet_links if (url := _url(self.base, href))]
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "template":
@@ -176,8 +186,8 @@ class PageFontHTMLParser(HTMLParser):
             return
         rel = values.get("rel", "").lower().split()
         if tag == "link" and "stylesheet" in rel:
-            if len(self.stylesheets) < MAX_STYLESHEETS * 4:
-                self.stylesheets.append(url)
+            if len(self._stylesheet_links) < MAX_STYLESHEETS * 4:
+                self._stylesheet_links.append(href)
             return
         extension = Path(unquote(urlsplit(url).path)).suffix.lower()
         if extension not in SUPPORTED_FONT_EXTENSIONS:
@@ -186,8 +196,8 @@ class PageFontHTMLParser(HTMLParser):
         if extension not in SUPPORTED_FONT_EXTENSIONS:
             extension = FONT_CONTENT_TYPE_EXTENSIONS.get(content_type, "")
         if extension in SUPPORTED_FONT_EXTENSIONS or values.get("as", "").lower() == "font" or content_type.startswith("font/"):
-            if len(self.references) < MAX_WEB_FONTS * 4:
-                self.references.append(FontReference(((url, extension),)))
+            if len(self._font_links) < MAX_WEB_FONTS * 4:
+                self._font_links.append((href, extension))
 
     def handle_data(self, data: str) -> None:
         if self._style and not self._template_depth:

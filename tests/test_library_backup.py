@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -77,6 +79,64 @@ class LibraryBackupTests(unittest.TestCase):
             backup.restore_backup(self.source,self.archive)
         self.assertEqual(previous,self.source.MANIFEST_PATH.read_bytes())
         self.assertEqual(len(self.bundle(self.source).list_bundles()),2)
+
+    def test_checkout_placeholders_allow_backup_and_restore(self):
+        for settings in (self.source, self.destination):
+            for directory in (settings.ASSETS_DIR, settings.THEMES_DIR):
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory/'.gitkeep').touch()
+        marker = self.destination.ASSETS_DIR/'.gitkeep'
+        marker.write_bytes(b'user content')
+        with self.assertRaisesRegex(backup.BackupError, 'library_not_empty'):
+            backup.restore_backup(self.destination, self.archive)
+        self.assertEqual(marker.read_bytes(), b'user content')
+        marker.write_bytes(b'')
+        (self.destination.ASSETS_DIR/'.DS_Store').touch()
+        self.assertEqual(backup.create_backup(self.source, self.archive), 2)
+        self.assertEqual(backup.restore_backup(self.destination, self.archive), 2)
+        for directory in (self.destination.ASSETS_DIR, self.destination.THEMES_DIR):
+            self.assertEqual((directory/'.gitkeep').read_bytes(), b'')
+
+    def test_extra_theme_attachment_roundtrips_as_original_bytes(self):
+        relative = Path('notes')/'palette.bin'
+        attachment = self.source.THEMES_DIR/relative
+        attachment.parent.mkdir(parents=True)
+        attachment.write_bytes(bytes(range(256)))
+        backup.create_backup(self.source, self.archive)
+        backup.restore_backup(self.destination, self.archive)
+        self.assertEqual((self.destination.THEMES_DIR/relative).read_bytes(), attachment.read_bytes())
+
+    def test_unrestorable_backup_keeps_previous_archive(self):
+        previous = self.archive.read_bytes()
+        with zipfile.ZipFile(self.archive) as archive:
+            member_bytes = sum(item.file_size for item in archive.infolist() if item.filename != 'library.json')
+        with patch.object(backup, 'MAX_TOTAL', member_bytes), self.assertRaisesRegex(backup.BackupError, 'archive_limit'):
+            backup.create_backup(self.source, self.archive)
+        self.assertEqual(self.archive.read_bytes(), previous)
+        save_collection(self.source.STORAGE_DIR/'collections.json', 'missing member', asset_id='0' * 64)
+        with self.assertRaises(backup.BackupError):
+            backup.create_backup(self.source, self.archive)
+        self.assertEqual(self.archive.read_bytes(), previous)
+
+    def test_restore_keeps_committed_history_even_if_asset_and_link_are_missing(self):
+        service = self.ingest(self.destination)
+        self.assertTrue(service.ingest([IngestCandidate(self.root/'test.ttf')]).success)
+        path = self.destination.ASSETS_DIR/self.bundle(self.destination).get_bundle(self.font_id)['source_key']
+        path.unlink()
+        with closing(sqlite3.connect(self.destination.INDEX_DIR/'storage_runtime.db')) as db, db:
+            db.execute('DELETE FROM vfs_asset_links')
+        latest = self.bundle(self.destination).get_latest_batch()
+        with self.assertRaisesRegex(backup.BackupError, 'library_not_empty'):
+            backup.restore_backup(self.destination, self.archive)
+        self.assertEqual(self.bundle(self.destination).get_latest_batch(), latest)
+
+    def test_restore_keeps_custom_theme_display_name(self):
+        self.destination.THEMES_DIR.mkdir(parents=True)
+        theme = self.destination.THEMES_DIR/'generic.json'
+        theme.write_text('{"theme_name":"My project"}', encoding='utf-8')
+        with self.assertRaisesRegex(backup.BackupError, 'library_not_empty'):
+            backup.restore_backup(self.destination, self.archive)
+        self.assertEqual(json.loads(theme.read_text(encoding='utf-8')), {'theme_name':'My project'})
 
     def test_backup_and_restore_use_portable_file_io(self):
         real_fsync = os.fsync

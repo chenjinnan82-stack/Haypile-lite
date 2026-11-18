@@ -121,6 +121,17 @@ class WebFontIntakeTests(unittest.TestCase):
         self.assertEqual(self.calls, [self.page, "https://public.example/assets/font.woff2"])
         self.assertEqual(candidates[0].path.read_bytes(), self.woff.read_bytes())
 
+    def test_late_page_base_applies_to_download_links_and_stylesheets(self):
+        self.add_page('<link rel="stylesheet" href="theme.css">'
+                      '<link rel="preload" as="font" href="original.ttf"><base href="/fonts/">')
+        base = "https://public.example/fonts/"
+        self.resources[base + "theme.css"] = ("text/css", b'@font-face{src:url(face.woff2)}')
+        self.resources[base + "face.woff2"] = ("font/woff2", self.woff.read_bytes())
+        self.resources[base + "original.ttf"] = ("font/ttf", self.original.read_bytes())
+        candidates, limited, failed = self.discover()
+        self.assertEqual((len(candidates), limited, failed), (2, False, 0))
+        self.assertCountEqual(self.calls, [self.page, *(base + name for name in ("theme.css", "face.woff2", "original.ttf"))])
+
     def test_page_stylesheet_font_budget_and_cancellation_cleanup(self):
         for limits in ({"max_fonts": 0}, {"max_bytes": 0}):
             self.calls.clear()

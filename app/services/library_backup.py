@@ -74,6 +74,19 @@ def _validate_names(names):
             seen[folded] = prefix
 
 
+def _checkout_marker(path, directory):
+    return (path == directory/'.gitkeep' and not path.is_symlink()
+            and path.is_file() and path.stat().st_size == 0)
+
+
+def _asset_entry(name):
+    return name.startswith('assets/') and not name.endswith('.provenance.json')
+
+
+def _entry_limit(name):
+    return 500 * CHUNK if _asset_entry(name) else MAX_METADATA
+
+
 def _inventory(root):
     paths = []
     for directory in ('assets', 'themes'):
@@ -81,7 +94,7 @@ def _inventory(root):
         for path in sorted(base.rglob('*')):
             if path.is_symlink():
                 raise BackupError('unsafe_library_path')
-            if path.name in ('.DS_Store', 'Thumbs.db'):
+            if path.name in ('.DS_Store', 'Thumbs.db') or _checkout_marker(path, base):
                 continue
             if path.is_file():
                 paths.append(path)
@@ -121,13 +134,18 @@ def create_backup(settings, destination, *, cancel=lambda: False, progress=lambd
             if (root/TRANSACTION).exists():
                 raise BackupError('library_busy')
             before = _inventory(root)
-            if len(before) > MAX_FILES or sum(s[0] for s in before.values()) > MAX_TOTAL:
+            total = sum(s[0] for s in before.values())
+            if (len(before) > MAX_FILES or total > MAX_TOTAL or
+                    any(entry[0] > _entry_limit(name) for name, entry in before.items())):
                 raise BackupError('archive_limit')
-            if shutil.disk_usage(destination.parent).free < sum(s[0] for s in before.values()) + 256 * CHUNK:
+            if shutil.disk_usage(destination.parent).free < total + 256 * CHUNK:
                 raise BackupError('insufficient_space')
-            read_collections(root/'collections.json')
+            collections = read_collections(root/'collections.json')
             recorded = StorageRuntimeDB.read_recorded_asset_hash_index(root/'index/storage_runtime.db', root/'assets')
             recent = StorageRuntimeDB.read_recent_asset_hashes(root/'index/storage_runtime.db')
+            if (any(member not in recorded for c in collections for member in c['asset_ids'])
+                    or any(digest not in recorded for digest in recent)):
+                raise BackupError('unindexed_assets')
             fd, name = tempfile.mkstemp(prefix='.haypile-backup-', suffix='.tmp', dir=destination.parent)
             temporary = Path(name)
             os.close(fd)
@@ -136,7 +154,7 @@ def create_backup(settings, destination, *, cancel=lambda: False, progress=lambd
                 for number, name in enumerate(before, 1):
                     _check_cancel(cancel)
                     if name.endswith('.json'):
-                        if before[name][0] > MAX_METADATA or not isinstance(json.loads((root/name).read_text(encoding='utf-8')), dict):
+                        if not isinstance(json.loads((root/name).read_text(encoding='utf-8')), dict):
                             raise BackupError('invalid_library_metadata')
                     progress(f'{number}/{len(before)}')
                     with (root/name).open('rb') as source, archive.open(name, 'w', force_zip64=True) as output:
@@ -146,14 +164,14 @@ def create_backup(settings, destination, *, cancel=lambda: False, progress=lambd
                     name = path.relative_to(root).as_posix()
                     if name not in entries or entries[name]['sha256'] != digest:
                         raise BackupError('library_changed')
-                assets = [name for name in entries if name.startswith('assets/') and not name.endswith('.provenance.json')]
+                assets = [name for name in entries if _asset_entry(name)]
                 if set(assets) != {p.relative_to(root).as_posix() for p in recorded.values()}:
                     raise BackupError('unindexed_assets')
                 metadata = {'format': 'haypile-library', 'version': 1, 'entries': entries,
                             'recent': recent, 'asset_count': len(assets),
                             'created_at': datetime.now(timezone.utc).isoformat()}
                 raw = json.dumps(metadata, ensure_ascii=False).encode()
-                if len(raw) > MAX_METADATA:
+                if len(raw) > MAX_METADATA or total + len(raw) > MAX_TOTAL:
                     raise BackupError('archive_limit')
                 archive.writestr('library.json', raw)
             if before != _inventory(root):
@@ -201,10 +219,9 @@ def _read_archive(path, output=None, *, cancel=lambda: False, progress=lambda te
                         not isinstance(entry, dict) or type(entry.get('size')) is not int or
                         entry['size'] != info.file_size or not re.fullmatch('[0-9a-f]{64}', str(entry.get('sha256', '')))):
                     raise BackupError('invalid_archive')
-                is_asset = name.startswith('assets/') and not name.endswith('.provenance.json')
-                if info.file_size > (500 * CHUNK if is_asset else MAX_METADATA):
+                if info.file_size > _entry_limit(name):
                     raise BackupError('archive_limit')
-                if is_asset:
+                if _asset_entry(name):
                     if entry['sha256'] in asset_hashes:
                         raise BackupError('invalid_archive')
                     asset_hashes.add(entry['sha256'])
@@ -236,14 +253,15 @@ def inspect_backup(path, *, cancel=lambda: False, progress=lambda text: None):
 
 def _empty(root):
     from app.services.theme_registry import DEFAULT_UI_DEV_INSTRUCTION
-    if any(p.is_file() or p.is_symlink() for p in (root/'assets').rglob('*')):
+    if any(p.is_symlink() or (p.is_file() and p.name not in ('.DS_Store', 'Thumbs.db')
+                              and not _checkout_marker(p, root/'assets')) for p in (root/'assets').rglob('*')):
         raise BackupError('library_not_empty')
     if read_collections(root/'collections.json'):
         raise BackupError('library_not_empty')
     for theme in (root/'themes').glob('*'):
         if theme.is_symlink() or not theme.is_file():
             raise BackupError('library_not_empty')
-        if theme.name in ('.DS_Store', 'Thumbs.db'):
+        if theme.name in ('.DS_Store', 'Thumbs.db') or _checkout_marker(theme, root/'themes'):
             continue
         if theme.suffix != '.json':
             raise BackupError('library_not_empty')
@@ -251,6 +269,7 @@ def _empty(root):
         if not isinstance(payload, dict) or any(payload.get(key) for key in ('physical_assets', 'css_variables', 'tailwind_extend', 'fonts')):
             raise BackupError('library_not_empty')
         if (set(payload) - {'schema_version', 'revision', 'theme_name', 'physical_assets', 'css_variables', 'tailwind_extend', 'fonts', 'ui_dev_instruction'} or
+                payload.get('theme_name', theme.stem) != theme.stem or
                 payload.get('ui_dev_instruction', DEFAULT_UI_DEV_INSTRUCTION) != DEFAULT_UI_DEV_INSTRUCTION):
             raise BackupError('library_not_empty')
     if (root/'index/storage_runtime.db').exists():
@@ -275,14 +294,13 @@ def restore_backup(settings, archive, *, expected=None, cancel=lambda: False, pr
             raise BackupError('insufficient_space')
         for name in metadata['entries']:
             _check_cancel(cancel)
-            if name.startswith('assets/') and not name.endswith('.provenance.json'):
+            if _asset_entry(name):
                 validate_media(new/name)
-            else:
+            elif name.endswith('.json'):
                 payload = json.loads((new/name).read_text(encoding='utf-8'))
                 if not isinstance(payload, dict):
                     raise BackupError('invalid_archive')
-        read_collections(new/'collections.json')
-        assets = {e['sha256'] for n,e in metadata['entries'].items() if n.startswith('assets/') and not n.endswith('.provenance.json')}
+        assets = {e['sha256'] for n,e in metadata['entries'].items() if _asset_entry(n)}
         if any(asset not in assets for c in read_collections(new/'collections.json') for asset in c['asset_ids']):
             raise BackupError('invalid_archive')
         service = IngestService(storage_dir=new, assets_dir=new/'assets', index_dir=new/'index',
@@ -295,6 +313,8 @@ def restore_backup(settings, archive, *, expected=None, cancel=lambda: False, pr
         runtime.prepare_restored_library(new/'assets', root/'assets', metadata['recent'])
         for directory in ('assets','themes'):
             (new/directory).mkdir(exist_ok=True)
+            if _checkout_marker(root/directory/'.gitkeep', root/directory) and not (new/directory/'.gitkeep').exists():
+                (new/directory/'.gitkeep').touch()
         for path in sorted(new.rglob('*'), reverse=True):
             if path.is_dir():
                 _sync(path)
